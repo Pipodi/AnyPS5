@@ -1310,9 +1310,57 @@ void Structurizer::Structurize(ControlFlowGraph& graph) const {
     }
 }
 
+namespace {
+
+std::vector<std::uint32_t> reversePostOrder(const ControlFlowGraph& graph, std::vector<std::uint32_t> BasicBlock::*edges, const std::vector<std::uint32_t>& roots) {
+    std::vector<std::uint32_t> order;
+    order.reserve(graph.blocks.size());
+    std::vector<bool> visited(graph.blocks.size(), false);
+    std::vector<std::pair<std::uint32_t, std::size_t>> stack;
+    const auto visit = [&](std::uint32_t root) {
+        if (visited[root]) {
+            return;
+        }
+        visited[root] = true;
+        stack.emplace_back(root, 0);
+        while (!stack.empty()) {
+            const auto blockId = stack.back().first;
+            const auto& targets = graph.blocks[blockId].*edges;
+            if (stack.back().second < targets.size()) {
+                const auto target = targets[stack.back().second++];
+                if (target < visited.size() && !visited[target]) {
+                    visited[target] = true;
+                    stack.emplace_back(target, 0);
+                }
+                continue;
+            }
+            order.push_back(blockId);
+            stack.pop_back();
+        }
+    };
+    for (const auto root : roots) {
+        visit(root);
+    }
+    for (const auto& block : graph.blocks) {
+        visit(block.id);
+    }
+    std::reverse(order.begin(), order.end());
+    return order;
+}
+
+void insertSorted(std::vector<std::uint32_t>& values, std::uint32_t value) {
+    const auto position = std::lower_bound(values.begin(), values.end(), value);
+    if (position == values.end() || *position != value) {
+        values.insert(position, value);
+    }
+}
+
+}
+
 void Structurizer::computeDominatorTree(ControlFlowGraph& graph) const {
     const auto count = static_cast<std::uint32_t>(graph.blocks.size());
     const auto all = allBlockIds(count);
+    const auto order = reversePostOrder(graph, &BasicBlock::successors, graph.entryBlock < count ? std::vector<std::uint32_t>{graph.entryBlock} : std::vector<std::uint32_t>{});
 
     for (auto& block : graph.blocks) {
         block.dominators = block.id == graph.entryBlock ? std::vector<std::uint32_t>{block.id} : all;
@@ -1321,7 +1369,8 @@ void Structurizer::computeDominatorTree(ControlFlowGraph& graph) const {
     bool changed = true;
     while (changed) {
         changed = false;
-        for (auto& block : graph.blocks) {
+        for (const auto blockId : order) {
+            auto& block = graph.blocks[blockId];
             if (block.id == graph.entryBlock) {
                 continue;
             }
@@ -1334,8 +1383,7 @@ void Structurizer::computeDominatorTree(ControlFlowGraph& graph) const {
                 for (std::size_t i = 1; i < block.predecessors.size(); ++i) {
                     next = intersectSorted(next, graph.blocks[block.predecessors[i]].dominators);
                 }
-                addUnique(next, block.id);
-                sortUnique(next);
+                insertSorted(next, block.id);
             }
 
             if (next != block.dominators) {
@@ -1384,6 +1432,13 @@ void Structurizer::detectNaturalLoops(ControlFlowGraph& graph) const {
 void Structurizer::computePostDominators(ControlFlowGraph& graph) const {
     const auto count = static_cast<std::uint32_t>(graph.blocks.size());
     const auto all = allBlockIds(count);
+    std::vector<std::uint32_t> exits;
+    for (const auto& block : graph.blocks) {
+        if (block.successors.empty()) {
+            exits.push_back(block.id);
+        }
+    }
+    const auto order = reversePostOrder(graph, &BasicBlock::predecessors, exits);
 
     for (auto& block : graph.blocks) {
         block.postDominators = block.successors.empty() ? std::vector<std::uint32_t>{block.id} : all;
@@ -1392,7 +1447,8 @@ void Structurizer::computePostDominators(ControlFlowGraph& graph) const {
     bool changed = true;
     while (changed) {
         changed = false;
-        for (auto& block : graph.blocks) {
+        for (const auto blockId : order) {
+            auto& block = graph.blocks[blockId];
             std::vector<std::uint32_t> next;
             if (block.successors.empty()) {
                 next = {block.id};
@@ -1401,8 +1457,7 @@ void Structurizer::computePostDominators(ControlFlowGraph& graph) const {
                 for (std::size_t i = 1; i < block.successors.size(); ++i) {
                     next = intersectSorted(next, graph.blocks[block.successors[i]].postDominators);
                 }
-                addUnique(next, block.id);
-                sortUnique(next);
+                insertSorted(next, block.id);
             }
 
             if (next != block.postDominators) {
