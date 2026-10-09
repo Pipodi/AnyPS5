@@ -170,6 +170,16 @@ bool SameHeader(const ShaderSnapshot& snapshot, const Shader* shader) {
     std::memcpy(&used, static_cast<const void*>(shader), sizeof(Shader));
     std::memcpy(&registered, snapshot.header.data(), sizeof(Shader));
     used.user_data = registered.user_data;
+    const auto distance = reinterpret_cast<std::uintptr_t>(shader) - snapshot.headerAddress;
+    const auto rebase = [&]<typename T>(T*& bound, T* original) {
+        const auto value = reinterpret_cast<std::uintptr_t>(original);
+        if (value - snapshot.headerAddress < registered.header_size && reinterpret_cast<std::uintptr_t>(bound) == value + distance) bound = original;
+    };
+    rebase(used.cx_registers, registered.cx_registers);
+    rebase(used.sh_registers, registered.sh_registers);
+    rebase(used.specials, registered.specials);
+    rebase(used.input_semantics, registered.input_semantics);
+    rebase(used.output_semantics, registered.output_semantics);
     return std::memcmp(&used, &registered, offsetof(Shader, num_sh_registers) + sizeof(Shader::num_sh_registers)) == 0;
 }
 

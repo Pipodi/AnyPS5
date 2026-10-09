@@ -326,6 +326,13 @@ void Registration(bool indirect) {
     AgcDriverResolveShaderAbi_nid_postfix(reinterpret_cast<Shader*>(padded.data()), {}, {});
     copy.target ^= 1u;
     ExpectFailure([&] { AgcDriverResolveShaderAbi_nid_postfix(&copy, {}, {}); }, "replaced shader header");
+    Header moved = header;
+    moved.shader.sh_registers = moved.registers.data();
+    moved.shader.cx_registers = moved.context.data();
+    moved.shader.specials = &moved.specials;
+    AgcDriverResolveShaderAbi_nid_postfix(&moved.shader, {}, {});
+    moved.shader.specials = &moved.specials + 1;
+    ExpectFailure([&] { AgcDriverResolveShaderAbi_nid_postfix(&moved.shader, {}, {}); }, "replaced shader header");
     header.registers[1].value |= 0x100u;
     ExpectFailure([&] { AgcDriverRegisterShader_nid_postfix(&header.shader); }, "invalid registered program address");
     header.registers[1].value &= 0xffu;
