@@ -36,6 +36,9 @@ struct TableColumn {
     std::uint32_t maxKey = 0xffffffffu;
     bool sampler = false;
     bool address = false;
+    bool indirect = false;
+    std::uint32_t indirectOffset = 0;
+    std::uint32_t indirectImmediate = 0;
     std::optional<KeyDomain> keyDomain;
 
     bool operator==(const TableColumn& other) const = default;
