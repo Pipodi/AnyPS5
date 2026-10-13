@@ -1,5 +1,6 @@
 #include "prx/libSceNpEntitlementAccess/include/Api.hpp"
 #include <cstdint>
+#include <cstdio>
 #include <cstddef>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
@@ -85,12 +86,16 @@ extern "C" {
 int APS5_VABI sceNpEntitlementAccessGetAddcontEntitlementInfo(uint32_t service_label, const NpUnifiedEntitlementLabel* entitlement_label, NpEntitlementAccessAddcontEntitlementInfo* info) {
     (void)service_label;
     if (!entitlement_label || !info) return SCE_NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
+    char label[sizeof(entitlement_label->data) + 1] = {};
+    std::memcpy(label, entitlement_label->data, sizeof(entitlement_label->data));
     for (const auto& addon : OwnedAddons()) {
         if (std::strncmp(addon.entitlement_label.data, entitlement_label->data, sizeof(entitlement_label->data)) == 0) {
             *info = addon;
+            std::fprintf(stderr, "[debug-entitlement] service %u label '%s' -> owned (caller %p)\n", service_label, label, __builtin_return_address(0));
             return 0;
         }
     }
+    std::fprintf(stderr, "[debug-entitlement] service %u label '%s' -> not found (caller %p)\n", service_label, label, __builtin_return_address(0));
     return SCE_NP_ENTITLEMENT_ACCESS_ERROR_NOT_FOUND;
 }
 
