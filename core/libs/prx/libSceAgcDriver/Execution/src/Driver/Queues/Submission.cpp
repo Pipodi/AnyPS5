@@ -13,6 +13,8 @@
 #include "prx/libSceAgcDriver/Eq/include/Event.hpp"
 #include "ThreadOwned.hpp"
 #include "prx/libc/include/HostThreadLocal.hpp"
+#include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstdio>
@@ -222,6 +224,41 @@ bool Driver::copySegment(Submission& submission, const std::uint32_t* guest, std
     return false;
 }
 
+std::vector<std::uint64_t> ReferencedPrograms(std::span<const std::uint32_t> commands, const std::map<std::size_t, std::vector<std::uint32_t>>& registerLists) {
+    constexpr std::array<std::uint32_t, 6> programRegisters{0x008u, 0x088u, 0x0c8u, 0x108u, 0x148u, 0x20cu};
+    std::array<std::uint32_t, programRegisters.size() * 2> values{};
+    std::array<bool, programRegisters.size() * 2> written{};
+    std::vector<std::uint64_t> addresses;
+    const auto write = [&](std::uint32_t offset, std::uint32_t value) {
+        const auto base = std::ranges::find_if(programRegisters, [&](std::uint32_t program) { return offset - program < 2u; });
+        if (base == programRegisters.end()) return;
+        const auto slot = static_cast<std::size_t>(base - programRegisters.begin()) * 2u + (offset - *base);
+        values[slot] = value;
+        written[slot] = true;
+        const auto low = slot & ~std::size_t{1};
+        if (written[low] && written[low + 1]) addresses.push_back((static_cast<std::uint64_t>(values[low]) << 8u) | (static_cast<std::uint64_t>(values[low + 1] & 0xffu) << 40u));
+    };
+    for (std::size_t cursor = 0; cursor < commands.size(); cursor += Pm4::PacketWords(commands[cursor])) {
+        const auto header = commands[cursor];
+        if ((header >> 30u) != 3u) continue;
+        const auto opcode = (header >> 8u) & 0xffu;
+        const auto words = std::min<std::size_t>(Pm4::PacketWords(header), commands.size() - cursor);
+        if (opcode == 0x76u && words >= 3) {
+            const auto packet = commands.subspan(cursor, words);
+            if (Pm4::IsTagMarker(packet)) continue;
+            const auto offset = packet[1] & ~0x70000000u;
+            for (std::size_t i = 2; i < words; ++i) write(offset + static_cast<std::uint32_t>(i - 2), packet[i]);
+        } else if (opcode == 0x63u) {
+            const auto list = registerLists.find(cursor);
+            if (list == registerLists.end()) continue;
+            for (std::size_t i = 0; i + 1 < list->second.size(); i += 2) write(list->second[i] & ~0x70000000u, list->second[i + 1]);
+        }
+    }
+    std::ranges::sort(addresses);
+    addresses.erase(std::unique(addresses.begin(), addresses.end()), addresses.end());
+    return addresses;
+}
+
 void Driver::readRegisterLists(Submission& submission) {
     submission.registerLists.clear();
     for (std::size_t cursor = 0; cursor < submission.commands.size(); cursor += Pm4::PacketWords(submission.commands[cursor])) {
@@ -416,7 +453,12 @@ void Driver::Submit(const Packet* packet, std::uint32_t queue, bool cpuFlip) {
     if (APS5_ENABLE_TIMING_LOG) submission.validatedAt = std::chrono::steady_clock::now();
     waitForFlipRoom(submission);
     holdFlipBehindWorker(submission);
-    AwaitRegistrationPreparation();
+    std::shared_ptr<const ShaderRegistry> registry;
+    {
+        std::lock_guard lock(mutex);
+        registry = shaders;
+    }
+    if (registry != nullptr) AwaitReferencedPreparations(*registry, ReferencedPrograms(submission.commands, submission.registerLists));
     if (APS5_ENABLE_TIMING_LOG) submission.roomReadyAt = std::chrono::steady_clock::now();
     static const bool trace = std::getenv("APS5_TRACE_GPU") != nullptr;
     if (trace) std::fprintf(stderr, "[gpu] %.1f submit queue=0x%x dwords=%zu at %p\n", TraceMs(), queue, submission.commands.size(), static_cast<const void*>(descriptor.addr));

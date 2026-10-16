@@ -1787,6 +1787,22 @@ void AwaitRegistrationPreparation() {
     if (auto* pool = RegistrationPreparePool::Existing()) pool->AwaitSubmitted();
 }
 
+void AwaitReferencedPreparations(const ShaderRegistry& registry, std::span<const std::uint64_t> addresses) {
+    for (const auto address : addresses) {
+        auto found = registry.upper_bound(address);
+        if (found == registry.begin()) continue;
+        --found;
+        for (const auto& snapshot : found->second) {
+            if (address - snapshot->codeAddress >= snapshot->code.size() * sizeof(std::uint32_t)) continue;
+            auto& prepared = *snapshot->prepared;
+            std::unique_lock lock(prepared.mutex);
+            if (!prepared.pending) continue;
+            PrioritizeRegistrationPreparation(prepared);
+            prepared.settled.wait(lock, [&] { return !prepared.pending; });
+        }
+    }
+}
+
 void SubmitLibraryPrebuild(std::function<void()> task) {
     RegistrationPreparePool::Prebuild().Submit(std::move(task));
 }
