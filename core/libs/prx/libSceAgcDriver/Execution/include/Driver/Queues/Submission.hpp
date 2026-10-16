@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <span>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -55,6 +56,8 @@ struct QueueWorker {
     std::unordered_map<std::uint64_t, std::uint32_t> unfinishedWrites;
     std::thread thread;
 };
+
+std::vector<std::uint64_t> ReferencedPrograms(std::span<const std::uint32_t> commands, const std::map<std::size_t, std::vector<std::uint32_t>>& registerLists);
 
 }
 
