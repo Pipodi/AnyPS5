@@ -29,6 +29,8 @@
 #include <vector>
 #include <future>
 #include <barrier>
+#include <latch>
+#include <semaphore>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -466,32 +468,65 @@ void ReferencedRegistrationPreparation() {
     Require(AgcDriver::DriverDetail::ReferencedPrograms(indirect, lists) == std::vector<std::uint64_t>{unrelated}, "a vertex program bound through an indirect register list was not found in the submission");
     const std::vector<std::uint32_t> lowOnly{0xc0017600u, 0x008u, static_cast<std::uint32_t>(bound >> 8u)};
     Require(AgcDriver::DriverDetail::ReferencedPrograms(lowOnly, {}).empty(), "a program address without its high register was resolved");
+    const auto workers = std::max(2u, std::thread::hardware_concurrency() / 2u);
+    std::barrier started(static_cast<std::ptrdiff_t>(workers + 1u));
+    std::counting_semaphore<> release(0);
+    std::latch finished(static_cast<std::ptrdiff_t>(workers));
+    for (unsigned index = 0; index < workers; ++index) {
+        AgcDriver::DriverDetail::SubmitRegistrationPreparation([&] {
+            started.arrive_and_wait();
+            release.acquire();
+            finished.count_down();
+        });
+    }
+    started.arrive_and_wait();
+    const auto pending = [](const std::shared_ptr<ShaderSnapshot>& snapshot) {
+        std::lock_guard lock(snapshot->prepared->mutex);
+        return snapshot->prepared->pending;
+    };
+    const auto settle = [](const std::shared_ptr<ShaderSnapshot>& snapshot) {
+        {
+            std::lock_guard lock(snapshot->prepared->mutex);
+            snapshot->prepared->pending = false;
+        }
+        snapshot->prepared->settled.notify_all();
+    };
     boundSnapshot->prepared->pending = true;
     unrelatedSnapshot->prepared->pending = true;
-    std::atomic<bool> unrelatedRan{false};
-    AgcDriver::DriverDetail::SubmitRegistrationPreparation([unrelatedSnapshot, &unrelatedRan] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-        unrelatedRan.store(true, std::memory_order_release);
-        {
-            std::lock_guard lock(unrelatedSnapshot->prepared->mutex);
-            unrelatedSnapshot->prepared->pending = false;
-        }
-        unrelatedSnapshot->prepared->settled.notify_all();
+    std::atomic<unsigned> order{0};
+    std::atomic<unsigned> boundOrder{~0u};
+    std::atomic<unsigned> unrelatedOrder{~0u};
+    std::counting_semaphore<> unrelatedGate(0);
+    AgcDriver::DriverDetail::SubmitRegistrationPreparation([unrelatedSnapshot, settle, &order, &unrelatedOrder, &unrelatedGate] {
+        unrelatedOrder.store(order.fetch_add(1u));
+        static_cast<void>(unrelatedGate.try_acquire_for(std::chrono::seconds(5)));
+        settle(unrelatedSnapshot);
     }, unrelatedSnapshot->prepared.get());
-    auto settle = std::async(std::launch::async, SettleLater, std::ref(*boundSnapshot->prepared), std::vector<AgcDriver::DriverDetail::PreparedShaders::Entry>{}, nullptr);
+    AgcDriver::DriverDetail::SubmitRegistrationPreparation([boundSnapshot, settle, &order, &boundOrder] {
+        boundOrder.store(order.fetch_add(1u));
+        settle(boundSnapshot);
+    }, boundSnapshot->prepared.get());
+    auto releaser = std::async(std::launch::async, [&] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!boundSnapshot->prepared->demanded.load() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        release.release();
+    });
     AgcDriver::DriverDetail::AwaitReferencedPreparations(registry, AgcDriver::DriverDetail::ReferencedPrograms(commands, {}));
-    bool boundPending = false;
-    {
-        std::lock_guard lock(boundSnapshot->prepared->mutex);
-        boundPending = boundSnapshot->prepared->pending;
-    }
-    const bool unrelatedDone = unrelatedRan.load(std::memory_order_acquire);
-    settle.get();
-    Require(!boundPending, "a submission did not wait for the preparation of a program its commands bind");
-    Require(!unrelatedDone, "a slow preparation of a program the commands do not bind held the submission back");
+    const bool boundPending = pending(boundSnapshot);
+    const bool unrelatedPending = pending(unrelatedSnapshot);
+    const auto boundRank = boundOrder.load();
+    unrelatedGate.release();
+    releaser.get();
+    release.release(static_cast<std::ptrdiff_t>(workers - 1u));
     const std::array<std::uint64_t, 1> unrelatedAddress{unrelated};
     AgcDriver::DriverDetail::AwaitReferencedPreparations(registry, unrelatedAddress);
-    Require(unrelatedRan.load(std::memory_order_acquire), "a submission binding the slow program did not wait for its preparation");
+    const bool unrelatedSettled = !pending(unrelatedSnapshot);
+    finished.wait();
+    Require(!boundPending, "a submission did not wait for the preparation of a program its commands bind");
+    Require(boundRank == 0u, "the queued preparation of a bound program was not moved ahead of unrelated queued work");
+    Require(unrelatedPending, "a preparation of a program the commands do not bind held the submission back");
+    Require(unrelatedSettled && unrelatedOrder.load() == 1u, "a submission binding the queued program did not wait for its preparation");
 }
 
 void UnrelatedPreparationAtSubmit() {
