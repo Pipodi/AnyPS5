@@ -435,7 +435,7 @@ bool LevelsFitAllocation(const GuestTextureResource& surface, std::uint32_t leve
     return true;
 }
 
-GuestTextureResource SampledArrayWindow(const GuestTextureResource& viewed) {
+GuestTextureResource ViewedArrayWindow(const GuestTextureResource& viewed) {
     const bool layered = viewed.dimension == TextureDimension::k2DArray || viewed.dimension == TextureDimension::k1DArray || viewed.dimension == TextureDimension::kCube;
     if (!layered || viewed.baseArray == 0 || viewed.baseArray > viewed.depthOrLastArray || viewed.dccAddress != 0) return viewed;
     if (const auto xorMode = XorSwizzleMode(viewed.tileMode); xorMode != 0u) {
