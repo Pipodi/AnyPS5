@@ -1373,6 +1373,15 @@ void reportGuestAllocation(const GuestTextureResource& resource, std::uint64_t g
     std::fprintf(stderr, "[gpu] view 0x%llx of %llu MiB lies in the guest allocation 0x%llx..0x%llx (%llu MiB, range 0x%llx..0x%llx, %s%s%s): %llu of its %u slices fit in the range\n", static_cast<unsigned long long>(resource.baseAddress), static_cast<unsigned long long>(guestBytes >> 20u), static_cast<unsigned long long>(range->allocationAddress), static_cast<unsigned long long>(range->allocationAddress + range->allocationBytes), static_cast<unsigned long long>(range->allocationBytes >> 20u), static_cast<unsigned long long>(range->address), static_cast<unsigned long long>(end), range->readable ? "r" : "-", range->writable ? "w" : "-", range->gpu ? "g" : "-", static_cast<unsigned long long>(fitting), geometry.layers);
 }
 
+std::uint64_t readableGuestEnd(std::uint64_t address) {
+    auto end = address;
+    while (const auto range = GuestAllocations::GuestAllocationsLookup_nid_postfix(end, false)) {
+        if (!range->readable || range->address + range->bytes <= end) break;
+        end = range->address + range->bytes;
+    }
+    return end;
+}
+
 // `guestBytes` is the surface size when the caller described the surface already (0: described here).
 // Before a lookup (outside the cache's mutex): kept spilled snapshots nothing uses go while the
 // overflow type (or system memory, for the linear ones) holds more than the overflow budget; while
@@ -1456,6 +1465,17 @@ std::shared_ptr<Texture> cachedTexture(const Context& context, std::span<const s
         auto normalized = resource;
         normalized.format = unorm16;
         return cachedTexture(context, words, normalized, components, guestBytes, depthCompare);
+    }
+    if (const auto last = LastSliceBefore(resource, readableGuestEnd); last.has_value() && words.size() == 8u) {
+        static std::atomic<std::uint64_t> caps{0};
+        const auto count = caps.fetch_add(1) + 1;
+        if (count <= 5 || (count & (count - 1)) == 0) std::fprintf(stderr, "[gpu] sampled array view 0x%llx (%ux%u format %u, dimension %d, slices %u..%u) capped at slice %u, the last inside readable guest memory; %llu such views\n", static_cast<unsigned long long>(resource.baseAddress), resource.width, resource.height, resource.format, static_cast<int>(resource.dimension), resource.baseArray, resource.depthOrLastArray, *last, static_cast<unsigned long long>(count));
+        std::array<std::uint32_t, 8> capped{};
+        std::copy(words.begin(), words.end(), capped.begin());
+        capped[4] = (capped[4] & ~0x1fffu) | *last;
+        auto inside = resource;
+        inside.depthOrLastArray = *last;
+        return cachedTexture(context, capped, inside, components, 0, depthCompare);
     }
     const auto viewedWindow = [&] {
         const auto window = ViewedArrayWindow(resource, false);

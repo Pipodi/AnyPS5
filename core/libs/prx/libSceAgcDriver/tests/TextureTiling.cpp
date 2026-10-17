@@ -501,6 +501,23 @@ void RunTextureTilingTests() {
         volume.dimension = TextureDimension::k3D;
         volume.baseArray = 0;
         Require(ViewedArrayWindow(volume, false).baseAddress == cube.baseAddress, "a volume keeps its descriptor");
+
+        auto cubes = cube;
+        cubes.baseArray = 4299;
+        const auto cubeLayer = DescribeSurface(cubes).layerBytes;
+        const auto cubesStart = cubes.baseAddress + 4299ull * cubeLayer;
+        const auto cubesEnd = [&](std::uint64_t address) { return address == cubesStart ? cubesStart + 838ull * cubeLayer + 100u : address; };
+        Require(LastSliceBefore(cubes, cubesEnd) == std::optional<std::uint32_t>(4299u + 834u - 1u), "a cube array view must stop at the last whole cube inside readable memory");
+        Require(!LastSliceBefore(cubes, [&](std::uint64_t) { return cubesStart + 3000ull * cubeLayer; }).has_value(), "a cube array view inside readable memory keeps its slices");
+        Require(!LastSliceBefore(cubes, [](std::uint64_t address) { return address; }).has_value(), "a view with no readable memory at its first slice keeps its slices");
+        Require(!LastSliceBefore(cubes, [&](std::uint64_t) { return cubesStart + 5ull * cubeLayer; }).has_value(), "a cube array view with no whole cube inside readable memory keeps its slices");
+
+        auto kept = array;
+        kept.baseArray = 1530;
+        const auto arrayLayer = DescribeSurface(kept).layerBytes;
+        Require(LastSliceBefore(kept, [&](std::uint64_t address) { return address + 1533ull * arrayLayer; }) == std::optional<std::uint32_t>(1532u), "an R_X view kept whole must stop at the last slice inside readable memory, counted from slice 0");
+        Require(!LastSliceBefore(kept, [&](std::uint64_t address) { return address + 1000ull * arrayLayer; }).has_value(), "a view whose base slice lies past readable memory keeps its slices");
+        Require(!LastSliceBefore(volume, [](std::uint64_t address) { return address + 1u; }).has_value(), "a volume is never capped");
     }
 
     {
@@ -527,6 +544,7 @@ void RunTextureTilingTests() {
             for (std::uint32_t x = 0; x < 1024; x += 5) Require(texel(window, cut, x, y, window.baseArray) == texel(view, whole, x, y, view.baseArray), "a texel of the viewed slice detiles from the same guest byte in the window as in the uncut surface");
         }
         Require(TextureClearKeys(window, cut.guestBytes) == DccKeys::Uncompressed, "the window reads its texels as stored, as the uncut view does");
+
     }
 
     {

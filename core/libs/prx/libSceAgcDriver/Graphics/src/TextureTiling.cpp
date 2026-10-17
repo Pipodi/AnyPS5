@@ -569,6 +569,24 @@ GuestTextureResource ArrayLayerWindow(const GuestTextureResource& viewed, std::u
     return window;
 }
 
+std::optional<std::uint32_t> LastSliceBefore(const GuestTextureResource& viewed, const std::function<std::uint64_t(std::uint64_t)>& readableEnd) {
+    const bool cube = viewed.dimension == TextureDimension::kCube;
+    if (viewed.dimension != TextureDimension::k2DArray && viewed.dimension != TextureDimension::k1DArray && !cube) return std::nullopt;
+    if (viewed.dccAddress != 0) return std::nullopt;
+    const auto window = ViewedArrayWindow(viewed, false);
+    const auto geometry = DescribeSurface(window);
+    if (geometry.thick || geometry.layerBytes == 0 || geometry.layers != window.depthOrLastArray + 1u) return std::nullopt;
+    const auto end = readableEnd(window.baseAddress);
+    if (end <= window.baseAddress) return std::nullopt;
+    auto fitting = std::min<std::uint64_t>(geometry.layers, (end - window.baseAddress) / geometry.layerBytes);
+    if (cube) fitting -= fitting % 6u;
+    if (fitting == 0 || fitting >= geometry.layers) return std::nullopt;
+    const auto first = window.baseAddress != viewed.baseAddress ? viewed.baseArray : 0u;
+    const auto last = first + static_cast<std::uint32_t>(fitting) - 1u;
+    if (last < viewed.baseArray + (cube ? 5u : 0u)) return std::nullopt;
+    return last;
+}
+
 std::vector<TileMipLayout> ComputeElementMipLayout(TextureTileMode tileMode, std::uint32_t bytesPerElement, std::uint32_t width, std::uint32_t height, std::uint32_t mipCount) {
     Require(width != 0 && height != 0 && mipCount != 0 && mipCount <= 16u, "invalid surface mip chain");
     if (tileMode == TextureTileMode::kLinear) return ComputeLinearMipLayout(bytesPerElement, 1u, 1u, width, height, mipCount);

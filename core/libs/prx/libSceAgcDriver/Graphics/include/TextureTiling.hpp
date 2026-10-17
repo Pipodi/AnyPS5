@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -82,6 +84,7 @@ SurfaceGeometry DescribeSurface(const GuestTextureResource& descriptor);
 bool LevelsFitAllocation(const GuestTextureResource& surface, std::uint32_t levels);
 GuestTextureResource ViewedArrayWindow(const GuestTextureResource& viewed, bool keysReadAsStored);
 GuestTextureResource ArrayLayerWindow(const GuestTextureResource& viewed, std::uint32_t maxArrayLayers);
+std::optional<std::uint32_t> LastSliceBefore(const GuestTextureResource& viewed, const std::function<std::uint64_t(std::uint64_t)>& readableEnd);
 
 }
 
