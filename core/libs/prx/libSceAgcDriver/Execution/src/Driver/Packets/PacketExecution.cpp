@@ -413,7 +413,6 @@ void Driver::execute(const Submission& submission) {
             if (queue0) DrawFinisher::Get().Settle();
         }
     } settleFinisher{submission.queue == 0};
-    std::size_t aheadCursor = 0;
     for (std::size_t cursor = 0; cursor < submission.commands.size();) {
         if (packetEpoch()) bumpEpoch(&EpochBumps::packets);
         CheckFailure();
@@ -618,11 +617,10 @@ void Driver::execute(const Submission& submission) {
             packetCounters.CountDispatch();
             landPendingWaits(submission.queue);
             currentPacketOffset() = cursor;
-            if (gateOpened() || (resolvedAhead().empty() && cursor >= aheadCursor)) {
+            if (gateOpened()) {
                 gateOpened() = false;
-                aheadCursor = nextCursor;
                 static const bool gateDrain = std::getenv("APS5_PIPELINE_DISPATCH_GATE_DRAIN") != nullptr;
-                if (!pipelineDispatch() || opcode == 0x16 || !pipelined || submission.queue != 0 || gateDrain) {
+                if (!pipelineDispatch() || submission.queue != 0 || gateDrain) {
                     if (pipelined && DrawPipeline::Queue0().Busy()) DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Packet, opcode);
                     timed(&WorkerProfile::dispatchMs, [&] { resolveGroupAhead(submission, queue, cursor); });
                 }
