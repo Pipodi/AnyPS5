@@ -2255,7 +2255,14 @@ struct PixelDraw {
     std::uint32_t quadBroadcasts = 0;
 };
 
-PixelDraw DrawPixelTable(AgcDriver::VulkanDevice& device, std::span<const std::uint32_t> pixelCode, std::span<const std::uint32_t> table, std::uint32_t key, const std::array<std::uint32_t, 4>& sampler, float scaleU, float scaleV) {
+struct PixelPrebuild {
+    bool prebuilt = false;
+    std::uint64_t prebuildBuilt = 0;
+    std::uint64_t drawBuilt = 0;
+    std::uint64_t drawLinked = 0;
+};
+
+PixelDraw DrawPixelTable(AgcDriver::VulkanDevice& device, std::span<const std::uint32_t> pixelCode, std::span<const std::uint32_t> table, std::uint32_t key, const std::array<std::uint32_t, 4>& sampler, float scaleU, float scaleV, PixelPrebuild* prebuild = nullptr) {
     const auto target = device.Target();
     std::fill(Pixels.begin(), Pixels.end(), std::byte{0xa5});
     std::vector<std::uint32_t> vertexUserData(4, 0u);
@@ -2314,8 +2321,20 @@ PixelDraw DrawPixelTable(AgcDriver::VulkanDevice& device, std::span<const std::u
     state.blends = {state.blend};
     state.blendConstants = {};
     const AgcDriver::Pm4::DrawParameters draw{0, static_cast<std::uint32_t>(Triangle.size()), 0, 1, 0, false};
+    if (prebuild != nullptr) {
+        const std::array<AgcDriver::Graphics::CompiledShader, 1> fragmentOnly{{shaders[1]}};
+        const auto beforePrebuild = AgcDriver::Graphics::PipelineLibraryCountersOf(device.Device());
+        prebuild->prebuilt = device.PrebuildGraphicsLibraries(state.stages, fragmentOnly);
+        prebuild->prebuildBuilt = AgcDriver::Graphics::PipelineLibraryCountersOf(device.Device()).built[2] - beforePrebuild.built[2];
+    }
+    const auto beforeDraw = AgcDriver::Graphics::PipelineLibraryCountersOf(device.Device());
     device.Draw(state, draw, shaders);
     device.WaitIdle();
+    if (prebuild != nullptr) {
+        const auto afterDraw = AgcDriver::Graphics::PipelineLibraryCountersOf(device.Device());
+        prebuild->drawBuilt = afterDraw.built[2] - beforeDraw.built[2];
+        prebuild->drawLinked = afterDraw.linked - beforeDraw.linked;
+    }
     PixelDraw result;
     result.vertexHeap = vertexResult.bindlessHeap;
     result.pixelHeap = pixelResult.bindlessHeap;
@@ -2356,6 +2375,22 @@ struct PixelRegistration {
     PixelRegistration(void* data, std::size_t bytes) : data(data) { GuestAllocations::Mutation().Add(data, bytes, true, true, true); }
     ~PixelRegistration() { GuestAllocations::Mutation().Remove(data); }
 };
+
+void RunHeapPrebuildTests(AgcDriver::VulkanDevice& device) {
+    if (!device.Target().registrationModules) {
+        std::puts("image table graphics: the device has no graphics pipeline libraries, the heap prebuild was not checked");
+        return;
+    }
+    FillSampleTextures();
+    const auto scale = 1.0f / static_cast<float>(SampleSize);
+    PixelPrebuild prebuild;
+    const auto drawn = DrawPixelTable(device, PixelSampleWaterfallCode, SampleTable, 0u, SamplePointSampler, scale, scale, &prebuild);
+    RequirePixelHeap(drawn, "image table heap prebuild", device);
+    RequirePixels([&](std::uint32_t x, std::uint32_t) { return std::array<std::uint32_t, 4>{SampleLevelMark(0u), SampleTextureMark(x >> 2u & 1u), 7u, 255u}; }, "image table heap prebuild");
+    Require(prebuild.prebuilt && prebuild.prebuildBuilt == 1u, "image table heap prebuild: the prebuild did not build the fragment library of the bindless heap shader (built " + std::to_string(prebuild.prebuildBuilt) + ")");
+    Require(prebuild.drawBuilt == 0u && prebuild.drawLinked > 0u, "image table heap prebuild: the draw built " + std::to_string(prebuild.drawBuilt) + " fragment libraries and linked " + std::to_string(prebuild.drawLinked) + " instead of reusing the prebuilt part");
+    std::puts("image table heap prebuild: the draw linked the prebuilt fragment library of a bindless heap shader");
+}
 
 void RunPixelSampleTests(AgcDriver::VulkanDevice& device) {
     FillSampleTextures();
@@ -2571,6 +2606,7 @@ int main(int argc, char** argv) {
         }
         if (argc == 2 && std::string_view(argv[1]) == "--graphics") {
             const auto libraries = AgcDriver::Graphics::PipelineLibraryCountersOf(device->Device());
+            if (BindlessHeap()) RunHeapPrebuildTests(*device);
             RunPixelSampleTests(*device);
             if (BindlessHeap()) RequireHeapLibraries(*device, libraries);
             RunPixelStorageTests(*device);
