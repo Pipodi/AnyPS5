@@ -356,6 +356,7 @@ bool libraryKeys(PipelineLibraryKeys& keys, const Context& context, const State&
         const auto identity = shader.program->Identity();
         if (shader.stage == Stage::Geometry || identity.Empty()) return false;
         auto& key = shader.stage == Stage::Fragment ? keys.fragmentShader : keys.preRasterization;
+        if (shader.stage == Stage::Fragment) keys.fragmentSpirv = shader.program->spirv.ContentHash().low;
         appendKey(key, shader.stage);
         appendKey(key, identity.low);
         appendKey(key, identity.high);

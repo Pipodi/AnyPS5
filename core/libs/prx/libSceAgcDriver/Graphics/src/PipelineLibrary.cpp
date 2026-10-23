@@ -1,8 +1,10 @@
 #include "prx/libSceAgcDriver/Graphics/include/PipelineLibrary.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/PipelineJournal.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <condition_variable>
 #include <cstdlib>
 #include <deque>
@@ -255,6 +257,20 @@ VkPipeline LinkPipelineFromLibraries(const Context& context, const VkGraphicsPip
         }
         ++device.counters.built[part];
         if (!partsOnly && flags[part] == VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT && (rendering.depthAttachmentFormat != VK_FORMAT_UNDEFINED || rendering.stencilAttachmentFormat != VK_FORMAT_UNDEFINED)) device.depthFormats.emplace(rendering.depthAttachmentFormat, rendering.stencilAttachmentFormat);
+        static const bool logParts = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
+        if (logParts && flags[part] == VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT) {
+            const auto hash = [](std::span<const std::byte> bytes) {
+                std::uint64_t value = 0xcbf29ce484222325ull;
+                for (const auto byte : bytes) value = (value ^ static_cast<std::uint8_t>(byte)) * 0x100000001b3ull;
+                return value;
+            };
+            const std::span<const std::byte> shader(keys.fragmentShader);
+            const auto identityBytes = std::min<std::size_t>(shader.size(), 24u);
+            const auto statePart = shader.subspan(identityBytes);
+            const auto multisample = info.pMultisampleState;
+            const auto depthStencil = info.pDepthStencilState;
+            std::fprintf(stderr, "[fragpart] pre=%d spirv=%016llx id=%016llx state=%016llx layout=%016llx att=%u/%u/%u samples=%u sampleShading=%u depthStencil=%d\n", partsOnly ? 1 : 0, static_cast<unsigned long long>(keys.fragmentSpirv), static_cast<unsigned long long>(hash(shader.first(identityBytes))), static_cast<unsigned long long>(hash(statePart)), static_cast<unsigned long long>(hash(keys.fragmentLayout)), attachments[0], attachments[1], attachments[2], multisample != nullptr ? static_cast<unsigned>(multisample->rasterizationSamples) : 0u, multisample != nullptr ? static_cast<unsigned>(multisample->sampleShadingEnable) : 0u, depthStencil != nullptr ? 1 : 0);
+        }
         libraries.push_back(handle);
     }
     if (partsOnly) return VK_NULL_HANDLE;
