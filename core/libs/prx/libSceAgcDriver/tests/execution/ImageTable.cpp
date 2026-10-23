@@ -5,6 +5,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Diagnostics.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ShaderMemory.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Draw.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/PipelineLibrary.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/ShaderResources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Texture.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/TextureTiling.hpp"
@@ -2522,6 +2523,15 @@ void RunPixelRefusalTests(AgcDriver::VulkanDevice& device) {
     std::puts("bindless pixel refusal: a pixel draw that selected a key-determined refusal faulted with its reason, counted once as no-mode, then cached");
 }
 
+void RequireHeapLibraries(AgcDriver::VulkanDevice& device, const AgcDriver::Graphics::PipelineLibraryCounters& before) {
+    if (!device.Target().registrationModules) {
+        std::puts("image table graphics: the device has no graphics pipeline libraries, the heap library path was not checked");
+        return;
+    }
+    const auto after = AgcDriver::Graphics::PipelineLibraryCountersOf(device.Device());
+    Require(after.linked > before.linked && after.built[1] > before.built[1] && after.built[2] > before.built[2], "image table graphics: the bindless heap pipelines were not linked from graphics libraries (linked " + std::to_string(after.linked - before.linked) + ", pre-rasterization " + std::to_string(after.built[1] - before.built[1]) + ", fragment " + std::to_string(after.built[2] - before.built[2]) + ")");
+}
+
 void RunGraphicsTests(AgcDriver::VulkanDevice& device) {
     const auto floatImage = Image(FloatTexels.data(), Format32Float);
     const auto uintImage = Image(UintTexels.data(), Format32UInt);
@@ -2560,7 +2570,9 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (argc == 2 && std::string_view(argv[1]) == "--graphics") {
+            const auto libraries = AgcDriver::Graphics::PipelineLibraryCountersOf(device->Device());
             RunPixelSampleTests(*device);
+            if (BindlessHeap()) RequireHeapLibraries(*device, libraries);
             RunPixelStorageTests(*device);
             RunGraphicsTests(*device);
             if (BindlessHeap()) RunPixelRefusalTests(*device);

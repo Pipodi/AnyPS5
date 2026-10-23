@@ -341,7 +341,6 @@ std::string libraryRefusals(const Context& context, const State& state, std::spa
     add(BarycentricPatches(state, shaders), "barycentric");
     add(SplitsAlternateAlpha(state), "alternate-alpha");
     add(!state.blendedColors.empty(), "blended-colors");
-    add(BindlessHeapStages(shaders) != 0u, "bindless");
     add(std::ranges::any_of(shaders, [](const CompiledShader& shader) { return shader.program != nullptr && shader.program->functionLdsBuffer; }), "function-lds");
     add(FragmentInterlock(shaders), "fragment-interlock");
     add(std::any_of(shaders.begin(), shaders.end(), [](const CompiledShader& shader) { return shader.stage == Stage::Geometry; }), "geometry");
@@ -351,7 +350,7 @@ std::string libraryRefusals(const Context& context, const State& state, std::spa
 
 bool libraryKeys(PipelineLibraryKeys& keys, const Context& context, const State& state, const VertexInputLayout& input, const PipelineSetLayouts& resources, std::span<const CompiledShader> shaders) {
     using Stage = ShaderRecompiler::ShaderStage;
-    if (!context.graphicsPipelineLibrary || context.pipelineExecutableInfo || (state.stages.tessellation && !context.tessellationPipelineCache) || state.depthBiasPerFace || state.rectList || BarycentricPatches(state, shaders) || SplitsAlternateAlpha(state) || !state.blendedColors.empty() || BindlessHeapStages(shaders) != 0u || std::ranges::any_of(shaders, [](const CompiledShader& shader) { return shader.program != nullptr && shader.program->functionLdsBuffer; }) || FragmentInterlock(shaders)) return false;
+    if (!context.graphicsPipelineLibrary || context.pipelineExecutableInfo || (state.stages.tessellation && !context.tessellationPipelineCache) || state.depthBiasPerFace || state.rectList || BarycentricPatches(state, shaders) || SplitsAlternateAlpha(state) || !state.blendedColors.empty() || std::ranges::any_of(shaders, [](const CompiledShader& shader) { return shader.program != nullptr && shader.program->functionLdsBuffer; }) || FragmentInterlock(shaders)) return false;
     keys = {};
     for (const auto& shader : shaders) {
         const auto identity = shader.program->Identity();
@@ -442,6 +441,7 @@ bool libraryKeys(PipelineLibraryKeys& keys, const Context& context, const State&
     if (!resources.split) {
         appendKey(keys.layout, pushStagesOf(context));
         for (const auto word : resources.mainKey) appendKey(keys.layout, word);
+        appendKey(keys.layout, BindlessHeapStages(shaders));
         keys.preRasterizationLayout = keys.fragmentLayout = keys.layout;
         return true;
     }
@@ -457,6 +457,7 @@ bool libraryKeys(PipelineLibraryKeys& keys, const Context& context, const State&
             appendKey(key, resources.fragmentKey.size());
             for (const auto word : resources.fragmentKey) appendKey(key, word);
         }
+        appendKey(key, BindlessHeapStages(shaders));
     };
     splitKey(keys.layout, 3u);
     splitKey(keys.preRasterizationLayout, keys.preRasterizationSets);
