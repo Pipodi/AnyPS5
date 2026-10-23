@@ -58,6 +58,7 @@ public:
     // construction: the attachment formats alone decide).
     void Continue(VkCommandBuffer commands, const State& state, PassBinding* bound = nullptr) const;
     bool SplitsFaces() const { return backFaces != VK_NULL_HANDLE; }
+    bool Libraries() const { return libraries; }
     bool Optimized() const { return optimized != nullptr && optimized->handle.load() != VK_NULL_HANDLE; }
     void ContinueBackFaces(VkCommandBuffer commands, const State& state) const;
     bool SplitsSecondChannel() const { return secondChannel != VK_NULL_HANDLE; }

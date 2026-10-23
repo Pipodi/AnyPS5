@@ -28,6 +28,7 @@
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace AgcDriver::Graphics {
@@ -1339,10 +1340,18 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
     // Built outside the mutex: a draw that finds its pipeline resident is not held behind another
     // thread's build (the journal replay builds here too), and a device's driver compiles in
     // parallel when several threads build at once.
+    static const bool logBuilds = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
+    const auto buildStart = std::chrono::steady_clock::now();
     auto pipeline = std::make_shared<Pipeline>(context, state, vertexInput, resources, shaders, attachmentLayout);
+    const auto buildUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - buildStart).count();
     const bool replaying = PipelineJournalReplaying();
     {
         std::lock_guard lock(store.mutex);
+        if (logBuilds) {
+            static std::unordered_set<std::uint64_t> built;
+            const bool rebuilt = !built.insert(hash).second;
+            std::fprintf(stderr, "[pipebuild] %.1f ms %s %s stages=%zu replay=%d key=0x%016llx\n", static_cast<double>(buildUs) / 1000.0, rebuilt ? "rebuild" : "first", pipeline->Libraries() ? "libraries" : "whole", shaders.size(), replaying ? 1 : 0, static_cast<unsigned long long>(hash));
+        }
         bool collision = false;
         if (auto raced = lookup(collision)) return raced;
         if (collision) {
