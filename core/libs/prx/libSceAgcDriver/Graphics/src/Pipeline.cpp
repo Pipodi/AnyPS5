@@ -1366,6 +1366,7 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
     // thread's build (the journal replay builds here too), and a device's driver compiles in
     // parallel when several threads build at once.
     static const bool logBuilds = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
+    const auto partsBefore = logBuilds ? PipelineLibraryCountersOf(context.device) : PipelineLibraryCounters{};
     const auto buildStart = std::chrono::steady_clock::now();
     auto pipeline = std::make_shared<Pipeline>(context, state, vertexInput, resources, shaders, attachmentLayout);
     const auto buildUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - buildStart).count();
@@ -1376,7 +1377,8 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
             static std::unordered_set<std::uint64_t> built;
             const bool rebuilt = !built.insert(hash).second;
             const auto refusals = pipeline->Libraries() ? std::string("-") : libraryRefusals(context, state, shaders);
-            std::fprintf(stderr, "[pipebuild] %.1f ms %s %s stages=%zu replay=%d key=0x%016llx refused=%s\n", static_cast<double>(buildUs) / 1000.0, rebuilt ? "rebuild" : "first", pipeline->Libraries() ? "libraries" : "whole", shaders.size(), replaying ? 1 : 0, static_cast<unsigned long long>(hash), refusals.c_str());
+            const auto partsAfter = PipelineLibraryCountersOf(context.device);
+            std::fprintf(stderr, "[pipebuild] %.1f ms %s %s stages=%zu replay=%d key=0x%016llx parts=%llu/%llu refused=%s\n", static_cast<double>(buildUs) / 1000.0, rebuilt ? "rebuild" : "first", pipeline->Libraries() ? "libraries" : "whole", shaders.size(), replaying ? 1 : 0, static_cast<unsigned long long>(hash), static_cast<unsigned long long>(partsAfter.built[1] - partsBefore.built[1]), static_cast<unsigned long long>(partsAfter.built[2] - partsBefore.built[2]), refusals.c_str());
         }
         bool collision = false;
         if (auto raced = lookup(collision)) return raced;

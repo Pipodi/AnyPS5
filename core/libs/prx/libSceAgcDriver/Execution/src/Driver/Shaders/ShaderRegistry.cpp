@@ -1611,11 +1611,15 @@ void PrebuildStageLibrary(const std::shared_ptr<VulkanDevice>& device, const Gra
     if (LibraryPrebuildDisabled() || result == nullptr || (stage != ShaderRecompiler::ShaderStage::Vertex && stage != ShaderRecompiler::ShaderStage::Fragment)) return;
     SubmitLibraryPrebuild([device, stages, stage, result = std::move(result), pushOffset] {
         const std::array<Graphics::CompiledShader, 1> shaders{{{stage, result.get(), result->pushConstants.empty() ? 0u : pushOffset}}};
+        static const bool logBuilds = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
+        const auto start = std::chrono::steady_clock::now();
+        bool built = false;
         try {
-            static_cast<void>(device->PrebuildGraphicsLibraries(stages, shaders));
+            built = device->PrebuildGraphicsLibraries(stages, shaders);
         } catch (const std::exception& error) {
             APS5_LOG_OUT("shader library prebuild skipped: %s", error.what());
         }
+        if (logBuilds) std::fprintf(stderr, "[libprebuild] %.1f ms %s heap=%d\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), built ? "ok" : "skipped", shaders[0].program->bindlessHeap ? 1 : 0);
     });
 }
 
