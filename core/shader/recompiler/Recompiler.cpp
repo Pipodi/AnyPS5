@@ -708,7 +708,12 @@ CompiledVariant emitVariant(const RecompileRequest& request, IrProgram& program)
         targetOptions.spannedWaves = false;
         result.spirv = spirvEmitter.Emit(program, inputInfo, bindings, targetOptions, &emitted);
     }
-    if (registration && result.spirv.size() > request.target.registrationWordLimit) {
+    static const auto heapWordLimit = [] {
+        const char* value = std::getenv("APS5_REGISTRATION_HEAP_WORD_LIMIT");
+        return value != nullptr ? static_cast<std::uint32_t>(std::strtoul(value, nullptr, 10)) : 0u;
+    }();
+    const auto wordLimit = heapWordLimit != 0u && request.target.bindlessImages && ResourceMaterializer::UsesBindlessImages(program.Info(), program.Resources().stage) ? std::max(heapWordLimit, request.target.registrationWordLimit) : request.target.registrationWordLimit;
+    if (registration && result.spirv.size() > wordLimit) {
         registration = false;
         program.Metadata().bindingLayoutComplete = false;
         bindings = bindingAllocator.Allocate(program, request.layout, false, stencilReplay);
@@ -2238,6 +2243,14 @@ std::shared_ptr<const RecompileResult> RegistrationResult(const RecompileRequest
     snapshot.samplers.assign(info.samplers.size(), {{}, 4u});
     snapshot.userData.assign(RuntimeAbi::UserDataCapacity, 0u);
     snapshot.flattenedSrt.assign(1u, 0u);
+    std::uint32_t tables = 0;
+    for (const auto& image : info.images) {
+        if (image.table != NoTable) tables = std::max(tables, image.table + 1u);
+    }
+    for (const auto& sampler : info.samplers) {
+        if (sampler.table != NoTable) tables = std::max(tables, sampler.table + 1u);
+    }
+    snapshot.tables.tables.resize(tables);
     return std::make_shared<RecompileResult>(materializeResult(*handle.artifact, request, snapshot, true));
 }
 
