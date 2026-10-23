@@ -25,6 +25,7 @@
 #include <list>
 #include <mutex>
 #include <spirv/unified1/spirv.hpp>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
@@ -322,6 +323,30 @@ void appendKey(std::vector<std::byte>& key, const TValue& value) {
     static_assert(std::is_trivially_copyable_v<TValue>);
     const auto bytes = std::as_bytes(std::span(&value, 1));
     key.insert(key.end(), bytes.begin(), bytes.end());
+}
+
+std::string libraryRefusals(const Context& context, const State& state, std::span<const CompiledShader> shaders) {
+    using Stage = ShaderRecompiler::ShaderStage;
+    std::string reasons;
+    const auto add = [&](bool refused, const char* name) {
+        if (!refused) return;
+        if (!reasons.empty()) reasons += '+';
+        reasons += name;
+    };
+    add(!context.graphicsPipelineLibrary, "no-gpl");
+    add(context.pipelineExecutableInfo, "executable-info");
+    add(state.stages.tessellation && !context.tessellationPipelineCache, "tessellation");
+    add(state.depthBiasPerFace, "per-face-bias");
+    add(state.rectList, "rect-list");
+    add(BarycentricPatches(state, shaders), "barycentric");
+    add(SplitsAlternateAlpha(state), "alternate-alpha");
+    add(!state.blendedColors.empty(), "blended-colors");
+    add(BindlessHeapStages(shaders) != 0u, "bindless");
+    add(std::ranges::any_of(shaders, [](const CompiledShader& shader) { return shader.program != nullptr && shader.program->functionLdsBuffer; }), "function-lds");
+    add(FragmentInterlock(shaders), "fragment-interlock");
+    add(std::any_of(shaders.begin(), shaders.end(), [](const CompiledShader& shader) { return shader.stage == Stage::Geometry; }), "geometry");
+    add(std::any_of(shaders.begin(), shaders.end(), [](const CompiledShader& shader) { return shader.program->Identity().Empty(); }), "no-identity");
+    return reasons.empty() ? std::string("none") : reasons;
 }
 
 bool libraryKeys(PipelineLibraryKeys& keys, const Context& context, const State& state, const VertexInputLayout& input, const PipelineSetLayouts& resources, std::span<const CompiledShader> shaders) {
@@ -1350,7 +1375,8 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
         if (logBuilds) {
             static std::unordered_set<std::uint64_t> built;
             const bool rebuilt = !built.insert(hash).second;
-            std::fprintf(stderr, "[pipebuild] %.1f ms %s %s stages=%zu replay=%d key=0x%016llx\n", static_cast<double>(buildUs) / 1000.0, rebuilt ? "rebuild" : "first", pipeline->Libraries() ? "libraries" : "whole", shaders.size(), replaying ? 1 : 0, static_cast<unsigned long long>(hash));
+            const auto refusals = pipeline->Libraries() ? std::string("-") : libraryRefusals(context, state, shaders);
+            std::fprintf(stderr, "[pipebuild] %.1f ms %s %s stages=%zu replay=%d key=0x%016llx refused=%s\n", static_cast<double>(buildUs) / 1000.0, rebuilt ? "rebuild" : "first", pipeline->Libraries() ? "libraries" : "whole", shaders.size(), replaying ? 1 : 0, static_cast<unsigned long long>(hash), refusals.c_str());
         }
         bool collision = false;
         if (auto raced = lookup(collision)) return raced;
