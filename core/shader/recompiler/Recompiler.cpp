@@ -2209,9 +2209,29 @@ const CompiledShaderArtifact& GetPreparedArtifact(const SourceHandle& handle) {
 
 std::shared_ptr<const RecompileResult> RegistrationResult(const RecompileRequest& request, const SourceHandle& handle) {
     if (handle.artifact == nullptr || !MatchesPreparedShader(request, handle)) throw std::runtime_error("ShaderRecompiler: prepared artifact does not match the static ABI");
-    if (!request.target.registrationModules || !handle.artifact->artifact.registrationModule) return nullptr;
+    static const bool logResults = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
+    const auto& artifact = handle.artifact->artifact;
+    const auto note = [&](const char* outcome) {
+        if (logResults) std::fprintf(stderr, "[regresult] 0x%llx stage=%u words=%zu heap=%d %s\n", static_cast<unsigned long long>(request.shader.codeAddress), static_cast<unsigned>(request.shader.stage), artifact.spirv.size(), artifact.bindlessHeap ? 1 : 0, outcome);
+    };
+    if (!request.target.registrationModules) {
+        note("no-target");
+        return nullptr;
+    }
+    if (!artifact.registrationModule) {
+        note("no-module");
+        return nullptr;
+    }
     const auto& info = handle.artifact->info.info;
-    if (std::ranges::any_of(info.buffers, [](const BufferResource& buffer) { return buffer.descriptorFormatted; }) || std::ranges::any_of(info.samplers, [](const SamplerResource& sampler) { return FoldsTexelOffsets(sampler); })) return nullptr;
+    if (std::ranges::any_of(info.buffers, [](const BufferResource& buffer) { return buffer.descriptorFormatted; })) {
+        note("formatted-buffer");
+        return nullptr;
+    }
+    if (std::ranges::any_of(info.samplers, [](const SamplerResource& sampler) { return FoldsTexelOffsets(sampler); })) {
+        note("texel-offset");
+        return nullptr;
+    }
+    note("ok");
     ResourceSnapshot snapshot;
     snapshot.buffers.assign(info.buffers.size(), {{}, 4u});
     snapshot.images.assign(info.images.size(), {{}, 8u});
