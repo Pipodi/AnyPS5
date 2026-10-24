@@ -32,11 +32,16 @@ public:
         appendInterface(key, request);
     }
 
-    static void BuildInterface(const RecompileRequest& request, std::vector<std::uint64_t>& key) {
+    using Sections = std::vector<std::pair<const char*, std::uint32_t>>;
+
+    static void BuildInterface(const RecompileRequest& request, std::vector<std::uint64_t>& key, Sections* sections = nullptr) {
         key.clear();
+        if (sections != nullptr) sections->clear();
+        mark(sections, key, "abi");
         append(key, RuntimeAbi::Version);
+        mark(sections, key, "stage");
         append(key, request.shader.stage);
-        appendInterface(key, request);
+        appendInterface(key, request, sections);
     }
 
     // A hash over every field Build appends except the code, the target and the probe flag: the
@@ -81,21 +86,40 @@ public:
     }
 
 private:
-    static void appendInterface(std::vector<std::uint64_t>& key, const RecompileRequest& request) {
+    static void mark(Sections* sections, const std::vector<std::uint64_t>& key, const char* name) {
+        if (sections != nullptr) sections->emplace_back(name, static_cast<std::uint32_t>(key.size()));
+    }
+
+    static void appendInterface(std::vector<std::uint64_t>& key, const RecompileRequest& request, Sections* sections = nullptr) {
+        mark(sections, key, "wave");
         append(key, request.context.waveSize);
+        mark(sections, key, "userDataBase");
         append(key, request.context.userDataBaseRegister);
+        mark(sections, key, "userDataCount");
         append(key, request.context.userData.size());
+        mark(sections, key, "compute");
         append(key, request.context.compute);
+        mark(sections, key, "pixel");
         append(key, request.context.pixel);
+        mark(sections, key, "vertex");
         append(key, request.context.vertex);
+        mark(sections, key, "floatMode");
         append(key, request.context.floatMode);
+        mark(sections, key, "convertedSamples");
         append(key, request.context.convertedSamples);
+        mark(sections, key, "linkedCallFallbacks");
         appendFallbacks(key, request);
+        mark(sections, key, "mesh");
         appendMesh(key, request);
+        mark(sections, key, "tessellation");
         appendTessellation(key, request);
+        mark(sections, key, "target");
         append(key, request.target);
+        mark(sections, key, "debugProbe");
         append(key, DebugProbeActive());
+        mark(sections, key, "rayTracingStrict");
         append(key, RayTracingStrict());
+        mark(sections, key, "rayTracingMiss");
         append(key, RayTracingMiss());
     }
 

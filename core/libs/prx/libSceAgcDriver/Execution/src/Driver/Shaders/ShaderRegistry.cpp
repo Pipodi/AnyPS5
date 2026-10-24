@@ -2040,6 +2040,60 @@ unsigned RegistrationPreparationThreads() {
     return RegistrationPreparePool::LiveWorkers();
 }
 
+namespace {
+
+std::atomic<std::uint64_t>& PreparedReuseHits() {
+    static std::atomic<std::uint64_t> hits{0};
+    return hits;
+}
+
+std::atomic<std::uint64_t>& PreparedReuseMisses() {
+    static std::atomic<std::uint64_t> misses{0};
+    return misses;
+}
+
+bool LogPreparedMisses() {
+    static const bool enabled = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
+    return enabled;
+}
+
+template <typename Entries>
+void LogPreparedMiss(const ShaderSnapshot& snapshot, std::uint32_t codeOffset, ShaderRecompiler::ShaderStage stage, const Entries& entries, const ShaderRecompiler::RecompileRequest& request) {
+    if (stage != ShaderRecompiler::ShaderStage::Vertex && stage != ShaderRecompiler::ShaderStage::Fragment) return;
+    if (entries.empty()) return;
+    static std::mutex mutex;
+    static std::set<std::string> seen;
+    const auto misses = PreparedReuseMisses().fetch_add(1) + 1;
+    const char* stageName = stage == ShaderRecompiler::ShaderStage::Vertex ? "Vertex" : "Fragment";
+    const auto address = static_cast<unsigned long long>(snapshot.codeAddress + static_cast<std::uint64_t>(codeOffset) * sizeof(std::uint32_t));
+    unsigned shown = 0;
+    bool sameOffset = false;
+    for (const auto& entry : entries) {
+        if (entry.codeOffset != codeOffset || entry.handle == nullptr) continue;
+        sameOffset = true;
+        if (shown == 3u) break;
+        const auto diff = ShaderRecompiler::DescribePreparedMismatch(request, *entry.handle);
+        const auto identity = std::string(stageName) + ":" + std::to_string(address) + ":" + diff;
+        ++shown;
+        {
+            std::lock_guard lock(mutex);
+            if (!seen.insert(identity).second) continue;
+        }
+        std::fprintf(stderr, "[prepmiss] stage=%s addr=0x%llx entry=%u/%zu hits=%llu misses=%llu diff: %s\n", stageName, address, shown, entries.size(), static_cast<unsigned long long>(PreparedReuseHits().load()), static_cast<unsigned long long>(misses), diff.empty() ? "none" : diff.c_str());
+    }
+    if (sameOffset) return;
+    std::string offsets;
+    for (const auto& entry : entries) offsets += (offsets.empty() ? "" : ",") + std::to_string(entry.codeOffset);
+    const auto identity = std::string(stageName) + ":" + std::to_string(address) + ":offset:" + offsets;
+    {
+        std::lock_guard lock(mutex);
+        if (!seen.insert(identity).second) return;
+    }
+    std::fprintf(stderr, "[prepmiss] stage=%s addr=0x%llx codeOffset=%u entryOffsets=%s hits=%llu misses=%llu diff: no entry at this code offset\n", stageName, address, codeOffset, offsets.c_str(), static_cast<unsigned long long>(PreparedReuseHits().load()), static_cast<unsigned long long>(misses));
+}
+
+}
+
 std::vector<PreparedGraphicsStage> PrepareGraphicsStages(const DrawDecode& decoded, const ShaderRecompiler::SpirvTarget& target, bool deferUnprepared) {
     ShaderPreparationTransaction transaction;
     require(decoded.programs.size() == decoded.roles.size(), "graphics ABI program roles are incomplete");
@@ -2097,13 +2151,16 @@ std::vector<PreparedGraphicsStage> PrepareGraphicsStages(const DrawDecode& decod
         std::vector<std::uint64_t> key;
         ShaderRecompiler::BuildPreparedShaderKey(request, key);
         std::shared_ptr<const ShaderRecompiler::SourceHandle> handle;
-        for (const auto& entry : transaction.Read(*program.snapshot).entries) {
+        const auto& snapshotEntries = transaction.Read(*program.snapshot).entries;
+        for (const auto& entry : snapshotEntries) {
             if (entry.codeOffset == program.codeOffset && ShaderRecompiler::MatchesPreparedShader(request, *entry.handle, key)) {
                 handle = entry.handle;
+                if (LogPreparedMisses()) PreparedReuseHits().fetch_add(1);
                 break;
             }
         }
         if (handle == nullptr) {
+            if (LogPreparedMisses()) LogPreparedMiss(*program.snapshot, program.codeOffset, program.binary.stage, snapshotEntries, request);
             PerformanceTimer timing("Shader.PrepareArtifact");
             try {
                 handle = PrepareShaderWithDiagnostics(request);

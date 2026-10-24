@@ -6,6 +6,9 @@
 #include "Optimization/SrtWalker.hpp"
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace ShaderRecompiler {
 
@@ -57,6 +60,7 @@ struct SourceHandle {
     std::shared_ptr<SourceEntry> source;
     std::shared_ptr<const CompiledVariant> artifact;
     std::vector<std::uint64_t> staticKey;
+    std::vector<std::pair<const char*, std::uint32_t>> staticSections;
 };
 class PreparedShaderInvocation {
 public:
@@ -76,6 +80,8 @@ private:
 [[nodiscard]] std::shared_ptr<const SourceHandle> PrepareShader(const RecompileRequest& request, ShaderPreparationContext* preparation);
 [[nodiscard]] bool MatchesPreparedShader(const RecompileRequest& request, const SourceHandle& handle);
 void BuildPreparedShaderKey(const RecompileRequest& request, std::vector<std::uint64_t>& key);
+
+[[nodiscard]] std::string DescribePreparedMismatch(const RecompileRequest& request, const SourceHandle& handle);
 [[nodiscard]] bool MatchesPreparedShader(const RecompileRequest& request, const SourceHandle& handle, std::span<const std::uint64_t> key);
 [[nodiscard]] const CompiledShaderArtifact& GetPreparedArtifact(const SourceHandle& handle);
 [[nodiscard]] std::shared_ptr<const RecompileResult> RegistrationResult(const RecompileRequest& request, const SourceHandle& handle);

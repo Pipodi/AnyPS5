@@ -10,6 +10,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstdio>
+#include <iterator>
+#include <string>
+#include <string_view>
 #include "CacheKey.hpp"
 #include "CompiledVariant.hpp"
 #include "VertexInputSpecialization.hpp"
@@ -2134,7 +2137,8 @@ std::shared_ptr<const SourceHandle> PrepareShader(const RecompileRequest& reques
         static_cast<void>(RequestInputInfo(request));
         auto handle = std::make_shared<SourceHandle>();
         handle->source = LazyCapturePlan() ? findSource(request) : getSource(request, preparation, false);
-        RecompileCacheKey::BuildInterface(request, handle->staticKey);
+        RecompileCacheKey::BuildInterface(request, handle->staticKey, &handle->staticSections);
+        handle->staticSections.emplace_back("hostSubgroup", static_cast<std::uint32_t>(handle->staticKey.size()));
         handle->staticKey.push_back(HostSubgroupSize(request));
         bool cacheHit = false;
         std::lock_guard lock(handle->source->mutex);
@@ -2167,6 +2171,67 @@ bool MatchesPreparedShader(const RecompileRequest& request, const SourceHandle& 
     if (!handle.artifact->artifact.stencilReferences.empty() && (prepared.stencilReferenceDword >= layout.pushConstantSizeBytes / 4u || prepared.stencilReferenceDword != (usesPush ? words : 0u))) return false;
     if (!std::ranges::equal(key, handle.staticKey) || handle.source->code.size() != request.shader.code.size()) return false;
     return handle.source->code.data() == request.shader.code.data() || std::ranges::equal(handle.source->code, request.shader.code);
+}
+
+std::string DescribePreparedMismatch(const RecompileRequest& request, const SourceHandle& handle) {
+    if (handle.source == nullptr || handle.artifact == nullptr) return "handle=empty";
+    std::string text;
+    const auto add = [&](const std::string& name, unsigned long long registered, unsigned long long drawn) {
+        char value[96];
+        std::snprintf(value, sizeof(value), "=0x%llx->0x%llx", registered, drawn);
+        if (!text.empty()) text += ' ';
+        text += name;
+        text += value;
+    };
+    std::vector<std::uint64_t> key;
+    std::vector<std::pair<const char*, std::uint32_t>> sections;
+    RecompileCacheKey::BuildInterface(request, key, &sections);
+    sections.emplace_back("hostSubgroup", static_cast<std::uint32_t>(key.size()));
+    key.push_back(HostSubgroupSize(request));
+    static constexpr const char* vertexFields[] = {"has", "fetchAttribReg", "fetchBufferReg", "fetchEmbedded", "paClVsOutCntl", "drawBaseVertexSgpr", "drawStartInstanceSgpr", "depthRemapMode", "resourcesNum"};
+    const auto& registeredKey = handle.staticKey;
+    const auto& registeredSections = handle.staticSections;
+    if (registeredSections.size() != sections.size()) {
+        add("sections", registeredSections.size(), sections.size());
+    } else {
+        for (std::size_t index = 0; index < sections.size(); ++index) {
+            const std::string_view name = sections[index].first;
+            const auto drawBegin = sections[index].second;
+            const auto drawEnd = index + 1 < sections.size() ? sections[index + 1].second : static_cast<std::uint32_t>(key.size());
+            const auto registeredBegin = registeredSections[index].second;
+            const auto registeredEnd = index + 1 < registeredSections.size() ? registeredSections[index + 1].second : static_cast<std::uint32_t>(registeredKey.size());
+            if (drawEnd - drawBegin != registeredEnd - registeredBegin) {
+                add(std::string(name) + ".size", registeredEnd - registeredBegin, drawEnd - drawBegin);
+                continue;
+            }
+            unsigned shown = 0;
+            for (std::uint32_t offset = 0; offset < drawEnd - drawBegin; ++offset) {
+                if (registeredKey[registeredBegin + offset] == key[drawBegin + offset]) continue;
+                if (++shown > 4u) break;
+                std::string label(name);
+                if (drawEnd - drawBegin > 1u) {
+                    if (name == "vertex" && offset < std::size(vertexFields)) label += std::string(".") + vertexFields[offset];
+                    else label += "[" + std::to_string(offset) + "]";
+                }
+                add(label, registeredKey[registeredBegin + offset], key[drawBegin + offset]);
+            }
+        }
+    }
+    const auto& layout = request.layout;
+    const auto& registeredLayout = handle.artifact->layout;
+    const auto& prepared = handle.artifact->bindings.layout;
+    if (layout.descriptorSet != registeredLayout.descriptorSet) add("layout.set", registeredLayout.descriptorSet, layout.descriptorSet);
+    if (layout.firstBinding != registeredLayout.firstBinding) add("layout.firstBinding", registeredLayout.firstBinding, layout.firstBinding);
+    if (layout.pushConstantOffsetBytes != registeredLayout.pushConstantOffsetBytes) add("layout.pushOffset", registeredLayout.pushConstantOffsetBytes, layout.pushConstantOffsetBytes);
+    if (layout.pushConstantSizeBytes != registeredLayout.pushConstantSizeBytes) add("layout.pushSize", registeredLayout.pushConstantSizeBytes, layout.pushConstantSizeBytes);
+    if (layout.pushConstantOffsetBytes % 4u != 0u || layout.pushConstantSizeBytes % 4u != 0u || layout.pushConstantOffsetBytes > NativePushConstantSize || layout.pushConstantSizeBytes > NativePushConstantSize - layout.pushConstantOffsetBytes) add("check.pushRange", 1, 0);
+    const auto words = prepared.ShaderDataDwords();
+    const bool usesPush = prepared.runtimeImageCount == 0u && words != 0u && words <= layout.pushConstantSizeBytes / 4u;
+    if (prepared.UsesPushData() != usesPush) add("check.usesPush", prepared.UsesPushData() ? 1 : 0, usesPush ? 1 : 0);
+    if (!handle.artifact->artifact.stencilReferences.empty() && (prepared.stencilReferenceDword >= layout.pushConstantSizeBytes / 4u || prepared.stencilReferenceDword != (usesPush ? words : 0u))) add("check.stencilReference", prepared.stencilReferenceDword, usesPush ? words : 0u);
+    if (handle.source->code.size() != request.shader.code.size()) add("code.size", handle.source->code.size(), request.shader.code.size());
+    else if (handle.source->code.data() != request.shader.code.data() && !std::ranges::equal(handle.source->code, request.shader.code)) add("code.content", 0, 1);
+    return text;
 }
 
 std::span<const std::uint32_t> GetPreparedCode(const SourceHandle& handle) {
