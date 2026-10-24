@@ -269,7 +269,7 @@ VkPipeline LinkPipelineFromLibraries(const Context& context, const VkGraphicsPip
             const auto statePart = shader.subspan(identityBytes);
             const auto multisample = info.pMultisampleState;
             const auto depthStencil = info.pDepthStencilState;
-            std::fprintf(stderr, "[fragpart] pre=%d spirv=%016llx id=%016llx state=%016llx layout=%016llx att=%u/%u/%u samples=%u sampleShading=%u depthStencil=%d\n", partsOnly ? 1 : 0, static_cast<unsigned long long>(keys.fragmentSpirv), static_cast<unsigned long long>(hash(shader.first(identityBytes))), static_cast<unsigned long long>(hash(statePart)), static_cast<unsigned long long>(hash(keys.fragmentLayout)), attachments[0], attachments[1], attachments[2], multisample != nullptr ? static_cast<unsigned>(multisample->rasterizationSamples) : 0u, multisample != nullptr ? static_cast<unsigned>(multisample->sampleShadingEnable) : 0u, depthStencil != nullptr ? 1 : 0, keys.fragmentDetail.c_str());
+            std::fprintf(stderr, "[fragpart] pre=%d spirv=%016llx id=%016llx state=%016llx layout=%016llx att=%u/%u/%u samples=%u sampleShading=%u depthStencil=%d %s\n", partsOnly ? 1 : 0, static_cast<unsigned long long>(keys.fragmentSpirv), static_cast<unsigned long long>(hash(shader.first(identityBytes))), static_cast<unsigned long long>(hash(statePart)), static_cast<unsigned long long>(hash(keys.fragmentLayout)), attachments[0], attachments[1], attachments[2], multisample != nullptr ? static_cast<unsigned>(multisample->rasterizationSamples) : 0u, multisample != nullptr ? static_cast<unsigned>(multisample->sampleShadingEnable) : 0u, depthStencil != nullptr ? 1 : 0, keys.fragmentDetail.c_str());
         }
         libraries.push_back(handle);
     }
