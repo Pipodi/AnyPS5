@@ -376,6 +376,8 @@ bool libraryKeys(PipelineLibraryKeys& keys, const Context& context, const State&
                 }
                 std::snprintf(text, sizeof text, " sg=%u full=%d wg=%u bind=%zu/%016llx", static_cast<unsigned>(program.hostSubgroupSize), program.fullSubgroups ? 1 : 0, static_cast<unsigned>(program.workgroupMemoryDwords), program.bindings.size(), static_cast<unsigned long long>(bindingHash));
                 detail += text;
+                std::snprintf(text, sizeof text, " push=%u ident=%016llx", static_cast<unsigned>(shader.pushConstantOffset), static_cast<unsigned long long>(identity.low));
+                detail += text;
                 keys.fragmentDetail = std::move(detail);
             }
         }
