@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -26,6 +27,7 @@ struct PipelineLibraryKeys {
     std::uint32_t preRasterizationSets = 0;
     std::uint32_t fragmentSets = 0;
     std::uint64_t fragmentSpirv = 0;
+    std::string fragmentDetail;
 };
 
 std::span<const VkDynamicState> PipelineLibraryDynamicStates();

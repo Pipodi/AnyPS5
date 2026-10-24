@@ -357,6 +357,28 @@ bool libraryKeys(PipelineLibraryKeys& keys, const Context& context, const State&
         if (shader.stage == Stage::Geometry || identity.Empty()) return false;
         auto& key = shader.stage == Stage::Fragment ? keys.fragmentShader : keys.preRasterization;
         if (shader.stage == Stage::Fragment) keys.fragmentSpirv = shader.program->spirv.ContentHash().low;
+        if (shader.stage == Stage::Fragment) {
+            static const bool logDetail = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
+            if (logDetail) {
+                const auto& program = *shader.program;
+                std::string detail = "spec=";
+                char text[64];
+                for (const auto& constant : program.specialization) {
+                    std::snprintf(text, sizeof text, "%u:%x,", static_cast<unsigned>(constant.id), static_cast<unsigned>(constant.value));
+                    detail += text;
+                }
+                std::uint64_t bindingHash = 0xcbf29ce484222325ull;
+                for (const auto& binding : program.bindings) {
+                    const std::uint64_t tuple[4] = {binding.descriptorSet, binding.binding, static_cast<std::uint64_t>(binding.kind), binding.count};
+                    for (const auto value : tuple) {
+                        bindingHash = (bindingHash ^ value) * 0x100000001b3ull;
+                    }
+                }
+                std::snprintf(text, sizeof text, " sg=%u full=%d wg=%u bind=%zu/%016llx", static_cast<unsigned>(program.hostSubgroupSize), program.fullSubgroups ? 1 : 0, static_cast<unsigned>(program.workgroupMemoryDwords), program.bindings.size(), static_cast<unsigned long long>(bindingHash));
+                detail += text;
+                keys.fragmentDetail = std::move(detail);
+            }
+        }
         appendKey(key, shader.stage);
         appendKey(key, identity.low);
         appendKey(key, identity.high);
