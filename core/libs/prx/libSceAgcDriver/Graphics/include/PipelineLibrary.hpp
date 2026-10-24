@@ -28,6 +28,7 @@ struct PipelineLibraryKeys {
     std::uint32_t fragmentSets = 0;
     std::uint64_t fragmentSpirv = 0;
     std::string fragmentDetail;
+    std::string preRasterizationDetail;
 };
 
 std::span<const VkDynamicState> PipelineLibraryDynamicStates();

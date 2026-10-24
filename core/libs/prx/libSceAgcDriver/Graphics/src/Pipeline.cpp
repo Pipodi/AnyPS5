@@ -381,6 +381,14 @@ bool libraryKeys(PipelineLibraryKeys& keys, const Context& context, const State&
                 keys.fragmentDetail = std::move(detail);
             }
         }
+        if (shader.stage != Stage::Fragment) {
+            static const bool logStages = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
+            if (logStages) {
+                char text[96];
+                std::snprintf(text, sizeof text, "%u:%016llx:%u,", static_cast<unsigned>(shader.stage), static_cast<unsigned long long>(shader.program->spirv.ContentHash().low), static_cast<unsigned>(shader.pushConstantOffset));
+                keys.preRasterizationDetail += text;
+            }
+        }
         appendKey(key, shader.stage);
         appendKey(key, identity.low);
         appendKey(key, identity.high);
@@ -420,6 +428,12 @@ bool libraryKeys(PipelineLibraryKeys& keys, const Context& context, const State&
     appendKey(keys.preRasterization, state.depth.has_value() && state.depthBias);
     appendKey(keys.preRasterization, state.stages.tessellation.has_value());
     if (state.stages.tessellation) appendKey(keys.preRasterization, state.stages.tessellation->inputControlPoints);
+    static const bool logRaster = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
+    if (logRaster) {
+        char text[160];
+        std::snprintf(text, sizeof text, " prov=%u n11=%u clamp=%u cons=%u bias=%u tess=%u icp=%u", static_cast<unsigned>(state.provokingVertexMode), static_cast<unsigned>(state.negativeOneToOne), static_cast<unsigned>(state.depthClamp && context.depthClamp), static_cast<unsigned>(state.conservativeRasterization), static_cast<unsigned>(state.depth.has_value() && state.depthBias), static_cast<unsigned>(state.stages.tessellation.has_value()), state.stages.tessellation ? static_cast<unsigned>(state.stages.tessellation->inputControlPoints) : 0u);
+        keys.preRasterizationDetail = "stages=" + keys.preRasterizationDetail + text;
+    }
     appendKey(keys.fragmentShader, state.samples);
     appendKey(keys.fragmentOutput, state.samples);
     appendKey(keys.fragmentShader, state.perSampleShading);

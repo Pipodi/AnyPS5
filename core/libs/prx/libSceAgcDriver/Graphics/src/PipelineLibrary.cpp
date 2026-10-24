@@ -271,6 +271,14 @@ VkPipeline LinkPipelineFromLibraries(const Context& context, const VkGraphicsPip
             const auto depthStencil = info.pDepthStencilState;
             std::fprintf(stderr, "[fragpart] pre=%d spirv=%016llx id=%016llx state=%016llx layout=%016llx att=%u/%u/%u samples=%u sampleShading=%u depthStencil=%d %s\n", partsOnly ? 1 : 0, static_cast<unsigned long long>(keys.fragmentSpirv), static_cast<unsigned long long>(hash(shader.first(identityBytes))), static_cast<unsigned long long>(hash(statePart)), static_cast<unsigned long long>(hash(keys.fragmentLayout)), attachments[0], attachments[1], attachments[2], multisample != nullptr ? static_cast<unsigned>(multisample->rasterizationSamples) : 0u, multisample != nullptr ? static_cast<unsigned>(multisample->sampleShadingEnable) : 0u, depthStencil != nullptr ? 1 : 0, keys.fragmentDetail.c_str());
         }
+        if (logParts && flags[part] == VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT) {
+            const auto hash = [](std::span<const std::byte> bytes) {
+                std::uint64_t value = 0xcbf29ce484222325ull;
+                for (const auto byte : bytes) value = (value ^ static_cast<std::uint8_t>(byte)) * 0x100000001b3ull;
+                return value;
+            };
+            std::fprintf(stderr, "[vertpart] pre=%d key=%016llx layout=%016llx att=%u/%u/%u %s\n", partsOnly ? 1 : 0, static_cast<unsigned long long>(hash(keys.preRasterization)), static_cast<unsigned long long>(hash(keys.preRasterizationLayout)), attachments[0], attachments[1], attachments[2], keys.preRasterizationDetail.c_str());
+        }
         libraries.push_back(handle);
     }
     if (partsOnly) return VK_NULL_HANDLE;
