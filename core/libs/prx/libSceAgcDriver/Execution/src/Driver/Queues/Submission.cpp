@@ -228,6 +228,7 @@ ReferencedProgramScan ReferencedPrograms(std::span<const std::uint32_t> commands
     constexpr std::array<std::uint32_t, 6> programRegisters{0x008u, 0x088u, 0x0c8u, 0x108u, 0x148u, 0x20cu};
     std::array<std::uint32_t, programRegisters.size() * 2> values{};
     std::array<bool, programRegisters.size() * 2> written{};
+    std::array<bool, programRegisters.size()> bound{};
     ReferencedProgramScan scan;
     const auto write = [&](std::uint32_t offset, std::uint32_t value) {
         const auto base = std::ranges::find_if(programRegisters, [&](std::uint32_t program) { return offset - program < 2u; });
@@ -236,13 +237,18 @@ ReferencedProgramScan ReferencedPrograms(std::span<const std::uint32_t> commands
         values[slot] = value;
         written[slot] = true;
         const auto low = slot & ~std::size_t{1};
-        if (written[low] && written[low + 1]) scan.addresses.push_back((static_cast<std::uint64_t>(values[low]) << 8u) | (static_cast<std::uint64_t>(values[low + 1] & 0xffu) << 40u));
+        if (written[low] && written[low + 1]) {
+            bound[low / 2] = true;
+            scan.addresses.push_back((static_cast<std::uint64_t>(values[low]) << 8u) | (static_cast<std::uint64_t>(values[low + 1] & 0xffu) << 40u));
+        }
     };
     for (std::size_t cursor = 0; cursor < commands.size(); cursor += Pm4::PacketWords(commands[cursor])) {
         const auto header = commands[cursor];
         if ((header >> 30u) != 3u) continue;
         const auto opcode = (header >> 8u) & 0xffu;
         const auto words = std::min<std::size_t>(Pm4::PacketWords(header), commands.size() - cursor);
+        if (Pm4::DrawOpcode(opcode) && !std::any_of(bound.begin(), bound.end() - 1, [](bool pair) { return pair; })) scan.complete = false;
+        if ((opcode == 0x15u || opcode == 0x16u) && !bound.back()) scan.complete = false;
         if (opcode == 0x76u && words >= 3) {
             const auto packet = commands.subspan(cursor, words);
             if (Pm4::IsTagMarker(packet)) continue;
@@ -251,6 +257,10 @@ ReferencedProgramScan ReferencedPrograms(std::span<const std::uint32_t> commands
         } else if (opcode == 0x63u) {
             const auto list = registerLists.find(cursor);
             if (list == registerLists.end()) continue;
+            if (!Pm4::IndirectRegistersValid(list->second)) {
+                scan.complete = false;
+                continue;
+            }
             for (std::size_t i = 0; i + 1 < list->second.size(); i += 2) write(list->second[i] & ~0x70000000u, list->second[i + 1]);
         }
     }
@@ -457,7 +467,7 @@ void Driver::Submit(const Packet* packet, std::uint32_t queue, bool cpuFlip) {
     waitForFlipRoom(submission);
     holdFlipBehindWorker(submission);
     const auto scan = ReferencedPrograms(submission.commands, submission.registerLists);
-    if (!scan.complete) {
+    if (!scan.complete || submission.rewindTail != nullptr) {
         AwaitRegistrationPreparation();
     } else {
         std::shared_ptr<const ShaderRegistry> registry;
