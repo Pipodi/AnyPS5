@@ -19,6 +19,11 @@ public:
         std::uint64_t budgetBytes = 0;
         std::uint64_t smallBytes = 256ull << 20u;
         std::function<std::uint64_t()> availableBytes;
+        std::uint64_t reserveBytes = 0;
+        std::function<std::uint64_t()> reserveAvailableBytes;
+        std::uint32_t maxLarge = 2;
+        std::uint32_t recheckMilliseconds = 250;
+        bool log = false;
     };
 
     struct Stats {
@@ -31,20 +36,24 @@ public:
         std::uint64_t peakInFlight = 0;
         std::uint64_t peakBytes = 0;
         std::uint64_t budgetBytes = 0;
+        std::uint64_t admittedByReserve = 0;
+        std::uint64_t minAvailableBytes = 0;
+        std::uint64_t reserveBytes = 0;
     };
 
     class Ticket {
     public:
         Ticket() = default;
-        Ticket(PipelineCreationGate* gate, std::uint64_t bytes) : gate(gate), bytes(bytes) {}
+        Ticket(PipelineCreationGate* gate, std::uint64_t bytes, bool large = false) : gate(gate), bytes(bytes), large(large) {}
         Ticket(const Ticket&) = delete;
         Ticket& operator=(const Ticket&) = delete;
-        Ticket(Ticket&& other) noexcept : gate(other.gate), bytes(other.bytes) { other.gate = nullptr; }
+        Ticket(Ticket&& other) noexcept : gate(other.gate), bytes(other.bytes), large(other.large) { other.gate = nullptr; }
         Ticket& operator=(Ticket&& other) noexcept {
             if (this != &other) {
                 release();
                 gate = other.gate;
                 bytes = other.bytes;
+                large = other.large;
                 other.gate = nullptr;
             }
             return *this;
@@ -53,12 +62,13 @@ public:
 
     private:
         void release() noexcept {
-            if (gate != nullptr) gate->release(bytes);
+            if (gate != nullptr) gate->release(bytes, large);
             gate = nullptr;
         }
 
         PipelineCreationGate* gate = nullptr;
         std::uint64_t bytes = 0;
+        bool large = false;
     };
 
     explicit PipelineCreationGate(Settings settings);
@@ -73,13 +83,17 @@ public:
     Stats Totals() const;
 
 private:
-    bool fits(std::uint64_t bytes) const;
-    void release(std::uint64_t bytes) noexcept;
+    enum class Verdict { Wait, Budget, Reserve };
+    Verdict evaluate(std::uint64_t bytes);
+    void log(const char* what, std::uint64_t bytes, std::uint64_t available) const;
+    void release(std::uint64_t bytes, bool large) noexcept;
 
     Settings settings;
     mutable std::mutex mutex;
     std::condition_variable released;
     Stats stats;
+    std::uint64_t inFlightLarge = 0;
+    bool hasMinAvailable = false;
 };
 
 }
