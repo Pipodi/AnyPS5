@@ -1283,6 +1283,23 @@ void reportInvocationFor() {
     std::fprintf(stderr, "[invocation-for] (10 s): %llu calls, %llu hits, %llu prepared at use (%.0f ms), %llu refusals repeated, %.1f entries scanned a call, %.0f ms in all\n", static_cast<unsigned long long>(calls), static_cast<unsigned long long>(hits), static_cast<unsigned long long>(prepared), static_cast<double>(prepareNs) / 1e6, static_cast<unsigned long long>(refused), calls != 0 ? static_cast<double>(scanned) / static_cast<double>(calls) : 0.0, static_cast<double>(ns) / 1e6);
 }
 
+namespace {
+
+void LogPreparedNone(const ShaderSnapshot& snapshot, std::size_t codeOffset, ShaderRecompiler::ShaderStage stage) {
+    static const bool enabled = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
+    if (!enabled || (stage != ShaderRecompiler::ShaderStage::Vertex && stage != ShaderRecompiler::ShaderStage::Fragment)) return;
+    static std::mutex mutex;
+    static std::set<std::pair<std::uint64_t, std::uint32_t>> seen;
+    const auto address = snapshot.codeAddress + static_cast<std::uint64_t>(codeOffset) * sizeof(std::uint32_t);
+    {
+        std::lock_guard lock(mutex);
+        if (!seen.emplace(address, static_cast<std::uint32_t>(stage)).second) return;
+    }
+    std::fprintf(stderr, "[prepnone] stage=%s shader=0x%llx off=%zu\n", stage == ShaderRecompiler::ShaderStage::Vertex ? "Vertex" : "Fragment", static_cast<unsigned long long>(address), codeOffset);
+}
+
+}
+
 bool sameBindingLayout(const ShaderRecompiler::BindingLayout& left, const ShaderRecompiler::BindingLayout& right) {
     return left.descriptorSet == right.descriptorSet && left.firstBinding == right.firstBinding && left.pushConstantOffsetBytes == right.pushConstantOffsetBytes && left.pushConstantSizeBytes == right.pushConstantSizeBytes;
 }
@@ -1357,6 +1374,7 @@ ShaderRecompiler::PreparedShaderInvocation InvocationFor(const ShaderSnapshot& s
             std::rethrow_exception(refusal.failure);
         }
     }
+    if (snapshot.prepared->entries.empty()) LogPreparedNone(snapshot, codeOffset, source.shader.stage);
     NoteOwnPreparation(preparedAtUse);
     ReportPreparedAtUse(snapshot, source);
     counts.prepared.fetch_add(1, std::memory_order_relaxed);
@@ -2060,7 +2078,10 @@ bool LogPreparedMisses() {
 template <typename Entries>
 void LogPreparedMiss(const ShaderSnapshot& snapshot, std::uint32_t codeOffset, ShaderRecompiler::ShaderStage stage, const Entries& entries, const ShaderRecompiler::RecompileRequest& request) {
     if (stage != ShaderRecompiler::ShaderStage::Vertex && stage != ShaderRecompiler::ShaderStage::Fragment) return;
-    if (entries.empty()) return;
+    if (entries.empty()) {
+        LogPreparedNone(snapshot, codeOffset, stage);
+        return;
+    }
     static std::mutex mutex;
     static std::set<std::string> seen;
     const auto misses = PreparedReuseMisses().fetch_add(1) + 1;

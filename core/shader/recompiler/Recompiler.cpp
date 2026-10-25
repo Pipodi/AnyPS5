@@ -2277,6 +2277,20 @@ const CompiledShaderArtifact& GetPreparedArtifact(const SourceHandle& handle) {
     return handle.artifact->artifact;
 }
 
+namespace {
+
+std::mutex& registrationSpirvMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::unordered_map<std::uint64_t, std::vector<std::uint64_t>>& registrationSpirvMap() {
+    static std::unordered_map<std::uint64_t, std::vector<std::uint64_t>> hashes;
+    return hashes;
+}
+
+}
+
 std::shared_ptr<const RecompileResult> RegistrationResult(const RecompileRequest& request, const SourceHandle& handle) {
     if (handle.artifact == nullptr || !MatchesPreparedShader(request, handle)) throw std::runtime_error("ShaderRecompiler: prepared artifact does not match the static ABI");
     static const bool logResults = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
@@ -2316,7 +2330,20 @@ std::shared_ptr<const RecompileResult> RegistrationResult(const RecompileRequest
         if (sampler.table != NoTable) tables = std::max(tables, sampler.table + 1u);
     }
     snapshot.tables.tables.resize(tables);
-    return std::make_shared<RecompileResult>(materializeResult(*handle.artifact, request, snapshot, true));
+    auto made = std::make_shared<RecompileResult>(materializeResult(*handle.artifact, request, snapshot, true));
+    if (logResults) {
+        const auto hash = made->spirv.ContentHash().low;
+        std::lock_guard lock(registrationSpirvMutex());
+        auto& hashes = registrationSpirvMap()[artifact.variantId];
+        if (std::ranges::find(hashes, hash) == hashes.end()) hashes.push_back(hash);
+    }
+    return made;
+}
+
+std::vector<std::uint64_t> RegistrationSpirvHashes(std::uint64_t variantId) {
+    std::lock_guard lock(registrationSpirvMutex());
+    const auto found = registrationSpirvMap().find(variantId);
+    return found == registrationSpirvMap().end() ? std::vector<std::uint64_t>{} : found->second;
 }
 
 std::shared_ptr<const RecompileResult> MaterializeShader(const RecompileRequest& request, const ResourceCapture& capture, const SourceHandle& handle) {

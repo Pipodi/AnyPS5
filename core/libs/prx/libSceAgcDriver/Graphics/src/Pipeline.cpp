@@ -12,6 +12,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/SampleOrder.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/VertexInput.hpp"
 #include "BindlessImageAbi.hpp"
+#include "Optimization/ResourceProgram.hpp"
 #include "prx/libc/include/HostThreadLocal.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Mutex.hpp"
 #include <algorithm>
@@ -25,6 +26,8 @@
 #include <list>
 #include <mutex>
 #include <spirv/unified1/spirv.hpp>
+#include <set>
+#include <tuple>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -348,6 +351,24 @@ std::string libraryRefusals(const Context& context, const State& state, std::spa
     return reasons.empty() ? std::string("none") : reasons;
 }
 
+void logPreparedReuse(const CompiledShader& shader) {
+    static const bool enabled = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
+    if (!enabled) return;
+    const auto& program = *shader.program;
+    const auto drawSpirv = program.spirv.ContentHash().low;
+    static std::mutex mutex;
+    static std::set<std::tuple<std::uint32_t, std::uint64_t, std::uint64_t, std::uint32_t>> seen;
+    {
+        std::lock_guard lock(mutex);
+        if (!seen.emplace(static_cast<std::uint32_t>(shader.stage), program.variantId, drawSpirv, shader.pushConstantOffset).second) return;
+    }
+    const auto registered = ShaderRecompiler::RegistrationSpirvHashes(program.variantId);
+    const bool same = std::ranges::find(registered, drawSpirv) != registered.end();
+    char text[24] = "none";
+    if (!registered.empty()) std::snprintf(text, sizeof text, "%016llx", static_cast<unsigned long long>(same ? drawSpirv : registered.front()));
+    std::fprintf(stderr, "[prepreuse] stage=%c art=%llu draw_spirv=%016llx reg_spirv=%s same=%d regs=%zu push=%u spec=%zu\n", shader.stage == ShaderRecompiler::ShaderStage::Vertex ? 'V' : 'F', static_cast<unsigned long long>(program.variantId), static_cast<unsigned long long>(drawSpirv), text, same ? 1 : 0, registered.size(), static_cast<unsigned>(shader.pushConstantOffset), program.specialization.size());
+}
+
 bool libraryKeys(PipelineLibraryKeys& keys, const Context& context, const State& state, const VertexInputLayout& input, const PipelineSetLayouts& resources, std::span<const CompiledShader> shaders) {
     using Stage = ShaderRecompiler::ShaderStage;
     if (!context.graphicsPipelineLibrary || context.pipelineExecutableInfo || (state.stages.tessellation && !context.tessellationPipelineCache) || state.depthBiasPerFace || state.rectList || BarycentricPatches(state, shaders) || SplitsAlternateAlpha(state) || !state.blendedColors.empty() || std::ranges::any_of(shaders, [](const CompiledShader& shader) { return shader.program != nullptr && shader.program->functionLdsBuffer; }) || FragmentInterlock(shaders)) return false;
@@ -357,6 +378,7 @@ bool libraryKeys(PipelineLibraryKeys& keys, const Context& context, const State&
         if (shader.stage == Stage::Geometry || identity.Empty()) return false;
         auto& key = shader.stage == Stage::Fragment ? keys.fragmentShader : keys.preRasterization;
         if (shader.stage == Stage::Fragment) keys.fragmentSpirv = shader.program->spirv.ContentHash().low;
+        if (!prebuilding && (shader.stage == Stage::Vertex || shader.stage == Stage::Fragment)) logPreparedReuse(shader);
         if (shader.stage == Stage::Fragment) {
             static const bool logDetail = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
             if (logDetail) {
