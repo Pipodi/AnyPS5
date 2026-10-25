@@ -90,6 +90,114 @@ void availableMemory() {
     std::puts("half the available memory bounds the creations in flight");
 }
 
+struct Reserve {
+    std::atomic<std::uint64_t> available;
+    PipelineCreationGate::Settings settings;
+    Reserve(std::uint64_t budget, std::uint64_t reserve, std::uint64_t availableMiB, std::uint32_t maxLarge = 2) : available(availableMiB * MiB), settings(Settings(budget)) {
+        settings.reserveBytes = reserve;
+        settings.reserveAvailableBytes = [this] { return available.load(); };
+        settings.maxLarge = maxLarge;
+        settings.recheckMilliseconds = 20;
+    }
+};
+
+bool SecondAdmitted(PipelineCreationGate& gate, std::atomic<std::uint64_t>& available, std::uint64_t secondWords, std::uint64_t availableLater, std::chrono::milliseconds first, std::chrono::milliseconds second, bool& early) {
+    auto holder = gate.Admit(16 * 1024, true);
+    std::atomic<bool> admitted{false};
+    std::thread waiter([&] {
+        const auto ticket = gate.Admit(static_cast<std::size_t>(secondWords), true);
+        admitted = true;
+    });
+    early = AdmittedWithin(admitted, first);
+    if (availableLater != 0) available = availableLater * MiB;
+    const bool late = AdmittedWithin(admitted, second);
+    holder = {};
+    waiter.join();
+    return late;
+}
+
+void reserveAdmitsWhenAvailable() {
+    Reserve with(8 * MiB, 10 * MiB, 1000);
+    PipelineCreationGate gate(with.settings);
+    const auto first = gate.Admit(16 * 1024, true);
+    const auto second = gate.Admit(16 * 1024, true);
+    auto stats = gate.Totals();
+    Require(stats.waited == 0 && stats.inFlight == 2 && stats.admittedByReserve == 1, "a second large creation was not admitted by the reserve while plenty of memory was available");
+    Require(stats.minAvailableBytes == 1000 * MiB, "the minimum available memory at admission was not recorded");
+    Reserve without(8 * MiB, 0, 1000);
+    PipelineCreationGate plain(without.settings);
+    auto alone = plain.Admit(16 * 1024, true);
+    std::atomic<bool> admitted{false};
+    std::thread waiter([&] {
+        const auto ticket = plain.Admit(16 * 1024, true);
+        admitted = true;
+    });
+    const bool early = AdmittedWithin(admitted, std::chrono::milliseconds(300));
+    alone = {};
+    waiter.join();
+    Require(!early && plain.Totals().admittedByReserve == 0, "without a reserve the second large creation did not wait for the first");
+    std::puts("a second large creation is admitted by the reserve when available memory is high, and waits without one");
+}
+
+void reserveHoldsWhenLow() {
+    Reserve with(8 * MiB, 10 * MiB, 40);
+    PipelineCreationGate gate(with.settings);
+    bool early = false;
+    const bool late = SecondAdmitted(gate, with.available, 16 * 1024, 0, std::chrono::milliseconds(300), std::chrono::milliseconds(200), early);
+    Require(!early && !late, "a second creation was admitted with 8 MiB left over a 10 MiB reserve");
+    Require(gate.Totals().admittedByReserve == 0 && gate.Totals().waited == 1, "the held creation was not counted as waiting");
+    Reserve edge(8 * MiB, 10 * MiB, 42);
+    PipelineCreationGate edgeGate(edge.settings);
+    const auto first = edgeGate.Admit(16 * 1024, true);
+    const auto second = edgeGate.Admit(16 * 1024, true);
+    Require(edgeGate.Totals().admittedByReserve == 1, "a creation leaving exactly the reserve was not admitted");
+    Reserve capped(8 * MiB, 10 * MiB, 1000, 2);
+    PipelineCreationGate cappedGate(capped.settings);
+    auto a = cappedGate.Admit(16 * 1024, true);
+    const auto b = cappedGate.Admit(16 * 1024, true);
+    std::atomic<bool> admitted{false};
+    std::thread third([&] {
+        const auto ticket = cappedGate.Admit(16 * 1024, true);
+        admitted = true;
+    });
+    const bool cappedEarly = AdmittedWithin(admitted, std::chrono::milliseconds(300));
+    Require(!cappedEarly, "a third large creation ran past the cap of two");
+    a = {};
+    third.join();
+    Reserve open(8 * MiB, 10 * MiB, 1000, 3);
+    PipelineCreationGate openGate(open.settings);
+    const auto c = openGate.Admit(16 * 1024, true);
+    const auto d = openGate.Admit(16 * 1024, true);
+    const auto e = openGate.Admit(16 * 1024, true);
+    Require(openGate.Totals().admittedByReserve == 2 && openGate.Totals().inFlight == 3, "a cap of three did not let the third large creation run");
+    std::puts("the reserve holds a creation when available memory is low, admits it at exactly the reserve, and a cap bounds the large ones");
+}
+
+void reserveRechecksOnTimer() {
+    Reserve with(8 * MiB, 10 * MiB, 40);
+    PipelineCreationGate gate(with.settings);
+    bool early = false;
+    const bool late = SecondAdmitted(gate, with.available, 16 * 1024, 1000, std::chrono::milliseconds(200), std::chrono::milliseconds(5000), early);
+    Require(!early && late, "memory freed with nothing finishing did not admit the waiting creation");
+    Require(gate.Totals().admittedByReserve == 1, "the timer admission was not counted as by the reserve");
+    Reserve off(8 * MiB, 0, 40);
+    PipelineCreationGate plain(off.settings);
+    bool plainEarly = false;
+    const bool plainLate = SecondAdmitted(plain, off.available, 16 * 1024, 1000, std::chrono::milliseconds(200), std::chrono::milliseconds(600), plainEarly);
+    Require(!plainEarly && !plainLate, "without a reserve freed memory admitted a creation while nothing finished");
+    std::puts("a waiting creation is admitted when memory frees with nothing finishing");
+}
+
+void reserveUnsetIsToday() {
+    PipelineCreationGate gate(Settings(8 * MiB));
+    const auto first = gate.Admit(16 * 1024, true);
+    const auto stats = gate.Totals();
+    Require(stats.admittedByReserve == 0 && stats.minAvailableBytes == 0 && stats.reserveBytes == 0, "an unset reserve changed the statistics");
+    const auto settings = PipelineCreationGate::SettingsFromEnvironment();
+    if (std::getenv("APS5_PIPELINE_COMPILE_RESERVE_MIB") == nullptr) Require(settings.reserveBytes == 0 && !settings.reserveAvailableBytes, "the reserve is on without its variable");
+    std::puts("an unset reserve leaves the gate as it was");
+}
+
 void disabled() {
     PipelineCreationGate gate(Settings(0));
     const auto first = gate.Admit(1u << 20u, true);
@@ -115,6 +223,10 @@ int main() {
         fitsTogether();
         smallAndLocked();
         availableMemory();
+        reserveUnsetIsToday();
+        reserveAdmitsWhenAvailable();
+        reserveHoldsWhenLow();
+        reserveRechecksOnTimer();
         disabled();
         defaults();
         std::puts("pipeline creation gate tests passed");
