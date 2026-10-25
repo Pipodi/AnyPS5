@@ -59,7 +59,12 @@ struct QueueWorker {
     std::thread thread;
 };
 
-std::vector<std::uint64_t> ReferencedPrograms(std::span<const std::uint32_t> commands, const std::map<std::size_t, std::vector<std::uint32_t>>& registerLists);
+struct ReferencedProgramScan {
+    std::vector<std::uint64_t> addresses;
+    bool complete = true;
+};
+
+ReferencedProgramScan ReferencedPrograms(std::span<const std::uint32_t> commands, const std::map<std::size_t, std::vector<std::uint32_t>>& registerLists);
 
 }
 

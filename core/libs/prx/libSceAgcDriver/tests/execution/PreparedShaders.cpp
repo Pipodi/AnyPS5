@@ -462,12 +462,14 @@ void ReferencedRegistrationPreparation() {
     registry[bound].push_back(boundSnapshot);
     registry[unrelated].push_back(unrelatedSnapshot);
     const std::vector<std::uint32_t> commands{0xc0027600u, 0x20cu, static_cast<std::uint32_t>(bound >> 8u), static_cast<std::uint32_t>(bound >> 40u)};
-    Require(AgcDriver::DriverDetail::ReferencedPrograms(commands, {}) == std::vector<std::uint64_t>{bound}, "a compute program bound with SET_SH_REG was not found in the submission");
+    Require(AgcDriver::DriverDetail::ReferencedPrograms(commands, {}).addresses == std::vector<std::uint64_t>{bound}, "a compute program bound with SET_SH_REG was not found in the submission");
     const std::vector<std::uint32_t> indirect{0xc0036300u, 0, 0, 0, 2};
     const std::map<std::size_t, std::vector<std::uint32_t>> lists{{0, {0xc8u, static_cast<std::uint32_t>(unrelated >> 8u), 0xc9u, static_cast<std::uint32_t>(unrelated >> 40u)}}};
-    Require(AgcDriver::DriverDetail::ReferencedPrograms(indirect, lists) == std::vector<std::uint64_t>{unrelated}, "a vertex program bound through an indirect register list was not found in the submission");
+    Require(AgcDriver::DriverDetail::ReferencedPrograms(indirect, lists).addresses == std::vector<std::uint64_t>{unrelated}, "a vertex program bound through an indirect register list was not found in the submission");
     const std::vector<std::uint32_t> lowOnly{0xc0017600u, 0x008u, static_cast<std::uint32_t>(bound >> 8u)};
-    Require(AgcDriver::DriverDetail::ReferencedPrograms(lowOnly, {}).empty(), "a program address without its high register was resolved");
+    Require(AgcDriver::DriverDetail::ReferencedPrograms(lowOnly, {}).addresses.empty(), "a program address without its high register was resolved");
+    Require(!AgcDriver::DriverDetail::ReferencedPrograms(lowOnly, {}).complete, "a program address without its high register was reported as fully scanned");
+    Require(AgcDriver::DriverDetail::ReferencedPrograms(commands, {}).complete, "a program address written as a pair was reported as not fully scanned");
     const auto workers = std::max(2u, std::thread::hardware_concurrency() / 2u);
     std::barrier started(static_cast<std::ptrdiff_t>(workers + 1u));
     std::counting_semaphore<> release(0);
@@ -512,7 +514,7 @@ void ReferencedRegistrationPreparation() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         release.release();
     });
-    AgcDriver::DriverDetail::AwaitReferencedPreparations(registry, AgcDriver::DriverDetail::ReferencedPrograms(commands, {}));
+    AgcDriver::DriverDetail::AwaitReferencedPreparations(registry, AgcDriver::DriverDetail::ReferencedPrograms(commands, {}).addresses);
     const bool boundPending = pending(boundSnapshot);
     const bool unrelatedPending = pending(unrelatedSnapshot);
     const auto boundRank = boundOrder.load();
@@ -544,6 +546,61 @@ void UnrelatedPreparationAtSubmit() {
     AgcDriverWaitIdle_nid_postfix();
     while (!ran.load(std::memory_order_acquire)) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     Require(!done && waited < std::chrono::milliseconds(1000), "a submission waited for a preparation its commands do not use");
+}
+
+std::chrono::milliseconds SubmitBehindSlowPreparation(std::vector<std::uint32_t>& commands, bool& preparationDone) {
+    std::atomic<bool> ran{false};
+    AgcDriver::DriverDetail::SubmitRegistrationPreparation([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        ran.store(true, std::memory_order_release);
+    });
+    Packet packet{commands.data(), static_cast<std::uint32_t>(commands.size()), 0, {}};
+    const auto began = std::chrono::steady_clock::now();
+    Require(sceAgcDriverSubmitDcb(&packet) == 0, "a submission behind a slow preparation failed");
+    const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began);
+    preparationDone = ran.load(std::memory_order_acquire);
+    AgcDriverWaitIdle_nid_postfix();
+    while (!ran.load(std::memory_order_acquire)) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    return waited;
+}
+
+void UnprovenProgramsAtSubmit() {
+    alignas(256) static const std::array<std::uint32_t, 1> code{0xbf810000u};
+    const auto address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(code.data()));
+    const auto low = static_cast<std::uint32_t>(address >> 8u);
+    const auto high = static_cast<std::uint32_t>(address >> 40u);
+    const std::vector<std::uint32_t> lowOnly{0xc0017600u, 0x20cu, low};
+    const std::vector<std::uint32_t> highOnly{0xc0017600u, 0x20du, high};
+    const std::vector<std::uint32_t> pair{0xc0027600u, 0x20cu, low, high};
+    Require(!AgcDriver::DriverDetail::ReferencedPrograms(lowOnly, {}).complete, "a low address register alone was reported as fully scanned");
+    Require(!AgcDriver::DriverDetail::ReferencedPrograms(highOnly, {}).complete, "a high address register alone was reported as fully scanned");
+    Require(AgcDriver::DriverDetail::ReferencedPrograms(pair, {}).complete, "a register pair was reported as not fully scanned");
+    const std::vector<std::uint32_t> split{0xc0017600u, 0x20cu, low, 0xc0017600u, 0x20du, high};
+    Require(AgcDriver::DriverDetail::ReferencedPrograms(split, {}).complete, "a register pair written by two packets was reported as not fully scanned");
+    std::vector<std::uint32_t> commands = lowOnly;
+    bool done = false;
+    auto waited = SubmitBehindSlowPreparation(commands, done);
+    std::cout << "unproven low-only submit waited " << waited.count() << " ms
+";
+    Require(done, "a submission writing half of a program address did not wait for the queued preparations");
+    commands = highOnly;
+    waited = SubmitBehindSlowPreparation(commands, done);
+    std::cout << "unproven high-only submit waited " << waited.count() << " ms
+";
+    Require(done, "a submission writing the other half of a program address did not wait for the queued preparations");
+    alignas(4) static std::array<std::uint32_t, 3> buffer{};
+    buffer = lowOnly;
+    const auto target = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(buffer.data()));
+    commands = {0xc0023f00u, static_cast<std::uint32_t>(target), static_cast<std::uint32_t>(target >> 32u) & 0xffffu, static_cast<std::uint32_t>(buffer.size())};
+    waited = SubmitBehindSlowPreparation(commands, done);
+    std::cout << "unproven low-only submit through an indirect buffer waited " << waited.count() << " ms
+";
+    Require(done, "a submission writing half of a program address inside an indirect buffer did not wait for the queued preparations");
+    commands = pair;
+    waited = SubmitBehindSlowPreparation(commands, done);
+    std::cout << "proven pair submit waited " << waited.count() << " ms
+";
+    Require(!done && waited < std::chrono::milliseconds(1000), "a submission writing a whole program address waited for an unrelated preparation");
 }
 
 void PendingRegistrationPreparation(AgcDriver::VulkanDevice& device) {
@@ -1748,6 +1805,7 @@ int main(int argc, char** argv) {
         RelocatedHeaders();
         CommittedAbis();
         UnrelatedPreparationAtSubmit();
+        UnprovenProgramsAtSubmit();
         RegistrationWithoutSpecials();
         Registration(argc == 2);
         std::cout << "prepared shader and transactional registration tests passed\n";

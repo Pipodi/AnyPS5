@@ -224,11 +224,11 @@ bool Driver::copySegment(Submission& submission, const std::uint32_t* guest, std
     return false;
 }
 
-std::vector<std::uint64_t> ReferencedPrograms(std::span<const std::uint32_t> commands, const std::map<std::size_t, std::vector<std::uint32_t>>& registerLists) {
+ReferencedProgramScan ReferencedPrograms(std::span<const std::uint32_t> commands, const std::map<std::size_t, std::vector<std::uint32_t>>& registerLists) {
     constexpr std::array<std::uint32_t, 6> programRegisters{0x008u, 0x088u, 0x0c8u, 0x108u, 0x148u, 0x20cu};
     std::array<std::uint32_t, programRegisters.size() * 2> values{};
     std::array<bool, programRegisters.size() * 2> written{};
-    std::vector<std::uint64_t> addresses;
+    ReferencedProgramScan scan;
     const auto write = [&](std::uint32_t offset, std::uint32_t value) {
         const auto base = std::ranges::find_if(programRegisters, [&](std::uint32_t program) { return offset - program < 2u; });
         if (base == programRegisters.end()) return;
@@ -236,7 +236,7 @@ std::vector<std::uint64_t> ReferencedPrograms(std::span<const std::uint32_t> com
         values[slot] = value;
         written[slot] = true;
         const auto low = slot & ~std::size_t{1};
-        if (written[low] && written[low + 1]) addresses.push_back((static_cast<std::uint64_t>(values[low]) << 8u) | (static_cast<std::uint64_t>(values[low + 1] & 0xffu) << 40u));
+        if (written[low] && written[low + 1]) scan.addresses.push_back((static_cast<std::uint64_t>(values[low]) << 8u) | (static_cast<std::uint64_t>(values[low + 1] & 0xffu) << 40u));
     };
     for (std::size_t cursor = 0; cursor < commands.size(); cursor += Pm4::PacketWords(commands[cursor])) {
         const auto header = commands[cursor];
@@ -254,9 +254,12 @@ std::vector<std::uint64_t> ReferencedPrograms(std::span<const std::uint32_t> com
             for (std::size_t i = 0; i + 1 < list->second.size(); i += 2) write(list->second[i] & ~0x70000000u, list->second[i + 1]);
         }
     }
-    std::ranges::sort(addresses);
-    addresses.erase(std::unique(addresses.begin(), addresses.end()), addresses.end());
-    return addresses;
+    for (std::size_t slot = 0; slot < written.size(); slot += 2) {
+        if (written[slot] != written[slot + 1]) scan.complete = false;
+    }
+    std::ranges::sort(scan.addresses);
+    scan.addresses.erase(std::unique(scan.addresses.begin(), scan.addresses.end()), scan.addresses.end());
+    return scan;
 }
 
 void Driver::readRegisterLists(Submission& submission) {
@@ -453,12 +456,17 @@ void Driver::Submit(const Packet* packet, std::uint32_t queue, bool cpuFlip) {
     if (APS5_ENABLE_TIMING_LOG) submission.validatedAt = std::chrono::steady_clock::now();
     waitForFlipRoom(submission);
     holdFlipBehindWorker(submission);
-    std::shared_ptr<const ShaderRegistry> registry;
-    {
-        std::lock_guard lock(mutex);
-        registry = shaders;
+    const auto scan = ReferencedPrograms(submission.commands, submission.registerLists);
+    if (!scan.complete) {
+        AwaitRegistrationPreparation();
+    } else {
+        std::shared_ptr<const ShaderRegistry> registry;
+        {
+            std::lock_guard lock(mutex);
+            registry = shaders;
+        }
+        if (registry != nullptr) AwaitReferencedPreparations(*registry, scan.addresses);
     }
-    if (registry != nullptr) AwaitReferencedPreparations(*registry, ReferencedPrograms(submission.commands, submission.registerLists));
     if (APS5_ENABLE_TIMING_LOG) submission.roomReadyAt = std::chrono::steady_clock::now();
     static const bool trace = std::getenv("APS5_TRACE_GPU") != nullptr;
     if (trace) std::fprintf(stderr, "[gpu] %.1f submit queue=0x%x dwords=%zu at %p\n", TraceMs(), queue, submission.commands.size(), static_cast<const void*>(descriptor.addr));
