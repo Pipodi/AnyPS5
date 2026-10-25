@@ -580,26 +580,22 @@ void UnprovenProgramsAtSubmit() {
     std::vector<std::uint32_t> commands = lowOnly;
     bool done = false;
     auto waited = SubmitBehindSlowPreparation(commands, done);
-    std::cout << "unproven low-only submit waited " << waited.count() << " ms
-";
+    std::cout << "unproven low-only submit waited " << waited.count() << " ms\n";
     Require(done, "a submission writing half of a program address did not wait for the queued preparations");
     commands = highOnly;
     waited = SubmitBehindSlowPreparation(commands, done);
-    std::cout << "unproven high-only submit waited " << waited.count() << " ms
-";
+    std::cout << "unproven high-only submit waited " << waited.count() << " ms\n";
     Require(done, "a submission writing the other half of a program address did not wait for the queued preparations");
     alignas(4) static std::array<std::uint32_t, 3> buffer{};
     buffer = lowOnly;
     const auto target = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(buffer.data()));
     commands = {0xc0023f00u, static_cast<std::uint32_t>(target), static_cast<std::uint32_t>(target >> 32u) & 0xffffu, static_cast<std::uint32_t>(buffer.size())};
     waited = SubmitBehindSlowPreparation(commands, done);
-    std::cout << "unproven low-only submit through an indirect buffer waited " << waited.count() << " ms
-";
+    std::cout << "unproven low-only submit through an indirect buffer waited " << waited.count() << " ms\n";
     Require(done, "a submission writing half of a program address inside an indirect buffer did not wait for the queued preparations");
     commands = pair;
     waited = SubmitBehindSlowPreparation(commands, done);
-    std::cout << "proven pair submit waited " << waited.count() << " ms
-";
+    std::cout << "proven pair submit waited " << waited.count() << " ms\n";
     Require(!done && waited < std::chrono::milliseconds(1000), "a submission writing a whole program address waited for an unrelated preparation");
 }
 
