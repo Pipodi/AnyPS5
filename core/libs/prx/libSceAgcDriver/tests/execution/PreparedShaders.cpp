@@ -587,7 +587,7 @@ void UnprovenProgramsAtSubmit() {
     std::cout << "unproven high-only submit waited " << waited.count() << " ms\n";
     Require(done, "a submission writing the other half of a program address did not wait for the queued preparations");
     alignas(4) static std::array<std::uint32_t, 3> buffer{};
-    buffer = lowOnly;
+    std::ranges::copy(lowOnly, buffer.begin());
     const auto target = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(buffer.data()));
     commands = {0xc0023f00u, static_cast<std::uint32_t>(target), static_cast<std::uint32_t>(target >> 32u) & 0xffffu, static_cast<std::uint32_t>(buffer.size())};
     waited = SubmitBehindSlowPreparation(commands, done);
