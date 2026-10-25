@@ -621,6 +621,14 @@ void UnprovenProgramsAtSubmit() {
     const std::map<std::size_t, std::vector<std::uint32_t>> validList{{0, {0x20cu, low}}};
     Require(!AgcDriver::DriverDetail::ReferencedPrograms(indirectList, invalidList).complete, "an indirect register list the worker reads again was reported as fully scanned");
     Require(AgcDriver::DriverDetail::ReferencedPrograms(indirectList, validList).addresses.empty(), "a lone indirect register was resolved to a program");
+    const std::vector<std::uint32_t> predicatedPair{0xc0027601u, 0x20cu, low, high};
+    const std::vector<std::uint32_t> conditionalRange{0xc0032200u, 0, 0, 0, 4};
+    Require(!AgcDriver::DriverDetail::ReferencedPrograms(predicatedPair, {}).complete, "a predicated program pair was reported as fully scanned");
+    Require(!AgcDriver::DriverDetail::ReferencedPrograms(joined({&conditionalRange, &pair}), {}).complete, "a program pair inside a conditional execution range was reported as fully scanned");
+    Require(AgcDriver::DriverDetail::ReferencedPrograms(joined({&conditionalRange, &pair}), {}).addresses.empty(), "a program pair inside a conditional execution range was resolved to a program");
+    const std::vector<std::uint32_t> unrelatedWrite{0xc0017600u, 0x2e0u, 1};
+    const std::vector<std::uint32_t> shortRange{0xc0032200u, 0, 0, 0, 3};
+    Require(AgcDriver::DriverDetail::ReferencedPrograms(joined({&shortRange, &unrelatedWrite, &pair}), {}).complete, "a pair after a conditional execution range holding another register was reported as not fully scanned");
     alignas(4) static std::array<std::uint32_t, 4> rewound{0xc0005900u, 0, 0xc0001000u, 0};
     {
         std::atomic<bool> ran{false};

@@ -230,9 +230,13 @@ ReferencedProgramScan ReferencedPrograms(std::span<const std::uint32_t> commands
     std::array<bool, programRegisters.size() * 2> written{};
     std::array<bool, programRegisters.size()> bound{};
     ReferencedProgramScan scan;
-    const auto write = [&](std::uint32_t offset, std::uint32_t value) {
+    const auto write = [&](std::uint32_t offset, std::uint32_t value, bool conditional) {
         const auto base = std::ranges::find_if(programRegisters, [&](std::uint32_t program) { return offset - program < 2u; });
         if (base == programRegisters.end()) return;
+        if (conditional) {
+            scan.complete = false;
+            return;
+        }
         const auto slot = static_cast<std::size_t>(base - programRegisters.begin()) * 2u + (offset - *base);
         values[slot] = value;
         written[slot] = true;
@@ -242,18 +246,20 @@ ReferencedProgramScan ReferencedPrograms(std::span<const std::uint32_t> commands
             scan.addresses.push_back((static_cast<std::uint64_t>(values[low]) << 8u) | (static_cast<std::uint64_t>(values[low + 1] & 0xffu) << 40u));
         }
     };
+    std::size_t guardedEnd = 0;
     for (std::size_t cursor = 0; cursor < commands.size(); cursor += Pm4::PacketWords(commands[cursor])) {
         const auto header = commands[cursor];
         if ((header >> 30u) != 3u) continue;
         const auto opcode = (header >> 8u) & 0xffu;
         const auto words = std::min<std::size_t>(Pm4::PacketWords(header), commands.size() - cursor);
+        const bool conditional = (header & 1u) != 0 || cursor < guardedEnd;
+        if (opcode == 0x22u && words == 5) guardedEnd = std::max(guardedEnd, cursor + words + Pm4::ConditionalWords(commands.subspan(cursor, words)));
         if (Pm4::DrawOpcode(opcode) && !std::any_of(bound.begin(), bound.end() - 1, [](bool pair) { return pair; })) scan.complete = false;
         if ((opcode == 0x15u || opcode == 0x16u) && !bound.back()) scan.complete = false;
         if (opcode == 0x76u && words >= 3) {
             const auto packet = commands.subspan(cursor, words);
-            if (Pm4::IsTagMarker(packet)) continue;
             const auto offset = packet[1] & ~0x70000000u;
-            for (std::size_t i = 2; i < words; ++i) write(offset + static_cast<std::uint32_t>(i - 2), packet[i]);
+            for (std::size_t i = 2; i < words; ++i) write(offset + static_cast<std::uint32_t>(i - 2), packet[i], conditional);
         } else if (opcode == 0x63u) {
             const auto list = registerLists.find(cursor);
             if (list == registerLists.end()) continue;
@@ -261,7 +267,7 @@ ReferencedProgramScan ReferencedPrograms(std::span<const std::uint32_t> commands
                 scan.complete = false;
                 continue;
             }
-            for (std::size_t i = 0; i + 1 < list->second.size(); i += 2) write(list->second[i] & ~0x70000000u, list->second[i + 1]);
+            for (std::size_t i = 0; i + 1 < list->second.size(); i += 2) write(list->second[i] & ~0x70000000u, list->second[i + 1], conditional);
         }
     }
     for (std::size_t slot = 0; slot < written.size(); slot += 2) {
