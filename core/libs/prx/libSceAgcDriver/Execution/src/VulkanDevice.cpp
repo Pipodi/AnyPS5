@@ -74,6 +74,7 @@
 #include <charconv>
 #include <condition_variable>
 #include <future>
+#include <filesystem>
 #include <fstream>
 #include <cctype>
 #include <cstdlib>
@@ -6129,6 +6130,42 @@ std::vector<VkDescriptorSetLayout> VulkanDevice::computeSetLayouts(const Graphic
     return layouts;
 }
 
+namespace {
+std::shared_ptr<const std::vector<std::uint32_t>> SpirvOverride(const std::uint32_t* words, std::size_t count, std::uint64_t programAddress) {
+    static const char* const directory = std::getenv("APS5_SPIRV_OVERRIDE_DIR");
+    if (directory == nullptr || *directory == 0) return nullptr;
+    static std::mutex mutex;
+    static std::unordered_map<std::uint64_t, std::shared_ptr<const std::vector<std::uint32_t>>> found;
+    std::uint64_t hash = 0xcbf29ce484222325ull;
+    for (std::size_t index = 0; index < count; ++index) {
+        for (unsigned shift = 0; shift < 32; shift += 8) {
+            hash ^= (words[index] >> shift) & 0xffu;
+            hash *= 0x100000001b3ull;
+        }
+    }
+    std::lock_guard lock(mutex);
+    const auto known = found.find(hash);
+    if (known != found.end()) return known->second;
+    char name[24];
+    std::snprintf(name, sizeof(name), "%016llx.spv", static_cast<unsigned long long>(hash));
+    const auto path = std::filesystem::path(directory) / name;
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    std::shared_ptr<const std::vector<std::uint32_t>> replacement;
+    if (file) {
+        const auto bytes = static_cast<std::size_t>(file.tellg());
+        Graphics::Require(bytes % sizeof(std::uint32_t) == 0 && bytes != 0, "SPIR-V override size is not a multiple of 4: " + path.string());
+        auto loaded = std::make_shared<std::vector<std::uint32_t>>(bytes / sizeof(std::uint32_t));
+        file.seekg(0);
+        file.read(reinterpret_cast<char*>(loaded->data()), static_cast<std::streamsize>(bytes));
+        Graphics::Require(static_cast<bool>(file) && loaded->front() == 0x07230203u, "SPIR-V override is unreadable or lacks the SPIR-V magic: " + path.string());
+        std::fprintf(stderr, "[spirv-override] program 0x%llx: %zu words -> %zu words from %s\n", static_cast<unsigned long long>(programAddress), count, loaded->size(), path.string().c_str());
+        replacement = std::move(loaded);
+    }
+    found.emplace(hash, replacement);
+    return replacement;
+}
+}
+
 // The module, pipeline layout and pipeline of a compute result over `setLayout` (the set layout
 // its bindings describe): what a dispatch or its preparation builds at the first use of a module,
 // and what the journal replay builds on its own threads before that use.
@@ -6141,7 +6178,10 @@ std::shared_ptr<ComputePipelineObjects> VulkanDevice::createComputePipeline(cons
     objects->destroyModule = state->DeviceFunction<PFN_vkDestroyShaderModule>("vkDestroyShaderModule");
     objects->destroyLayout = state->DeviceFunction<PFN_vkDestroyPipelineLayout>("vkDestroyPipelineLayout");
     objects->destroyPipeline = state->DeviceFunction<PFN_vkDestroyPipeline>("vkDestroyPipeline");
-    objects->module = Graphics::CreateShaderModule(state->DeviceFunction<PFN_vkCreateShaderModule>("vkCreateShaderModule"), state->device, state->graphicsPipelineLibrary, shader.spirv.data(), shader.spirv.size() * sizeof(std::uint32_t), "vkCreateShaderModule");
+    const auto spirvOverride = SpirvOverride(shader.spirv.data(), shader.spirv.size(), programAddress);
+    const std::uint32_t* moduleWords = spirvOverride != nullptr ? spirvOverride->data() : shader.spirv.data();
+    const std::size_t moduleCount = spirvOverride != nullptr ? spirvOverride->size() : shader.spirv.size();
+    objects->module = Graphics::CreateShaderModule(state->DeviceFunction<PFN_vkCreateShaderModule>("vkCreateShaderModule"), state->device, state->graphicsPipelineLibrary, moduleWords, moduleCount * sizeof(std::uint32_t), "vkCreateShaderModule");
     objects->resourcesLayout = setLayout;
     const auto setLayouts = computeSetLayouts(context, shader, setLayout);
     const bool resolvedModule = NewPath::ResolvedModule(shader);

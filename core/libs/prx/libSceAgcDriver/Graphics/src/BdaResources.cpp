@@ -11,9 +11,12 @@
 #include <bit>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <cstring>
+#include <string>
 #include <limits>
 #include <list>
+#include <map>
 #include <mutex>
 #include <iomanip>
 #include <sstream>
@@ -195,14 +198,64 @@ void reportBdaBuildTimes() {
     std::fprintf(stderr, "[bda-build] (10 s): table build parts (ms): hash %.0f, candidate scan %.0f, index %.0f, buffer %.0f, copies %.0f, cache entry %.0f\n", ms(t.hashNs), ms(t.scanNs), ms(t.indexNs), ms(t.bufferNs), ms(t.copyNs), ms(t.entryNs));
 }
 
+namespace {
+constexpr std::uint32_t CounterWords = 16;
+constexpr std::uint32_t CounterWord = ShaderRecompiler::BdaAbi::SrtGuardWord + 1;
+
+bool shaderCountersEnabled() {
+    static const bool enabled = std::getenv("APS5_SHADER_COUNTERS") != nullptr;
+    return enabled;
+}
+
+std::size_t faultBufferBytes() {
+    return ShaderRecompiler::BdaAbi::FaultBufferBytes + (shaderCountersEnabled() ? CounterWords * sizeof(std::uint32_t) : 0);
+}
+
+struct ProgramCounters {
+    std::uint64_t dispatches = 0;
+    std::uint64_t sums[CounterWords] = {};
+};
+
+void accumulateShaderCounters(std::byte* bytes, std::uint64_t shaderAddress) {
+    static std::mutex mutex;
+    static std::map<std::uint64_t, ProgramCounters> programs;
+    static auto windowStart = std::chrono::steady_clock::now();
+    std::uint32_t words[CounterWords];
+    std::byte* counters = bytes + CounterWord * sizeof(std::uint32_t);
+    std::memcpy(words, counters, sizeof(words));
+    std::memset(counters, 0, sizeof(words));
+    std::lock_guard lock(mutex);
+    auto& program = programs[shaderAddress];
+    ++program.dispatches;
+    for (std::uint32_t index = 0; index < CounterWords; ++index) program.sums[index] += words[index];
+    const auto now = std::chrono::steady_clock::now();
+    if (now - windowStart < std::chrono::seconds(10)) return;
+    windowStart = now;
+    for (const auto& [address, totals] : programs) {
+        std::string line = "[shader-counters] 0x";
+        char text[48];
+        std::snprintf(text, sizeof(text), "%llx: %llu dispatches;", static_cast<unsigned long long>(address), static_cast<unsigned long long>(totals.dispatches));
+        line += text;
+        for (std::uint32_t index = 0; index < CounterWords; ++index) {
+            if (totals.sums[index] == 0) continue;
+            std::snprintf(text, sizeof(text), " c%u %llu", index, static_cast<unsigned long long>(totals.sums[index]));
+            line += text;
+        }
+        std::fprintf(stderr, "%s\n", line.c_str());
+    }
+    programs.clear();
+}
+}
+
 BdaResources::BdaResources(const Context& context) : textureService(context.textureService) {
     static_assert(std::endian::native == std::endian::little);
-    Require(ShaderRecompiler::BdaAbi::FaultBufferBytes <= context.limits.maxStorageBufferRange, "BDA fault buffer exceeds storage buffer range limit");
+    Require(faultBufferBytes() <= context.limits.maxStorageBufferRange, "BDA fault buffer exceeds storage buffer range limit");
     const MemoryStats::OwnerScope memStatsOwner(MemoryStats::Owner::Bda);
     const auto faultStart = bdaBuildProfiled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-    fault = std::make_unique<Buffer>(context, ShaderRecompiler::BdaAbi::FaultBufferBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    fault = std::make_unique<Buffer>(context, faultBufferBytes(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     std::memset(fault->Bytes().data(), 0, ShaderRecompiler::BdaAbi::WrittenListWord * sizeof(std::uint32_t));
     std::memset(fault->Bytes().data() + ShaderRecompiler::BdaAbi::SrtGuardWord * sizeof(std::uint32_t), 0, sizeof(std::uint32_t));
+    if (shaderCountersEnabled()) std::memset(fault->Bytes().data() + CounterWord * sizeof(std::uint32_t), 0, CounterWords * sizeof(std::uint32_t));
     if (bdaBuildProfiled()) {
         bdaBuildTimes().faults.fetch_add(1, std::memory_order_relaxed);
         bdaBuildTimes().faultNs.fetch_add(nsSince(faultStart), std::memory_order_relaxed);
@@ -249,7 +302,7 @@ BdaResources::BdaResources(const Context& context, const GuestBufferMemory& memo
     const auto index = indexDisabled ? std::vector<std::uint32_t>{} : ShaderRecompiler::BdaAbi::BuildRangeIndex(ranges.data(), ranges.size());
     if (profiled) bdaBuildTimes().indexNs.fetch_add(nsSince(indexStart), std::memory_order_relaxed);
     tableBytes = sizeof(ShaderRecompiler::BdaAbi::Header) + ranges.size() * sizeof(ShaderRecompiler::BdaAbi::Range) + index.size() * sizeof(std::uint32_t);
-    Require(tableBytes <= context.limits.maxStorageBufferRange && ShaderRecompiler::BdaAbi::FaultBufferBytes <= context.limits.maxStorageBufferRange, "BDA descriptors exceed storage buffer range limit");
+    Require(tableBytes <= context.limits.maxStorageBufferRange && faultBufferBytes() <= context.limits.maxStorageBufferRange, "BDA descriptors exceed storage buffer range limit");
     auto& cache = Tables();
     std::uint64_t hash = 0;
     if (tableCacheEnabled()) {
@@ -366,7 +419,7 @@ VkDescriptorBufferInfo BdaResources::Table() const {
 }
 
 VkDescriptorBufferInfo BdaResources::Fault() const {
-    return {fault->Handle(), 0, ShaderRecompiler::BdaAbi::FaultBufferBytes};
+    return {fault->Handle(), 0, faultBufferBytes()};
 }
 
 namespace {
@@ -378,6 +431,7 @@ bool LoopGuardTripped() {
 }
 
 void BdaResources::CheckFault(std::uint64_t shaderAddress) const {
+    if (shaderCountersEnabled()) accumulateShaderCounters(fault->Bytes().data(), shaderAddress);
     markWrittenPages();
     ShaderRecompiler::BdaAbi::Fault report{};
     std::memcpy(&report, fault->Bytes().data(), sizeof(report));
