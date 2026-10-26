@@ -57,9 +57,8 @@ std::uint64_t PipelineCreationGate::AvailableMemoryBytes() {
 PipelineCreationGate::Settings PipelineCreationGate::SettingsFromEnvironment() {
     Settings settings;
     settings.bytesPerWord = std::max<std::uint64_t>(1u, EnvironmentNumber("APS5_PIPELINE_COMPILE_BYTES_PER_WORD", settings.bytesPerWord));
-    settings.budgetBytes = EnvironmentNumber("APS5_PIPELINE_COMPILE_BUDGET_MIB", PhysicalMemoryBytes() / 8u >> 20u) << 20u;
+    settings.budgetBytes = EnvironmentNumber("APS5_PIPELINE_COMPILE_BUDGET_MIB", PhysicalMemoryBytes() / 16u * 7u >> 20u) << 20u;
     settings.smallBytes = EnvironmentNumber("APS5_PIPELINE_COMPILE_SMALL_MIB", settings.smallBytes >> 20u) << 20u;
-    if (std::getenv("APS5_PIPELINE_COMPILE_BUDGET_MIB") == nullptr) settings.availableBytes = &PipelineCreationGate::AvailableMemoryBytes;
     settings.reserveBytes = EnvironmentNumber("APS5_PIPELINE_COMPILE_RESERVE_MIB", 0) << 20u;
     if (settings.reserveBytes != 0) settings.reserveAvailableBytes = &PipelineCreationGate::AvailableMemoryBytes;
     settings.maxLarge = static_cast<std::uint32_t>(std::max<std::uint64_t>(1u, EnvironmentNumber("APS5_PIPELINE_COMPILE_MAX_LARGE", settings.maxLarge)));
