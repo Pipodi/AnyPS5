@@ -2,6 +2,7 @@
 #include "SpirvBackend/SpirvMemory/SpirvTypes.hpp"
 #include "SpirvBackend/SpirvMemory/SpirvConstants.hpp"
 #include <bit>
+#include <cstdlib>
 #include <utility>
 #include <iterator>
 #include <initializer_list>
@@ -10,6 +11,11 @@
 namespace ShaderRecompiler {
 
 namespace {
+
+bool BdaRangeCacheEnabled() {
+    static const bool enabled = std::getenv("APS5_BDA_RANGE_CACHE") != nullptr;
+    return enabled;
+}
 
 // (u64 address, u32 bytes, u32 instruction) -> u64 device address of the range holding all the bytes,
 std::uint32_t DefineBdaLookup(SpirvEmitterState& state, const char* name, bool recordFaults, std::uint32_t permission = BdaAbi::Read, bool rangeResult = false) {
@@ -46,6 +52,39 @@ std::uint32_t DefineBdaLookup(SpirvEmitterState& state, const char* name, bool r
         exits.push_back(state.currentLabel);
         state.module.AddFunction(spv::OpBranch, outerMerge);
     };
+    const bool cached = !rangeResult && BdaRangeCacheEnabled();
+    std::uint32_t cachedBegin = 0;
+    std::uint32_t cachedFinish = 0;
+    std::uint32_t cachedBase = 0;
+    if (cached) {
+        const auto pointerType = TypePointer(state, spv::StorageClassPrivate, u64);
+        cachedBegin = state.module.DefineInitializedGlobalVariable(pointerType, spv::StorageClassPrivate, BdaConstant(state, ~std::uint64_t{0}));
+        cachedFinish = state.module.DefineInitializedGlobalVariable(pointerType, spv::StorageClassPrivate, BdaConstant(state, 0u));
+        cachedBase = state.module.DefineInitializedGlobalVariable(pointerType, spv::StorageClassPrivate, BdaConstant(state, 0u));
+        const auto loadCached = [&](std::uint32_t variable) {
+            const auto value = state.module.AllocateId();
+            state.module.AddFunction(spv::OpLoad, u64, value, variable);
+            return value;
+        };
+        const auto hitBegin = loadCached(cachedBegin);
+        const auto hitFinish = loadCached(cachedFinish);
+        const auto hitBase = loadCached(cachedBase);
+        const auto hitEnd = binary(spv::OpIAdd, u64, address, Unary(state, spv::OpUConvert, u64, bytes));
+        const auto hitResult = binary(spv::OpIAdd, u64, hitBase, binary(spv::OpISub, u64, address, hitBegin));
+        const auto hitDeviceEnd = binary(spv::OpIAdd, u64, hitResult, Unary(state, spv::OpUConvert, u64, bytes));
+        const auto inside = binary(spv::OpLogicalAnd, boolean,
+                                   binary(spv::OpLogicalAnd, boolean, binary(spv::OpULessThanEqual, boolean, hitBegin, address), binary(spv::OpULessThanEqual, boolean, hitEnd, hitFinish)),
+                                   binary(spv::OpUGreaterThan, boolean, hitEnd, address));
+        const auto noOverflow = binary(spv::OpLogicalAnd, boolean, binary(spv::OpUGreaterThanEqual, boolean, hitResult, hitBase), binary(spv::OpUGreaterThan, boolean, hitDeviceEnd, hitResult));
+        const auto hit = binary(spv::OpLogicalAnd, boolean, inside, noOverflow);
+        const auto hitBlock = state.module.AllocateId();
+        const auto missBlock = state.module.AllocateId();
+        state.module.AddFunction(spv::OpSelectionMerge, missBlock, spv::SelectionControlMaskNone);
+        state.module.AddFunction(spv::OpBranchConditional, hit, hitBlock, missBlock);
+        EmitLabel(state, hitBlock);
+        leave(hitResult);
+        EmitLabel(state, missBlock);
+    }
     const auto leaveIf = [&](std::uint32_t condition, std::uint32_t reason) {
         const auto failed = state.module.AllocateId();
         const auto next = state.module.AllocateId();
@@ -160,6 +199,11 @@ std::uint32_t DefineBdaLookup(SpirvEmitterState& state, const char* name, bool r
         state.module.AddFunction(spv::OpCompositeConstruct, rangeType, range, begin, bound, base);
         leave(range);
     } else {
+        if (cached) {
+            state.module.AddFunction(spv::OpStore, cachedBegin, begin);
+            state.module.AddFunction(spv::OpStore, cachedFinish, finish);
+            state.module.AddFunction(spv::OpStore, cachedBase, base);
+        }
         leave(result);
     }
     EmitLabel(state, outerContinue);
