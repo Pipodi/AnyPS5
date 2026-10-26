@@ -161,11 +161,29 @@ void ReportRegisteredShaderMemory(const ShaderRegistry& registry, const char* ph
     }
 }
 
+#ifdef _WIN32
+void ReleaseMappedSpirv(const ShaderRecompiler::SourceHandle& handle) {
+    static std::atomic<std::uint64_t> released{0};
+    if (handle.artifact == nullptr) return;
+    const auto& spirv = ShaderRecompiler::GetPreparedArtifact(handle).spirv;
+    if (!spirv.Mapped() || spirv.empty()) return;
+    MEMORY_BASIC_INFORMATION region{};
+    if (VirtualQuery(spirv.data(), &region, sizeof(region)) != sizeof(region) || region.Type != MEM_MAPPED) return;
+    const auto bytes = spirv.size() * sizeof(std::uint32_t);
+    VirtualUnlock(const_cast<std::uint32_t*>(spirv.data()), bytes);
+    const auto before = released.fetch_add(bytes, std::memory_order_relaxed);
+    if (before / (1ull << 30) != (before + bytes) / (1ull << 30) || before == 0) std::fprintf(stderr, "[shader-memory] moved %.1f MiB of mapped disk-cache SPIR-V out of the working set\n", static_cast<double>(before + bytes) / (1 << 20));
+}
+#endif
+
 std::shared_ptr<const ShaderRecompiler::SourceHandle> PrepareShaderWithDiagnostics(const ShaderRecompiler::RecompileRequest& request, ShaderRecompiler::ShaderPreparationContext* preparation) {
     std::exception_ptr failure;
     std::string dump;
     try {
         auto handle = ShaderRecompiler::PrepareShader(request, preparation);
+#ifdef _WIN32
+        if (handle != nullptr) ReleaseMappedSpirv(*handle);
+#endif
         return handle;
     } catch (...) {
         failure = std::current_exception();
