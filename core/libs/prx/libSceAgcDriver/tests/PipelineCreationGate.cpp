@@ -211,7 +211,7 @@ void defaults() {
     const auto settings = PipelineCreationGate::SettingsFromEnvironment();
     const auto physical = PipelineCreationGate::PhysicalMemoryBytes();
     Require(physical != 0 && PipelineCreationGate::AvailableMemoryBytes() != 0, "physical or available memory reads zero");
-    if (std::getenv("APS5_PIPELINE_COMPILE_BUDGET_MIB") == nullptr) Require(settings.budgetBytes == (physical / 8u >> 20u << 20u) && settings.availableBytes != nullptr, "the default budget is not an eighth of physical memory bounded by the available memory");
+    if (std::getenv("APS5_PIPELINE_COMPILE_BUDGET_MIB") == nullptr) Require(settings.budgetBytes == (physical / 16u * 7u >> 20u << 20u) && settings.availableBytes == nullptr, "the default budget is not seven sixteenths of physical memory without an available-memory bound");
     std::printf("default budget %llu MiB of %llu MiB physical, %llu bytes per word, small below %llu MiB\n", static_cast<unsigned long long>(settings.budgetBytes >> 20u), static_cast<unsigned long long>(physical >> 20u), static_cast<unsigned long long>(settings.bytesPerWord), static_cast<unsigned long long>(settings.smallBytes >> 20u));
 }
 
