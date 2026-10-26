@@ -21,7 +21,9 @@
 #include "prx/libc/include/GuestAllocations.hpp"
 #include "Optimization/ResourceProgram.hpp"
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <string>
 #include <cstdlib>
 #include <functional>
@@ -443,9 +445,88 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
             ++reports;
             std::fprintf(stderr, "[dispatch-cache] 0x%llx key changed:%s\n", static_cast<unsigned long long>(address), what.c_str());
         }
+        struct Position { std::uint64_t changes = 0, fresh = 0; std::array<std::uint32_t, 4> recent{}; std::size_t seen = 0, head = 0; };
+        struct Churn { std::uint64_t dispatches = 0, changes = 0, sameInputs = 0, strided = 0; std::map<std::uint64_t, Position> positions; };
+        static std::map<std::uint64_t, Churn> churn;
+        static auto windowStart = std::chrono::steady_clock::now();
+        const bool keyChanged = previous.key != 0 && previous.key != key;
+        auto& entry = churn[address];
+        ++entry.dispatches;
+        bool anyDifferent = false;
+        bool anyStride = false;
+        const auto observe = [&](std::uint64_t id, bool known, std::uint32_t before, std::uint32_t value) {
+            auto& position = entry.positions[id];
+            const bool differs = !known || before != value;
+            if (differs) {
+                const auto limit = std::min<std::size_t>(position.seen, position.recent.size());
+                const bool remembered = std::find(position.recent.begin(), position.recent.begin() + limit, value) != position.recent.begin() + limit;
+                if (keyChanged) {
+                    ++position.changes;
+                    if (!remembered) ++position.fresh;
+                    anyDifferent = true;
+                }
+                if (!remembered) {
+                    position.recent[position.head] = value;
+                    position.head = (position.head + 1) % position.recent.size();
+                    ++position.seen;
+                }
+            }
+        };
+        for (std::size_t i = 0; i < userData.size(); ++i) {
+            const bool known = i < previous.userData.size();
+            observe(i, known, known ? previous.userData[i] : 0u, userData[i]);
+        }
+        for (const auto& [offset, value] : queue.shader) {
+            if (keyHygiene && offset != 0x207u && offset != 0x208u && offset != 0x209u && offset != 0x212u && offset != 0x213u) continue;
+            const auto old = previous.shader.find(offset);
+            observe(0x10000ull | offset, old != previous.shader.end(), old == previous.shader.end() ? 0u : old->second, value);
+        }
+        if (keyChanged) {
+            ++entry.changes;
+            if (!anyDifferent) ++entry.sameInputs;
+            for (std::size_t i = 0; i + 1 < userData.size() && i + 1 < previous.userData.size(); ++i) {
+                const auto now = (static_cast<std::uint64_t>(userData[i + 1]) << 32u) | userData[i];
+                const auto before = (static_cast<std::uint64_t>(previous.userData[i + 1]) << 32u) | previous.userData[i];
+                const auto delta = now > before ? now - before : before - now;
+                if (delta != 0 && delta < (1ull << 24u) && userData[i + 1] > 0xffffu) anyStride = true;
+            }
+            if (anyStride) ++entry.strided;
+        }
         previous.userData = userData;
         previous.shader = std::map<std::uint32_t, std::uint32_t>(queue.shader.begin(), queue.shader.end());
         previous.key = key;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - windowStart >= std::chrono::seconds(10)) {
+            std::uint64_t totalDispatches = 0, totalChanges = 0, changedAddresses = 0;
+            std::vector<std::pair<std::uint64_t, const Churn*>> ranked;
+            for (const auto& [churnAddress, churnEntry] : churn) {
+                totalDispatches += churnEntry.dispatches;
+                totalChanges += churnEntry.changes;
+                if (churnEntry.changes != 0) ++changedAddresses;
+                ranked.emplace_back(churnAddress, &churnEntry);
+            }
+            std::fprintf(stderr, "[dispatch-cache] key churn (10 s): %llu dispatches, %llu key changes over %llu addresses\n", static_cast<unsigned long long>(totalDispatches), static_cast<unsigned long long>(totalChanges), static_cast<unsigned long long>(changedAddresses));
+            std::sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) { return a.second->changes > b.second->changes; });
+            for (std::size_t r = 0; r < ranked.size() && r < 12 && ranked[r].second->changes != 0; ++r) {
+                const auto& item = *ranked[r].second;
+                std::vector<std::pair<std::uint64_t, const Position*>> places;
+                for (const auto& [id, position] : item.positions) {
+                    if (position.changes != 0) places.emplace_back(id, &position);
+                }
+                std::sort(places.begin(), places.end(), [](const auto& a, const auto& b) { return a.second->changes > b.second->changes; });
+                std::string text;
+                for (std::size_t q = 0; q < places.size() && q < 6; ++q) {
+                    char piece[64];
+                    const auto id = places[q].first;
+                    if (id >= 0x10000ull) std::snprintf(piece, sizeof(piece), "%ssh[%x] %llu (new %llu)", q == 0 ? " " : ", ", static_cast<unsigned>(id & 0xffffu), static_cast<unsigned long long>(places[q].second->changes), static_cast<unsigned long long>(places[q].second->fresh));
+                    else std::snprintf(piece, sizeof(piece), "%suser[%llu] %llu (new %llu)", q == 0 ? " " : ", ", static_cast<unsigned long long>(id), static_cast<unsigned long long>(places[q].second->changes), static_cast<unsigned long long>(places[q].second->fresh));
+                    text += piece;
+                }
+                std::fprintf(stderr, "[dispatch-cache] churn 0x%llx: %llu dispatches, %llu changes; %llu with identical user/regs, %llu with an address stride;%s\n", static_cast<unsigned long long>(ranked[r].first), static_cast<unsigned long long>(item.dispatches), static_cast<unsigned long long>(item.changes), static_cast<unsigned long long>(item.sameInputs), static_cast<unsigned long long>(item.strided), text.c_str());
+            }
+            churn.clear();
+            windowStart = now;
+        }
     }
 
     mix(reinterpret_cast<std::uintptr_t>(registeredShader.get()));
