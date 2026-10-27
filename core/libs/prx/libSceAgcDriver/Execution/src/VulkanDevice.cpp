@@ -1070,11 +1070,13 @@ ComputePipelineReplayResult VulkanDevice::ReplayComputePipeline(const ComputePip
             require(count == 2 && (CoreVulkanCapability(capture.spirv[cursor + 1]) || std::ranges::find(target.supportedCapabilities, capture.spirv[cursor + 1]) != target.supportedCapabilities.end()), "captured SPIR-V capability is not enabled");
         }
     }
+    if (!onGameDevice) {
 #if ANYPS5_ENABLE_SPIRV_TOOLS
-    static_cast<void>(ShaderRecompiler::ValidateAndOptimizeSpirv(capture.spirv, target.vulkanVersion, target.spirvVersion, target.nonConstantImageOffsets, false));
+        static_cast<void>(ShaderRecompiler::ValidateAndOptimizeSpirv(capture.spirv, target.vulkanVersion, target.spirvVersion, target.nonConstantImageOffsets, false));
 #else
-    throw std::runtime_error("compute pipeline replay requires ANYPS5_ENABLE_SPIRV_TOOLS=ON");
+        throw std::runtime_error("compute pipeline replay requires ANYPS5_ENABLE_SPIRV_TOOLS=ON");
 #endif
+    }
     ShaderRecompiler::RecompileResult shader;
     shader.spirv = capture.spirv;
     for (const auto& value : capture.specialization) shader.specialization.push_back({value.id, value.value});
@@ -1176,15 +1178,17 @@ ComputePipelineReplayResult VulkanDevice::ReplayComputePipeline(const ComputePip
     phase = std::chrono::steady_clock::now();
     CreateComputePipeline(state->device, state->DeviceFunction<PFN_vkCreateComputePipelines>("vkCreateComputePipelines"), replay.cache, objects.module, objects.layout, capture.flags, capture.stageFlags, specialization.Info(), capture.requiredSubgroupSize, &objects.pipeline, capture.spirv.size());
     result.pipelineMilliseconds = elapsed(phase);
-    phase = std::chrono::steady_clock::now();
-    const auto getCache = state->DeviceFunction<PFN_vkGetPipelineCacheData>("vkGetPipelineCacheData");
-    std::size_t cacheBytes = 0;
-    check(getCache(state->device, replay.cache, &cacheBytes, nullptr), "vkGetPipelineCacheData size replay");
-    require(cacheBytes <= 64u * 1024u * 1024u, "exported replay pipeline cache exceeds 64 MiB");
-    result.cache.resize(cacheBytes);
-    check(getCache(state->device, replay.cache, &cacheBytes, result.cache.data()), "vkGetPipelineCacheData replay");
-    result.cache.resize(cacheBytes);
-    result.cacheMilliseconds += elapsed(phase);
+    if (!onGameDevice) {
+        phase = std::chrono::steady_clock::now();
+        const auto getCache = state->DeviceFunction<PFN_vkGetPipelineCacheData>("vkGetPipelineCacheData");
+        std::size_t cacheBytes = 0;
+        check(getCache(state->device, replay.cache, &cacheBytes, nullptr), "vkGetPipelineCacheData size replay");
+        require(cacheBytes <= 64u * 1024u * 1024u, "exported replay pipeline cache exceeds 64 MiB");
+        result.cache.resize(cacheBytes);
+        check(getCache(state->device, replay.cache, &cacheBytes, result.cache.data()), "vkGetPipelineCacheData replay");
+        result.cache.resize(cacheBytes);
+        result.cacheMilliseconds += elapsed(phase);
+    }
     result.totalMilliseconds = elapsed(start);
     return result;
 }
