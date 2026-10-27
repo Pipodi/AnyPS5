@@ -2359,6 +2359,14 @@ std::shared_ptr<const RecompileResult> RegistrationResult(const RecompileRequest
     return made;
 }
 
+bool ComputeRegistrationPrebuildable(const RecompileResult& result, std::uint32_t minWords) {
+    return result.registrationModule && result.spirv.size() >= minWords;
+}
+
+bool ComputeRegistrationPrebuildable(const RecompileResult& result) {
+    return ComputeRegistrationPrebuildable(result, ComputeRegistrationMinWords());
+}
+
 std::vector<std::uint64_t> RegistrationSpirvHashes(std::uint64_t variantId) {
     std::lock_guard lock(registrationSpirvMutex());
     const auto found = registrationSpirvMap().find(variantId);

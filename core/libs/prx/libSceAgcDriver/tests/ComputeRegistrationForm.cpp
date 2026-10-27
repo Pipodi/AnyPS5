@@ -89,6 +89,11 @@ int main(int argc, char** argv) {
             Check(!registered->Identity().Empty(), "the registration module has no identity");
             Check(registered->spirv == dispatched->spirv, "the registration and dispatch modules differ");
             Check(registered->Identity() == dispatched->Identity(), "the registration and dispatch identities differ");
+            const auto words = static_cast<std::uint32_t>(registered->spirv.size());
+            Check(ComputeRegistrationPrebuildable(*registered), "a registration module at the word threshold is not prebuilt");
+            Check(ComputeRegistrationPrebuildable(*registered, words), "a registration module of exactly the word threshold is not prebuilt");
+            Check(!ComputeRegistrationPrebuildable(*registered, words + 1u), "a registration module under the word threshold is prebuilt");
+            Check(!ComputeRegistrationPrebuildable(*dispatched, words + 1u), "a dispatch module under the word threshold is prebuilt");
         }
         Fixture images(WithImage);
         const auto imageHandle = PrepareShader(images.request);
