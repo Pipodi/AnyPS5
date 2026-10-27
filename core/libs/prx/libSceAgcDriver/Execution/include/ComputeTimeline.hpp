@@ -14,7 +14,7 @@ void MarkPrebuildThread();
 bool OnPrebuildThread();
 std::uint32_t ThreadId();
 double ThreadCpuMs();
-void Mark(Event event, std::uint64_t address);
+void Mark(Event event, std::uint64_t address, const char* pipeline = nullptr);
 
 }
 

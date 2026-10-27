@@ -584,7 +584,7 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
         }
         return;
     }
-    AgcDriver::ComputeTimeline::Mark(AgcDriver::ComputeTimeline::Event::FirstDispatch, address);
+    AgcDriver::ComputeTimeline::Mark(AgcDriver::ComputeTimeline::Event::FirstDispatch, address, AgcDriver::ComputeTimeline::Enabled() && compiledResult != nullptr ? localDevice->ComputePipelineStatus(*compiledResult) : nullptr);
     if (verifyDataHits() && dataHit) verifyDataHit(snapshot, codeOffset, request, memory, address, *keepVariant, liveWords, *compiledResult);
 
     if (recordQueuedLabelsAfterCapture(submission.queue, captured)) {

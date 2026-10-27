@@ -2485,6 +2485,15 @@ bool VulkanDevice::HasComputePipeline(const ShaderRecompiler::RecompileResult& s
     return !key.identity.Empty() && (state->computePipelines.contains(key) || state->computePipelinesBuilding.contains(key));
 }
 
+const char* VulkanDevice::ComputePipelineStatus(const ShaderRecompiler::RecompileResult& shader) const {
+    const std::array<Graphics::CompiledShader, 1> shaders{{{ShaderRecompiler::ShaderStage::Compute, &shader, 0}}};
+    const auto key = ComputePipelineKey::Of(shader, Graphics::PushConstantStages(shaders) != 0);
+    std::lock_guard pipelines(state->computePipelinesMutex);
+    if (key.identity.Empty()) return "create";
+    if (state->computePipelines.contains(key)) return "hit";
+    return state->computePipelinesBuilding.contains(key) ? "building" : "create";
+}
+
 void VulkanDevice::PrebuildComputePipeline(const ShaderRecompiler::RecompileResult& shader, std::uint64_t programAddress) {
     if (shader.spirv.size() < 5 || shader.spirv[0] != 0x07230203u) return;
     ShaderRecompiler::RuntimeAbi::RequireVersion(shader.runtimeAbiVersion);

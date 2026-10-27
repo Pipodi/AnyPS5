@@ -1176,10 +1176,14 @@ std::vector<ShaderRecompiler::TableCallee> ReadTableCallees(const ShaderRecompil
     return callees;
 }
 
+bool CodeCallsSubroutines(std::span<const std::uint32_t> code) {
+    return std::any_of(code.begin(), code.end(), [](std::uint32_t word) { return (word & 0xff80ff00u) == 0xbe802100u; });
+}
+
 ShaderRecompiler::LinkedCalls LinkUserDataCallees(const ShaderRecompiler::RecompileRequest& request) {
     if (request.shader.stage != ShaderRecompiler::ShaderStage::Compute) return {};
     const auto code = request.shader.code;
-    if (std::none_of(code.begin(), code.end(), [](std::uint32_t word) { return (word & 0xff80ff00u) == 0xbe802100u; })) return {};
+    if (!CodeCallsSubroutines(code)) return {};
     const auto program = ShaderRecompiler::RdnaInstructionDecoder{}.Decode(code);
     const ShaderRecompiler::SwappcInfo swappc{false, request.context.userDataBaseRegister, static_cast<std::uint32_t>(request.context.userData.size()), request.context.waveSize};
     const auto calls = ShaderRecompiler::FindUserDataCalls(program, swappc);
@@ -1565,6 +1569,39 @@ void PrebuildStageLibrary(const std::shared_ptr<VulkanDevice>& device, const Gra
     });
 }
 
+namespace {
+
+void PrebuildRegisteredCompute(const std::shared_ptr<VulkanDevice>& device, const ShaderRecompiler::RecompileRequest& request, const ShaderRecompiler::SourceHandle& handle) {
+    if (!ShaderRecompiler::GetPreparedArtifact(handle).registrationModule || CodeCallsSubroutines(request.shader.code)) return;
+    std::shared_ptr<const ShaderRecompiler::RecompileResult> result;
+    try {
+        result = ShaderRecompiler::RegistrationResult(request, handle);
+    } catch (const std::exception& error) {
+        APS5_LOG_OUT("compute registration prebuild skipped: %s", error.what());
+        return;
+    }
+    if (result == nullptr) return;
+    const auto address = request.shader.codeAddress;
+    SubmitLibraryPrebuild([device, result = std::move(result), address] {
+        const auto thread = AgcDriver::ComputeTimeline::OnPrebuildThread() ? "prebuild" : "other";
+        const auto start = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "[regcompute] start program 0x%llx words %zu thread=%s tid=%u t=%.0f\n", static_cast<unsigned long long>(address), result->spirv.size(), thread, AgcDriver::ComputeTimeline::ThreadId(), AgcDriver::ComputeTimeline::NowMs());
+        const bool existing = device->HasComputePipeline(*result);
+        const char* outcome = "ok";
+        try {
+            device->PrebuildComputePipeline(*result, address);
+            if (existing) outcome = "existing";
+            else if (!device->HasComputePipeline(*result)) outcome = "fail";
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "[regcompute] program 0x%llx failed: %s\n", static_cast<unsigned long long>(address), error.what());
+            outcome = "fail";
+        }
+        std::fprintf(stderr, "[regcompute] end program 0x%llx words %zu thread=%s tid=%u wall_ms=%.0f result=%s t=%.0f\n", static_cast<unsigned long long>(address), result->spirv.size(), thread, AgcDriver::ComputeTimeline::ThreadId(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), outcome, AgcDriver::ComputeTimeline::NowMs());
+    });
+}
+
+}
+
 std::vector<PreparedShaders::Entry> PrepareRegistered(RegisteredPreparation& plan) {
     auto& request = *plan.request;
     std::vector<PreparedShaders::Entry> entries;
@@ -1581,6 +1618,7 @@ std::vector<PreparedShaders::Entry> PrepareRegistered(RegisteredPreparation& pla
             APS5_LOG_OUT("shader library prebuild skipped: %s", error.what());
         }
     }
+    if (plan.prebuildDevice != nullptr && request.target.registrationModules && request.shader.stage == ShaderRecompiler::ShaderStage::Compute && entries.front().handle != nullptr && !LibraryPrebuildDisabled()) PrebuildRegisteredCompute(plan.prebuildDevice, request, *entries.front().handle);
     if (request.context.compute) {
         request.context.compute->partialThreads = {1, 1, 1};
         append();
