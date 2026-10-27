@@ -1580,8 +1580,7 @@ std::atomic<RegistrationPrebuildQueue*>& RegisteredComputeQueueSlot() {
 RegistrationPrebuildQueue& RegisteredComputeQueue() {
     static auto* queue = [] {
         auto* created = new RegistrationPrebuildQueue(RegistrationPrebuildQueue::SettingsFromEnvironment(), [](std::function<void()> task) { SubmitLibraryPrebuild(std::move(task)); }, [](std::size_t queued, const char* reason) {
-            std::fprintf(stderr, "[regcompute] released %zu queued at t=%.0f reason=%s
-", queued, AgcDriver::ComputeTimeline::NowMs(), reason);
+            std::fprintf(stderr, "[regcompute] released %zu queued at t=%.0f reason=%s\n", queued, AgcDriver::ComputeTimeline::NowMs(), reason);
         });
         RegisteredComputeQueueSlot().store(created);
         return created;
