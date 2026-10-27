@@ -632,10 +632,18 @@ void prepareInterface(const RecompileRequest& request, IrProgram& program) {
     }
 }
 
+bool ComputeRegistrationEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("APS5_COMPUTE_REGISTRATION");
+        return value != nullptr && std::string_view(value) == "1";
+    }();
+    return enabled;
+}
+
 CompiledVariant emitVariant(const RecompileRequest& request, IrProgram& program) {
     const auto inputInfo = RequestInputInfo(request);
     constexpr BindingAllocator bindingAllocator;
-    bool registration = request.target.registrationModules && (request.shader.stage == ShaderStage::Vertex || request.shader.stage == ShaderStage::Fragment);
+    bool registration = request.target.registrationModules && (request.shader.stage == ShaderStage::Vertex || request.shader.stage == ShaderStage::Fragment || (request.shader.stage == ShaderStage::Compute && ComputeRegistrationEnabled()));
     program.Metadata().bindingLayoutComplete = false;
     const bool stencilReplay = request.shader.stage == ShaderStage::Fragment && std::ranges::any_of(program.Info().outputs, [](const StageOutput& output) { return output.kind == StageOutputKind::StencilRef; }) && std::ranges::find(request.target.supportedCapabilities, static_cast<std::uint32_t>(spv::CapabilityStencilExportEXT)) == request.target.supportedCapabilities.end();
     auto bindings = bindingAllocator.Allocate(program, request.layout, registration, stencilReplay);
@@ -716,7 +724,7 @@ CompiledVariant emitVariant(const RecompileRequest& request, IrProgram& program)
         return value != nullptr ? static_cast<std::uint32_t>(std::strtoul(value, nullptr, 10)) : 0u;
     }();
     const auto wordLimit = heapWordLimit != 0u && request.target.bindlessImages && ResourceMaterializer::UsesBindlessImages(program.Info(), program.Resources().stage) ? std::max(heapWordLimit, request.target.registrationWordLimit) : request.target.registrationWordLimit;
-    if (registration && result.spirv.size() > wordLimit) {
+    if (registration && request.shader.stage != ShaderStage::Compute && result.spirv.size() > wordLimit) {
         registration = false;
         program.Metadata().bindingLayoutComplete = false;
         bindings = bindingAllocator.Allocate(program, request.layout, false, stencilReplay);
@@ -2307,7 +2315,7 @@ std::shared_ptr<const RecompileResult> RegistrationResult(const RecompileRequest
         return nullptr;
     }
     const auto& info = handle.artifact->info.info;
-    if (std::ranges::any_of(info.buffers, [](const BufferResource& buffer) { return buffer.descriptorFormatted; })) {
+    if (request.shader.stage != ShaderStage::Compute && std::ranges::any_of(info.buffers, [](const BufferResource& buffer) { return buffer.descriptorFormatted; })) {
         note("formatted-buffer");
         return nullptr;
     }
