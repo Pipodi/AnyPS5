@@ -20,6 +20,7 @@
 #include "prx/libc/include/GuestArena.hpp"
 #include "ControlFlow/RequestSerializer.hpp"
 #include "Recompiler.hpp"
+#include "Optimization/ResourceProgram.hpp"
 #include "VulkanTestDevice.hpp"
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -264,6 +265,19 @@ int main(int argc, char** argv) {
         const auto compileStart = std::chrono::steady_clock::now();
         const auto shader = ShaderRecompiler::Recompile(request.request);
         const auto compileMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compileStart).count();
+        if (std::getenv("BENCH_REGISTRATION_IDENTITY") != nullptr) {
+            const auto handle = ShaderRecompiler::PrepareShader(request.request);
+            const auto registered = ShaderRecompiler::RegistrationResult(request.request, *handle);
+            const auto materialized = shader.Identity();
+            if (registered == nullptr) {
+                std::printf("REGID refused materialize=%016llx%016llx words=%zu
+", static_cast<unsigned long long>(materialized.high), static_cast<unsigned long long>(materialized.low), shader.spirv.size());
+            } else {
+                const auto identity = registered->Identity();
+                std::printf("REGID registration=%016llx%016llx materialize=%016llx%016llx equal=%d reg_words=%zu mat_words=%zu reg_spec=%zu mat_spec=%zu reg_module=%d mat_module=%d
+", static_cast<unsigned long long>(identity.high), static_cast<unsigned long long>(identity.low), static_cast<unsigned long long>(materialized.high), static_cast<unsigned long long>(materialized.low), identity == materialized ? 1 : 0, registered->spirv.size(), shader.spirv.size(), registered->specialization.size(), shader.specialization.size(), registered->registrationModule ? 1 : 0, shader.registrationModule ? 1 : 0);
+            }
+        }
         const auto& compute = *request.request.context.compute;
         std::printf("request bench: %s, %zu code words, threads %ux%ux%u, %zu SPIR-V words (recompile %.0f ms)\n", argv[1], request.request.shader.code.size(), compute.numThreads[0], compute.numThreads[1], compute.numThreads[2], shader.spirv.size(), compileMs);
 
