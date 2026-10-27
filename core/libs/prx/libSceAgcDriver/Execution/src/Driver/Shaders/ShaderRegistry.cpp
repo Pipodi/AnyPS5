@@ -1964,7 +1964,10 @@ private:
 
     static void* Main(void* argument) {
         auto& pool = *static_cast<RegistrationPreparePool*>(argument);
-        if (pool.prebuild) AgcDriver::ComputeTimeline::MarkPrebuildThread();
+        if (pool.prebuild) {
+            AgcDriver::ComputeTimeline::MarkPrebuildThread();
+            AgcDriver::ComputeTimeline::ApplyCompilePriority();
+        }
         if (PerformanceTrace::Configured()) PerformanceTrace::BindThread("shader prepare", TraceThread::DefaultCapacity / 8);
         for (;;) {
             Task task;

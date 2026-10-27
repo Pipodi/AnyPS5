@@ -288,6 +288,8 @@
 
 - [Compute timeline log](../../../core/libs/prx/libSceAgcDriver/Execution/src/ComputeTimeline.cpp) (`APS5_LOG_COMPUTE_TIMELINE`) - local diagnostic. Each event prints once per program address, so a second registration or a rebuilt variant logs nothing more, and times count from the driver library load. The create line hashes the specialization constants and the descriptor layout key but prints only the push-constant stage mask and size, because push-constant values are written per dispatch. Its CPU time covers the calling thread only.
 
+- [Compile thread priority](../../../core/libs/prx/libSceAgcDriver/Execution/src/ComputeTimeline.cpp) (`APS5_COMPILE_THREAD_PRIORITY`) - local experiment. Windows only: the value goes to `SetThreadPriority` unchecked for the prebuild pool threads and around each compute pipeline create on other threads. Linux ignores it, and the effect on in-game compile time is unmeasured.
+
 ### Opt-in draw paths
 
 - [Draw finisher](../../../core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawPipeline.cpp) (`APS5_DRAW_PIPELINE`) - opt-in. The Linux main-image page table it adds matches what Windows already does by default.

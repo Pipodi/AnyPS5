@@ -88,4 +88,37 @@ void Mark(Event event, std::uint64_t address) {
     std::fprintf(stderr, "[compute-timeline] %s program 0x%llx t=%.0f\n", Name(event), static_cast<unsigned long long>(address), NowMs());
 }
 
+int CompilePriority() {
+    static const int priority = [] {
+        const char* text = std::getenv("APS5_COMPILE_THREAD_PRIORITY");
+        if (text == nullptr || *text == 0) return 0x7fffffff;
+        return static_cast<int>(std::strtol(text, nullptr, 10));
+    }();
+    return priority;
+}
+
+void ApplyCompilePriority() {
+#ifdef _WIN32
+    if (CompilePriority() != 0x7fffffff) SetThreadPriority(GetCurrentThread(), CompilePriority());
+#endif
+}
+
+CompilePriorityScope::CompilePriorityScope() {
+#ifdef _WIN32
+    if (CompilePriority() == 0x7fffffff) return;
+    const auto current = GetThreadPriority(GetCurrentThread());
+    if (current == THREAD_PRIORITY_ERROR_RETURN || current == CompilePriority()) return;
+    if (SetThreadPriority(GetCurrentThread(), CompilePriority())) {
+        previous = current;
+        raised = true;
+    }
+#endif
+}
+
+CompilePriorityScope::~CompilePriorityScope() {
+#ifdef _WIN32
+    if (raised) SetThreadPriority(GetCurrentThread(), previous);
+#endif
+}
+
 }

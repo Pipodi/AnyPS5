@@ -16,6 +16,21 @@ std::uint32_t ThreadId();
 double ThreadCpuMs();
 void Mark(Event event, std::uint64_t address);
 
+int CompilePriority();
+void ApplyCompilePriority();
+
+class CompilePriorityScope {
+public:
+    CompilePriorityScope();
+    ~CompilePriorityScope();
+    CompilePriorityScope(const CompilePriorityScope&) = delete;
+    CompilePriorityScope& operator=(const CompilePriorityScope&) = delete;
+
+private:
+    int previous = 0;
+    bool raised = false;
+};
+
 }
 
 #endif
