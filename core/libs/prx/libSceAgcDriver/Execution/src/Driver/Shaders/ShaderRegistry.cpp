@@ -1709,6 +1709,8 @@ void PrebuildRegisteredCompute(const std::shared_ptr<VulkanDevice>& device, cons
         const auto thread = AgcDriver::ComputeTimeline::OnPrebuildThread() ? "prebuild" : "other";
         const auto start = std::chrono::steady_clock::now();
         std::fprintf(stderr, "[regcompute] start reason=idle program 0x%llx words %zu thread=%s tid=%u t=%.0f\n", static_cast<unsigned long long>(address), result->spirv.size(), thread, AgcDriver::ComputeTimeline::ThreadId(), AgcDriver::ComputeTimeline::NowMs());
+        const auto cpuStart = AgcDriver::ComputeTimeline::ThreadCpuMs();
+        AgcDriver::ComputeTimeline::ResetCreateStats();
         const bool existing = device->HasComputePipeline(*result);
         const char* outcome = "ok";
         try {
@@ -1719,7 +1721,8 @@ void PrebuildRegisteredCompute(const std::shared_ptr<VulkanDevice>& device, cons
             std::fprintf(stderr, "[regcompute] program 0x%llx failed: %s\n", static_cast<unsigned long long>(address), error.what());
             outcome = "fail";
         }
-        std::fprintf(stderr, "[regcompute] end program 0x%llx words %zu thread=%s tid=%u wall_ms=%.0f result=%s t=%.0f\n", static_cast<unsigned long long>(address), result->spirv.size(), thread, AgcDriver::ComputeTimeline::ThreadId(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), outcome, AgcDriver::ComputeTimeline::NowMs());
+        const auto& stats = AgcDriver::ComputeTimeline::CurrentCreateStats();
+        std::fprintf(stderr, "[regcompute] end program 0x%llx words %zu thread=%s tid=%u wall_ms=%.0f cpu_ms=%.0f gate_wait_ms=%.0f lock_wait_ms=%.0f create_wall_ms=%.0f create_cpu_ms=%.0f ideal_p=%u ideal_e=%u starved=%u/%u core_start=%c core_end=%c result=%s t=%.0f\n", static_cast<unsigned long long>(address), result->spirv.size(), thread, AgcDriver::ComputeTimeline::ThreadId(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), AgcDriver::ComputeTimeline::ThreadCpuMs() - cpuStart, stats.gateWaitMs, stats.lockWaitMs, stats.createWallMs, stats.createCpuMs, stats.idealPerformance, stats.idealEfficiency, stats.starved, stats.samples, stats.startClass, stats.endClass, outcome, AgcDriver::ComputeTimeline::NowMs());
     });
 }
 

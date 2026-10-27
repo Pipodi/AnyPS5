@@ -194,9 +194,23 @@ void CreateComputePipeline(VkDevice device, PFN_vkCreateComputePipelines create,
     subgroup.requiredSubgroupSize = subgroupSize;
     if (subgroupSize != 0) info.stage.pNext = &subgroup;
     info.layout = layout;
+    const bool timeline = AgcDriver::ComputeTimeline::Enabled();
+    const auto gateStart = AgcDriver::ComputeTimeline::NowMs();
     const auto admitted = Graphics::PipelineCreationGate::Shared().Admit(words, !GuestMemory::GpuMutex().HeldByThisThread());
+    const auto lockStart = AgcDriver::ComputeTimeline::NowMs();
     auto cacheLock = synchronization != nullptr ? synchronization->LockForPipelineUse() : Graphics::PipelineCacheSynchronization::PipelineUseLock{};
-    check(create(device, cache, 1, &info, nullptr, pipeline), "vkCreateComputePipelines");
+    const auto createStart = AgcDriver::ComputeTimeline::NowMs();
+    const auto createCpuStart = AgcDriver::ComputeTimeline::ThreadCpuMs();
+    AgcDriver::ComputeTimeline::CreateWatch watch(timeline && words >= AgcDriver::ComputeTimeline::WatchedCreateWords);
+    const auto result = create(device, cache, 1, &info, nullptr, pipeline);
+    watch.Finish();
+    auto& stats = AgcDriver::ComputeTimeline::CurrentCreateStats();
+    stats.gateWaitMs += lockStart - gateStart;
+    stats.lockWaitMs += createStart - lockStart;
+    stats.createWallMs += AgcDriver::ComputeTimeline::NowMs() - createStart;
+    stats.createCpuMs += AgcDriver::ComputeTimeline::ThreadCpuMs() - createCpuStart;
+    ++stats.creates;
+    check(result, "vkCreateComputePipelines");
     PerformanceCounters::CountPipeline();
 }
 
@@ -6303,6 +6317,7 @@ std::shared_ptr<ComputePipelineObjects> VulkanDevice::createComputePipeline(cons
         timelineStartMs = AgcDriver::ComputeTimeline::NowMs();
         timelineCpuStartMs = AgcDriver::ComputeTimeline::ThreadCpuMs();
     }
+    AgcDriver::ComputeTimeline::ResetCreateStats();
     if (profile && shader.spirv.size() > 100000) std::fprintf(stderr, "[dispatch] creating a pipeline for %zu SPIR-V words (program 0x%llx)\n", shader.spirv.size(), static_cast<unsigned long long>(programAddress));
     {
         AgcDriver::ComputeTimeline::CompilePriorityScope priorityScope;
@@ -6317,6 +6332,9 @@ std::shared_ptr<ComputePipelineObjects> VulkanDevice::createComputePipeline(cons
     }
     Graphics::LogPipelineStatistics_nid_no_patch(context, objects->pipeline);
     if (timeline) {
+        const auto& stats = AgcDriver::ComputeTimeline::CurrentCreateStats();
+        char detail[192] = "";
+        if (shader.spirv.size() >= AgcDriver::ComputeTimeline::WatchedCreateWords) std::snprintf(detail, sizeof detail, " gate_wait_ms=%.0f lock_wait_ms=%.0f create_wall_ms=%.0f create_cpu_ms=%.0f ideal_p=%u ideal_e=%u starved=%u/%u core_start=%c core_end=%c", stats.gateWaitMs, stats.lockWaitMs, stats.createWallMs, stats.createCpuMs, stats.idealPerformance, stats.idealEfficiency, stats.starved, stats.samples, stats.startClass, stats.endClass);
         std::uint64_t specHash = 0xcbf29ce484222325ull;
         for (const auto& value : shader.specialization) {
             specHash = (specHash ^ value.id) * 0x100000001b3ull;
@@ -6324,7 +6342,7 @@ std::shared_ptr<ComputePipelineObjects> VulkanDevice::createComputePipeline(cons
         }
         std::uint64_t layoutHash = 0xcbf29ce484222325ull;
         for (const auto word : layoutKey) layoutHash = (layoutHash ^ word) * 0x100000001b3ull;
-        std::fprintf(stderr, "[compute-timeline] create program 0x%llx words %zu start t=%.0f wall_ms=%.0f cpu_ms=%.0f thread=%s tid=%u gpulock=%d spec=%08x nspec=%zu layout=%08x push_stages=0x%x push_bytes=%u flags=0x%x stage_flags=0x%x subgroup=%u\n", static_cast<unsigned long long>(programAddress), shader.spirv.size(), timelineStartMs, AgcDriver::ComputeTimeline::NowMs() - timelineStartMs, AgcDriver::ComputeTimeline::ThreadCpuMs() - timelineCpuStartMs, AgcDriver::ComputeTimeline::OnPrebuildThread() ? "prebuild" : "other", AgcDriver::ComputeTimeline::ThreadId(), GuestMemory::GpuMutex().HeldByThisThread() ? 1 : 0, static_cast<unsigned>(specHash ^ (specHash >> 32u)), shader.specialization.size(), static_cast<unsigned>(layoutHash ^ (layoutHash >> 32u)), static_cast<unsigned>(pushStages), pushStages != 0 ? Graphics::ComputePushConstantBytes : 0u, static_cast<unsigned>(pipelineFlags), static_cast<unsigned>(stageFlags), static_cast<unsigned>(subgroupSize));
+        std::fprintf(stderr, "[compute-timeline] create program 0x%llx words %zu start t=%.0f wall_ms=%.0f cpu_ms=%.0f thread=%s tid=%u gpulock=%d spec=%08x nspec=%zu layout=%08x push_stages=0x%x push_bytes=%u flags=0x%x stage_flags=0x%x subgroup=%u%s\n", static_cast<unsigned long long>(programAddress), shader.spirv.size(), timelineStartMs, AgcDriver::ComputeTimeline::NowMs() - timelineStartMs, AgcDriver::ComputeTimeline::ThreadCpuMs() - timelineCpuStartMs, AgcDriver::ComputeTimeline::OnPrebuildThread() ? "prebuild" : "other", AgcDriver::ComputeTimeline::ThreadId(), GuestMemory::GpuMutex().HeldByThisThread() ? 1 : 0, static_cast<unsigned>(specHash ^ (specHash >> 32u)), shader.specialization.size(), static_cast<unsigned>(layoutHash ^ (layoutHash >> 32u)), static_cast<unsigned>(pushStages), pushStages != 0 ? Graphics::ComputePushConstantBytes : 0u, static_cast<unsigned>(pipelineFlags), static_cast<unsigned>(stageFlags), static_cast<unsigned>(subgroupSize), detail);
     }
     if (profile && shader.spirv.size() > 100000) std::fprintf(stderr, "[dispatch] created a pipeline for %zu SPIR-V words in %.0f ms (program 0x%llx)\n", shader.spirv.size(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), static_cast<unsigned long long>(programAddress));
     return objects;
