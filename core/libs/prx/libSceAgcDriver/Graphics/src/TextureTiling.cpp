@@ -581,7 +581,7 @@ std::optional<std::uint32_t> LastSliceBefore(const GuestTextureResource& viewed,
     auto fitting = std::min<std::uint64_t>(geometry.layers, (end - window.baseAddress) / geometry.layerBytes);
     if (cube) fitting -= fitting % 6u;
     if (fitting == 0 || fitting >= geometry.layers) return std::nullopt;
-    const auto first = window.baseAddress != viewed.baseAddress ? viewed.baseArray : 0u;
+    const auto first = viewed.baseArray - window.baseArray;
     const auto last = first + static_cast<std::uint32_t>(fitting) - 1u;
     if (last < viewed.baseArray + (cube ? 5u : 0u)) return std::nullopt;
     return last;

@@ -513,10 +513,13 @@ void RunTextureTilingTests() {
         Require(!LastSliceBefore(cubes, [&](std::uint64_t) { return cubesStart + 5ull * cubeLayer; }).has_value(), "a cube array view with no whole cube inside readable memory keeps its slices");
 
         auto kept = array;
-        kept.baseArray = 1530;
+        kept.baseArray = 9;
         const auto arrayLayer = DescribeSurface(kept).layerBytes;
-        Require(LastSliceBefore(kept, [&](std::uint64_t address) { return address + 1533ull * arrayLayer; }) == std::optional<std::uint32_t>(1532u), "an R_X view kept whole must stop at the last slice inside readable memory, counted from slice 0");
-        Require(!LastSliceBefore(kept, [&](std::uint64_t address) { return address + 1000ull * arrayLayer; }).has_value(), "a view whose base slice lies past readable memory keeps its slices");
+        Require(LastSliceBefore(kept, [&](std::uint64_t address) { return address + 12ull * arrayLayer; }) == std::optional<std::uint32_t>(11u), "an R_X view kept whole must stop at the last slice inside readable memory, counted from slice 0");
+        Require(!LastSliceBefore(kept, [&](std::uint64_t address) { return address + 5ull * arrayLayer; }).has_value(), "a view whose base slice lies past readable memory keeps its slices");
+        auto mixedView = array;
+        mixedView.baseArray = 1530;
+        Require(LastSliceBefore(mixedView, [&](std::uint64_t address) { return address + 14ull * arrayLayer; }) == std::optional<std::uint32_t>(1533u), "a view whose window starts below its first slice must count the readable slices from the window start");
         Require(!LastSliceBefore(volume, [](std::uint64_t address) { return address + 1u; }).has_value(), "a volume is never capped");
     }
 
