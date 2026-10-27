@@ -2243,6 +2243,14 @@ std::shared_ptr<const RecompileResult> RegistrationResult(const RecompileRequest
     return std::make_shared<RecompileResult>(materializeResult(*handle.artifact, request, snapshot, true));
 }
 
+bool ComputeRegistrationPrebuildable(const RecompileResult& result, std::uint32_t minWords) {
+    return result.registrationModule && result.spirv.size() >= minWords;
+}
+
+bool ComputeRegistrationPrebuildable(const RecompileResult& result) {
+    return ComputeRegistrationPrebuildable(result, ComputeRegistrationMinWords());
+}
+
 std::shared_ptr<const RecompileResult> MaterializeShader(const RecompileRequest& request, const ResourceCapture& capture, const SourceHandle& handle) {
     if (!MatchesPreparedShader(request, handle)) throw std::runtime_error("ShaderRecompiler: prepared artifact does not match the static ABI");
     if (capture.source != handle.source) throw std::runtime_error("ShaderRecompiler: resource capture belongs to another prepared shader");

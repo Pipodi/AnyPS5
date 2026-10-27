@@ -1580,7 +1580,7 @@ void PrebuildRegisteredCompute(const std::shared_ptr<VulkanDevice>& device, cons
         APS5_LOG_OUT("compute registration prebuild skipped: %s", error.what());
         return;
     }
-    if (result == nullptr) return;
+    if (result == nullptr || !ShaderRecompiler::ComputeRegistrationPrebuildable(*result)) return;
     const auto address = request.shader.codeAddress;
     SubmitLibraryPrebuild([device, result = std::move(result), address] {
         const auto thread = AgcDriver::ComputeTimeline::OnPrebuildThread() ? "prebuild" : "other";
