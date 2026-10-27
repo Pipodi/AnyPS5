@@ -236,6 +236,7 @@ void AwaitRegistrationPreparation();
 void SubmitLibraryPrebuild(std::function<void()> task);
 void AwaitLibraryPrebuilds();
 void ReleaseRegisteredComputePrebuilds();
+void PromoteRegisteredCompute(std::uint64_t address);
 void CloseRegistrationPreparation();
 unsigned RegistrationPreparationThreads();
 

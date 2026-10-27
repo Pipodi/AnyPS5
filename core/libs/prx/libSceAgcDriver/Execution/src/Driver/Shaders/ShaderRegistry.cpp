@@ -11,6 +11,8 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/ResultFootprint.hpp"
 #include "prx/libSceAgcDriver/Execution/include/MemoryStats.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/PipelineLibrary.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/PipelineCreationGate.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/DemandPipelineCreations.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Diagnostics.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/RuntimeSwitches.hpp"
@@ -1579,10 +1581,17 @@ std::atomic<RegistrationPrebuildQueue*>& RegisteredComputeQueueSlot() {
 
 RegistrationPrebuildQueue& RegisteredComputeQueue() {
     static auto* queue = [] {
-        auto* created = new RegistrationPrebuildQueue(RegistrationPrebuildQueue::SettingsFromEnvironment(), [](std::function<void()> task) { SubmitLibraryPrebuild(std::move(task)); }, [](std::size_t queued, const char* reason) {
+        auto settings = RegistrationPrebuildQueue::SettingsFromEnvironment();
+        settings.budgetBytes = Graphics::PipelineCreationGate::Shared().Totals().budgetBytes;
+        auto* created = new RegistrationPrebuildQueue(settings, [](std::function<void()> task) { SubmitLibraryPrebuild(std::move(task)); }, [](std::size_t queued, const char* reason) {
             std::fprintf(stderr, "[regcompute] released %zu queued at t=%.0f reason=%s\n", queued, AgcDriver::ComputeTimeline::NowMs(), reason);
-        });
+        }, RegistrationPrebuildQueue::Hooks{[] { return Graphics::DemandPipelineCreations::Active() != 0; }, [] { return Graphics::PipelineCreationGate::Shared().Totals().inFlightBytes; }, [](std::size_t queued, std::uint64_t demand, std::uint64_t memory) {
+            std::fprintf(stderr, "[regcompute] deferred starts: queued=%zu demand=%llu memory=%llu t=%.0f\n", queued, static_cast<unsigned long long>(demand), static_cast<unsigned long long>(memory), AgcDriver::ComputeTimeline::NowMs());
+        }});
         RegisteredComputeQueueSlot().store(created);
+        Graphics::DemandPipelineCreations::SetIdleListener([] {
+            if (auto* queue = RegisteredComputeQueueSlot().load()) queue->Poke();
+        });
         return created;
     }();
     return *queue;
@@ -1599,10 +1608,12 @@ void PrebuildRegisteredCompute(const std::shared_ptr<VulkanDevice>& device, cons
     }
     if (result == nullptr || !ShaderRecompiler::ComputeRegistrationPrebuildable(*result)) return;
     const auto address = request.shader.codeAddress;
-    RegisteredComputeQueue().Enqueue([device, result = std::move(result), address] {
+    const auto cost = Graphics::PipelineCreationGate::Shared().EstimateBytes(result->spirv.size());
+    RegisteredComputeQueue().Enqueue(address, cost, [device, result = std::move(result), address] {
+        const Graphics::DemandPipelineCreations::SpeculativeThread speculative;
         const auto thread = AgcDriver::ComputeTimeline::OnPrebuildThread() ? "prebuild" : "other";
         const auto start = std::chrono::steady_clock::now();
-        std::fprintf(stderr, "[regcompute] start program 0x%llx words %zu thread=%s tid=%u t=%.0f\n", static_cast<unsigned long long>(address), result->spirv.size(), thread, AgcDriver::ComputeTimeline::ThreadId(), AgcDriver::ComputeTimeline::NowMs());
+        std::fprintf(stderr, "[regcompute] start reason=idle program 0x%llx words %zu thread=%s tid=%u t=%.0f\n", static_cast<unsigned long long>(address), result->spirv.size(), thread, AgcDriver::ComputeTimeline::ThreadId(), AgcDriver::ComputeTimeline::NowMs());
         const bool existing = device->HasComputePipeline(*result);
         const char* outcome = "ok";
         try {
@@ -2027,6 +2038,13 @@ void SubmitLibraryPrebuild(std::function<void()> task) {
 
 void AwaitLibraryPrebuilds() {
     if (auto* pool = RegistrationPreparePool::ExistingPrebuild()) pool->AwaitSubmitted();
+}
+
+void PromoteRegisteredCompute(std::uint64_t address) {
+    auto* queue = RegisteredComputeQueueSlot().load();
+    if (queue == nullptr || address == 0) return;
+    const auto queued = queue->Queued();
+    if (queue->Promote(address)) std::fprintf(stderr, "[regcompute] promoted program 0x%llx to the demand path, %zu still queued t=%.0f\n", static_cast<unsigned long long>(address), queued - 1u, AgcDriver::ComputeTimeline::NowMs());
 }
 
 void ReleaseRegisteredComputePrebuilds() {
