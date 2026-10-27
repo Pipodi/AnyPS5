@@ -1,4 +1,5 @@
 #include "ThreadOwned.hpp"
+#include "prx/libSceAgcDriver/Execution/include/ComputeTimeline.hpp"
 #include "prx/libSceAgcDriver/Execution/include/MemoryStatsDevice.hpp"
 #include "prx/libSceAgcDriver/Execution/include/MemoryStats.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
@@ -2489,6 +2490,7 @@ void VulkanDevice::PrebuildComputePipeline(const ShaderRecompiler::RecompileResu
     ShaderRecompiler::RuntimeAbi::RequireVersion(shader.runtimeAbiVersion);
     const auto context = graphicsContext();
     if (context.descriptorCache == nullptr) return;
+    AgcDriver::ComputeTimeline::Mark(AgcDriver::ComputeTimeline::Event::PrebuildStart, programAddress);
     const std::array<Graphics::CompiledShader, 1> shaders{{{ShaderRecompiler::ShaderStage::Compute, &shader, 0}}};
     const auto pushStages = Graphics::PushConstantStages(shaders);
     if (pushStages != 0 && state->properties.limits.maxPushConstantsSize < Graphics::ComputePushConstantBytes) return;
@@ -6069,6 +6071,13 @@ std::shared_ptr<ComputePipelineObjects> VulkanDevice::createComputePipeline(cons
         const auto path = capture.WriteOptional(directory);
         if (!path.empty()) std::fprintf(stderr, "[compute-capture] %s\n", path.string().c_str());
     }
+    const bool timeline = AgcDriver::ComputeTimeline::Enabled();
+    double timelineStartMs = 0.0;
+    double timelineCpuStartMs = 0.0;
+    if (timeline) {
+        timelineStartMs = AgcDriver::ComputeTimeline::NowMs();
+        timelineCpuStartMs = AgcDriver::ComputeTimeline::ThreadCpuMs();
+    }
     if (profile && shader.spirv.size() > 100000) std::fprintf(stderr, "[dispatch] creating a pipeline for %zu SPIR-V words (program 0x%llx)\n", shader.spirv.size(), static_cast<unsigned long long>(programAddress));
     CreateComputePipeline(state->device, state->DeviceFunction<PFN_vkCreateComputePipelines>("vkCreateComputePipelines"), context.pipelineCache, objects->module, objects->layout, pipelineFlags, stageFlags, specialization.Info(), subgroupSize, &objects->pipeline, shader.spirv.size(), context.pipelineCacheSynchronization);
     objects->destroyModule(objects->device, objects->module, nullptr);
@@ -6079,6 +6088,16 @@ std::shared_ptr<ComputePipelineObjects> VulkanDevice::createComputePipeline(cons
         if (GuestMemory::GpuMutex().HeldByThisThread()) computePipelinesCreatedLocked.fetch_add(1, std::memory_order_relaxed);
     }
     Graphics::LogPipelineStatistics_nid_no_patch(context, objects->pipeline);
+    if (timeline) {
+        std::uint64_t specHash = 0xcbf29ce484222325ull;
+        for (const auto& value : shader.specialization) {
+            specHash = (specHash ^ value.id) * 0x100000001b3ull;
+            specHash = (specHash ^ value.value) * 0x100000001b3ull;
+        }
+        std::uint64_t layoutHash = 0xcbf29ce484222325ull;
+        for (const auto word : layoutKey) layoutHash = (layoutHash ^ word) * 0x100000001b3ull;
+        std::fprintf(stderr, "[compute-timeline] create program 0x%llx words %zu start t=%.0f wall_ms=%.0f cpu_ms=%.0f thread=%s tid=%u gpulock=%d spec=%08x nspec=%zu layout=%08x push_stages=0x%x push_bytes=%u flags=0x%x stage_flags=0x%x subgroup=%u\n", static_cast<unsigned long long>(programAddress), shader.spirv.size(), timelineStartMs, AgcDriver::ComputeTimeline::NowMs() - timelineStartMs, AgcDriver::ComputeTimeline::ThreadCpuMs() - timelineCpuStartMs, AgcDriver::ComputeTimeline::OnPrebuildThread() ? "prebuild" : "other", AgcDriver::ComputeTimeline::ThreadId(), GuestMemory::GpuMutex().HeldByThisThread() ? 1 : 0, static_cast<unsigned>(specHash ^ (specHash >> 32u)), shader.specialization.size(), static_cast<unsigned>(layoutHash ^ (layoutHash >> 32u)), static_cast<unsigned>(pushStages), pushStages != 0 ? Graphics::ComputePushConstantBytes : 0u, static_cast<unsigned>(pipelineFlags), static_cast<unsigned>(stageFlags), static_cast<unsigned>(subgroupSize));
+    }
     if (profile && shader.spirv.size() > 100000) std::fprintf(stderr, "[dispatch] created a pipeline for %zu SPIR-V words in %.0f ms (program 0x%llx)\n", shader.spirv.size(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), static_cast<unsigned long long>(programAddress));
     return objects;
 }

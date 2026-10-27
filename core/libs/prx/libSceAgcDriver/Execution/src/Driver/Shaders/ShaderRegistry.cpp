@@ -1,6 +1,7 @@
 #include "prx/libc/include/general/LogMacros.hpp"
 #include "ControlFlow/GraphBuilder.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
+#include "prx/libSceAgcDriver/Execution/include/ComputeTimeline.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawPipeline.hpp"
@@ -1707,7 +1708,7 @@ public:
         static auto* pool = [] {
             const char* text = std::getenv("APS5_PREBUILD_THREADS");
             std::lock_guard lifecycle(Lifecycle());
-            auto* created = new RegistrationPreparePool(Closing() ? 0u : text != nullptr ? std::max(1u, static_cast<unsigned>(std::strtoul(text, nullptr, 10))) : 1u);
+            auto* created = new RegistrationPreparePool(Closing() ? 0u : text != nullptr ? std::max(1u, static_cast<unsigned>(std::strtoul(text, nullptr, 10))) : 1u, true);
             PrebuildSlot().store(created);
             return created;
         }();
@@ -1830,7 +1831,7 @@ private:
     }
 #endif
 
-    explicit RegistrationPreparePool(unsigned count) {
+    explicit RegistrationPreparePool(unsigned count, bool prebuildPool = false) : prebuild(prebuildPool) {
 #ifdef _WIN32
         for (unsigned index = 0; index < count; ++index) {
             unsigned id = 0;
@@ -1866,6 +1867,7 @@ private:
 
     static void* Main(void* argument) {
         auto& pool = *static_cast<RegistrationPreparePool*>(argument);
+        if (pool.prebuild) AgcDriver::ComputeTimeline::MarkPrebuildThread();
         if (PerformanceTrace::Configured()) PerformanceTrace::BindThread("shader prepare", TraceThread::DefaultCapacity / 8);
         for (;;) {
             Task task;
@@ -1915,6 +1917,7 @@ private:
     std::uint64_t submitted = 0;
     std::set<std::uint64_t> unfinished;
     bool closed = false;
+    bool prebuild = false;
 };
 
 bool AsyncRegistrationPrepare() {
@@ -2556,6 +2559,9 @@ void Driver::RegisterShader(const Shader* shader) {
     std::memcpy(snapshot.code.data(), code, fields.shader_size);
     snapshot.header.resize(fields.header_size);
     std::memcpy(snapshot.header.data(), static_cast<const void*>(shader), fields.header_size);
+    if (snapshot.type == 0 && AgcDriver::ComputeTimeline::Enabled() && AgcDriver::ComputeTimeline::Once(AgcDriver::ComputeTimeline::Event::Registered, snapshot.codeAddress)) {
+        std::fprintf(stderr, "[compute-timeline] registered program 0x%llx code %zu words t=%.0f range 0x%llx-0x%llx\n", static_cast<unsigned long long>(snapshot.codeAddress), snapshot.code.size(), AgcDriver::ComputeTimeline::NowMs(), static_cast<unsigned long long>(snapshot.codeAddress), static_cast<unsigned long long>(snapshot.codeAddress + fields.shader_size));
+    }
 
     transaction.Hold();
     {

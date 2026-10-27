@@ -1,3 +1,4 @@
+#include "prx/libSceAgcDriver/Execution/include/ComputeTimeline.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
 #include "ThreadOwned.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
@@ -215,6 +216,7 @@ void Driver::resolveGroupAhead(const Submission& submission, const QueueState& l
                                                 if (const auto reg = preview.shader.find(0x240u + i); reg != preview.shader.end()) userData[i] = reg->second;
                                             }
                                             const auto wave = (packet.back() & 0x8000u) != 0 ? 32u : 64u;
+                                            AgcDriver::ComputeTimeline::Mark(AgcDriver::ComputeTimeline::Event::Lookahead, address);
                                             SubmitRegistrationPreparation([registered, localDevice, address, codeOffset, wave, compute, userData = std::move(userData), state = preview.shader]() mutable {
                                                 std::vector<ShaderRecompiler::MemoryRegion> memory{{registered->codeAddress, std::as_bytes(std::span(registered->code))}};
                                                 if (!registered->header.empty()) memory.push_back({registered->headerAddress, registered->header});
