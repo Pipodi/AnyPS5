@@ -18,6 +18,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/DepthSurface.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/MultisampleTarget.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/DemandPipelineCreations.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/RuntimeSwitches.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
 #include "Optimization/ResourceProgram.hpp"
@@ -696,7 +697,7 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
         ++groupStats.resolved;
         if (cached) ++groupStats.resolvedHits;
         if (!cached && compiledResult != nullptr && !localDevice->HasComputePipeline(*compiledResult)) {
-            SubmitLibraryPrebuild([localDevice, compiledResult, address] {
+            SubmitLibraryPrebuild([localDevice, compiledResult, address, demand = std::make_shared<Graphics::DemandPipelineCreations::Scope>()] {
                 try { localDevice->PrebuildComputePipeline(*compiledResult, address); } catch (const std::exception&) {}
             });
         }
