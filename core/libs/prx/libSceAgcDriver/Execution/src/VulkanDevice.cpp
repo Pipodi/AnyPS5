@@ -3911,6 +3911,7 @@ bool VulkanDevice::present(std::uint32_t width, std::uint32_t height, bool opaqu
         state->queuePending = true;
         state->queueIndex = index;
         ++presentCounters.presents;
+        DriverDetail::ReleaseRegisteredComputePrebuilds();
         if (auto* frame = PerformanceContext::Current()) {
             frame->NoteBlit(batchesAtBlit, lastSubmittedAt, submittedAt);
             // The serials are cumulative: only their difference (the batches other queues put

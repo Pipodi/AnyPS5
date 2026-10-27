@@ -6,6 +6,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawPipeline.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/ShaderRegistry.hpp"
+#include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/RegistrationPrebuildQueue.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/ShaderMemoryCensus.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/ResultFootprint.hpp"
 #include "prx/libSceAgcDriver/Execution/include/MemoryStats.hpp"
@@ -1571,6 +1572,23 @@ void PrebuildStageLibrary(const std::shared_ptr<VulkanDevice>& device, const Gra
 
 namespace {
 
+std::atomic<RegistrationPrebuildQueue*>& RegisteredComputeQueueSlot() {
+    static std::atomic<RegistrationPrebuildQueue*> slot{nullptr};
+    return slot;
+}
+
+RegistrationPrebuildQueue& RegisteredComputeQueue() {
+    static auto* queue = [] {
+        auto* created = new RegistrationPrebuildQueue(RegistrationPrebuildQueue::SettingsFromEnvironment(), [](std::function<void()> task) { SubmitLibraryPrebuild(std::move(task)); }, [](std::size_t queued, const char* reason) {
+            std::fprintf(stderr, "[regcompute] released %zu queued at t=%.0f reason=%s
+", queued, AgcDriver::ComputeTimeline::NowMs(), reason);
+        });
+        RegisteredComputeQueueSlot().store(created);
+        return created;
+    }();
+    return *queue;
+}
+
 void PrebuildRegisteredCompute(const std::shared_ptr<VulkanDevice>& device, const ShaderRecompiler::RecompileRequest& request, const ShaderRecompiler::SourceHandle& handle) {
     if (!ShaderRecompiler::GetPreparedArtifact(handle).registrationModule || CodeCallsSubroutines(request.shader.code)) return;
     std::shared_ptr<const ShaderRecompiler::RecompileResult> result;
@@ -1582,7 +1600,7 @@ void PrebuildRegisteredCompute(const std::shared_ptr<VulkanDevice>& device, cons
     }
     if (result == nullptr || !ShaderRecompiler::ComputeRegistrationPrebuildable(*result)) return;
     const auto address = request.shader.codeAddress;
-    SubmitLibraryPrebuild([device, result = std::move(result), address] {
+    RegisteredComputeQueue().Enqueue([device, result = std::move(result), address] {
         const auto thread = AgcDriver::ComputeTimeline::OnPrebuildThread() ? "prebuild" : "other";
         const auto start = std::chrono::steady_clock::now();
         std::fprintf(stderr, "[regcompute] start program 0x%llx words %zu thread=%s tid=%u t=%.0f\n", static_cast<unsigned long long>(address), result->spirv.size(), thread, AgcDriver::ComputeTimeline::ThreadId(), AgcDriver::ComputeTimeline::NowMs());
@@ -2012,7 +2030,12 @@ void AwaitLibraryPrebuilds() {
     if (auto* pool = RegistrationPreparePool::ExistingPrebuild()) pool->AwaitSubmitted();
 }
 
+void ReleaseRegisteredComputePrebuilds() {
+    RegisteredComputeQueue().Open("present");
+}
+
 void CloseRegistrationPreparation() {
+    if (auto* queue = RegisteredComputeQueueSlot().load()) queue->Stop();
     RegistrationPreparePool::CloseAll();
 }
 
