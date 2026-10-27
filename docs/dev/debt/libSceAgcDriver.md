@@ -286,6 +286,8 @@
 
 - [Dispatch cache key churn summary](../../../core/libs/prx/libSceAgcDriver/Execution/src/Driver/Dispatch/Dispatch.cpp) (`APS5_TRACE_DISPATCH_CACHE`) - the 10 s summary counts a value as new when it is not one of the last 4 distinct values seen at that user-data word or shader register, so a ring of more than 4 values reads as ever-new. An address stride is a key change where two adjacent user-data words, read as a 64-bit value with a high word above 0xffff, moved by under 16 MiB; it is a heuristic and not every such pair is an address. Only the registers that feed the key (0x207-0x209, 0x212, 0x213 unless `APS5_NO_DISPATCH_KEY_HYGIENE`) are compared.
 
+- [Compute timeline log](../../../core/libs/prx/libSceAgcDriver/Execution/src/ComputeTimeline.cpp) (`APS5_LOG_COMPUTE_TIMELINE`) - local diagnostic. Each event prints once per program address, so a second registration or a rebuilt variant logs nothing more, and times count from the driver library load. The create line hashes the specialization constants and the descriptor layout key but prints only the push-constant stage mask and size, because push-constant values are written per dispatch. Its CPU time covers the calling thread only.
+
 ### Opt-in draw paths
 
 - [Draw finisher](../../../core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawPipeline.cpp) (`APS5_DRAW_PIPELINE`) - opt-in. The Linux main-image page table it adds matches what Windows already does by default.
