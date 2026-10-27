@@ -290,6 +290,8 @@
 
 - [Compile thread priority](../../../core/libs/prx/libSceAgcDriver/Execution/src/ComputeTimeline.cpp) (`APS5_COMPILE_THREAD_PRIORITY`) - local experiment. Windows only: the value goes to `SetThreadPriority` unchecked for the prebuild pool threads and around each compute pipeline create on other threads. Linux ignores it, and the effect on in-game compile time is unmeasured.
 
+- [Captured compute prebuild](../../../core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp) (`APS5_PREBUILD_CAPTURED_COMPUTE`, `APS5_PREBUILD_CAPTURED_COMPUTE_THREADS`) - local ceiling experiment. Dedicated threads replay every `compute-*/capture.aps5cp` of a directory on the game's device, largest first, when the pipeline journal replay starts, and destroy the pipeline again: the game's later create is expected to hit the driver's cache, not the device's own pipeline map, because the map key needs a shader result that a capture does not hold. A capture from another build, driver or device compiles uselessly or fails with a logged message, the replay also builds the pipeline cache blob and runs SPIR-V validation that the game's create skips, and the threads compete with the prebuild pool for CPU. Whether the driver cache is hit is unmeasured.
+
 ### Opt-in draw paths
 
 - [Draw finisher](../../../core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawPipeline.cpp) (`APS5_DRAW_PIPELINE`) - opt-in. The Linux main-image page table it adds matches what Windows already does by default.

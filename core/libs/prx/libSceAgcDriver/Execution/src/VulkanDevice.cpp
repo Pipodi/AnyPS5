@@ -561,6 +561,8 @@ struct VulkanDevice::State {
     std::map<ComputePipelineKey, std::shared_future<std::shared_ptr<ComputePipelineObjects>>> computePipelinesBuilding;
     // The journal replay building this device's pipelines on its own threads; drained first at teardown.
     std::shared_ptr<Graphics::PipelineJournalReplay> journalReplay;
+    std::vector<std::thread> capturedPrebuildThreads;
+    std::atomic<bool> capturedPrebuildStop{false};
     std::atomic<bool> journalReplayPending{false};
     std::atomic<std::uint64_t> computePipelinesCreated{0};
     std::unique_ptr<Graphics::GpuColorTransfer> colorTransfer;
@@ -909,6 +911,10 @@ struct VulkanDevice::State {
     }
 
     ~State() {
+        capturedPrebuildStop.store(true, std::memory_order_release);
+        for (auto& thread : capturedPrebuildThreads) {
+            if (thread.joinable()) thread.join();
+        }
         if (journalReplay != nullptr) {
             journalReplay->Cancel();
             journalReplay->Wait();
@@ -1031,8 +1037,8 @@ struct VulkanDevice::State {
     }
 };
 
-ComputePipelineReplayResult VulkanDevice::ReplayComputePipeline(const ComputePipelineCapture& capture, std::span<const std::byte> initialCache) {
-    require(state->compileOnly, "pipeline replay requires a compile-only device");
+ComputePipelineReplayResult VulkanDevice::ReplayComputePipeline(const ComputePipelineCapture& capture, std::span<const std::byte> initialCache, bool onGameDevice) {
+    require(onGameDevice || state->compileOnly, "pipeline replay requires a compile-only device");
     const auto start = std::chrono::steady_clock::now();
     const auto elapsed = [](auto since) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - since).count(); };
     capture.Validate();
@@ -2429,8 +2435,58 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
     if (window != nullptr) startJournalReplay();
 }
 
+void VulkanDevice::startCapturedComputePrebuild() {
+    const char* directory = std::getenv("APS5_PREBUILD_CAPTURED_COMPUTE");
+    if (directory == nullptr || *directory == 0 || state->compileOnly) return;
+    struct Work {
+        std::vector<std::filesystem::path> files;
+        std::atomic<std::size_t> next{0};
+    };
+    auto work = std::make_shared<Work>();
+    std::vector<std::pair<std::uintmax_t, std::filesystem::path>> found;
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
+        const auto name = entry.path().filename().string();
+        const auto file = entry.path() / "capture.aps5cp";
+        if (name.rfind("compute-", 0) != 0) continue;
+        std::error_code sizeError;
+        const auto size = std::filesystem::file_size(file, sizeError);
+        if (!sizeError) found.emplace_back(size, file);
+    }
+    std::ranges::sort(found, [](const auto& left, const auto& right) { return left.first > right.first; });
+    for (auto& item : found) work->files.push_back(std::move(item.second));
+    unsigned threads = 8;
+    if (const char* text = std::getenv("APS5_PREBUILD_CAPTURED_COMPUTE_THREADS"); text != nullptr && *text != 0) threads = static_cast<unsigned>(std::clamp(std::strtol(text, nullptr, 10), 1l, 64l));
+    std::fprintf(stderr, "[captured-prebuild] %zu captures in %s, %u threads t=%.0f\n", work->files.size(), directory, threads, AgcDriver::ComputeTimeline::NowMs());
+    for (unsigned index = 0; index < threads && index < work->files.size(); ++index) {
+        state->capturedPrebuildThreads.emplace_back([this, work] {
+            for (;;) {
+                if (state->capturedPrebuildStop.load(std::memory_order_acquire)) return;
+                const auto item = work->next.fetch_add(1, std::memory_order_relaxed);
+                if (item >= work->files.size()) return;
+                const auto& file = work->files[item];
+                const auto program = file.parent_path().filename().string().substr(8);
+                const double startMs = AgcDriver::ComputeTimeline::NowMs();
+                std::size_t words = 0;
+                std::string failure;
+                try {
+                    const auto capture = ComputePipelineCapture::Read(file);
+                    words = capture.spirv.size();
+                    static_cast<void>(ReplayComputePipeline(capture, {}, true));
+                } catch (const std::exception& problem) {
+                    failure = problem.what();
+                } catch (...) {
+                    failure = "unknown exception";
+                }
+                std::fprintf(stderr, "[captured-prebuild] program 0x%s words %zu start t=%.0f wall_ms=%.0f %s%s\n", program.c_str(), words, startMs, AgcDriver::ComputeTimeline::NowMs() - startMs, failure.empty() ? "ok" : "fail ", failure.c_str());
+            }
+        });
+    }
+}
+
 void VulkanDevice::startJournalReplay() {
     if (!state->journalReplayPending.exchange(false, std::memory_order_acq_rel)) return;
+    startCapturedComputePrebuild();
     state->journalReplay = Graphics::StartPipelineJournalReplay(graphicsContext(), Graphics::PipelineJournalDeviceFingerprint(state->properties), {[this](const ShaderRecompiler::RecompileResult& shader, bool pushConstants) { return ReplayComputePipeline(shader, pushConstants); }});
 }
 

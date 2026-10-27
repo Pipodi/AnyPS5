@@ -58,7 +58,7 @@ public:
     explicit VulkanDevice(const PresentationWindow* window = nullptr);
     struct CompileOnly {};
     explicit VulkanDevice(CompileOnly);
-    ComputePipelineReplayResult ReplayComputePipeline(const ComputePipelineCapture& capture, std::span<const std::byte> initialCache = {});
+    ComputePipelineReplayResult ReplayComputePipeline(const ComputePipelineCapture& capture, std::span<const std::byte> initialCache = {}, bool onGameDevice = false);
     // Builds the pipeline of a journaled compute result ahead of its first dispatch (the journal
     // replay's hook, on its threads): false when the device already holds a pipeline for the module.
     bool ReplayComputePipeline(const ShaderRecompiler::RecompileResult& shader, bool pushConstants);
@@ -101,6 +101,7 @@ public:
     void PrepareForReplacement();
     void PublishShadows();
     void startJournalReplay();
+    void startCapturedComputePrebuild();
     bool ImportGuestMemory(const GuestAllocations::Mapped& ranges, std::uint64_t generation, bool adoptDevice);
     // Sends recorded work to the GPU without waiting for it. With `reapFirst` it first retires batches
     // that already finished, so the in-flight list stays short (APS5_NO_OPPORTUNISTIC_REAP=1 skips
