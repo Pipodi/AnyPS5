@@ -7,54 +7,26 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace AgcDriver::DriverDetail {
 
 class MissAheadPlan {
 public:
-    enum class Skip { Cached, Duplicate, Unprepared, Unregistered, CaptureFailed, Listed, Kernel, Failed, Indirect };
-
-    struct Counts {
-        std::size_t visited = 0, started = 0, cached = 0, duplicate = 0, unprepared = 0, unregistered = 0, captureFailed = 0, reached = 0, listed = 0, kernel = 0, failed = 0, indirect = 0;
-    };
-
-    MissAheadPlan(std::size_t buildCap, std::size_t visitCap) : buildCap(buildCap), visitCap(visitCap) {}
-
-    bool BuildsFull() const { return counts.started >= buildCap; }
+    explicit MissAheadPlan(std::size_t cap) : cap(cap) {}
 
     bool Visit() {
-        if (counts.visited >= visitCap) return false;
-        ++counts.visited;
+        if (visited >= cap) return false;
+        ++visited;
         return true;
     }
 
     bool Admit(std::uint64_t key) { return keys.insert(key).second; }
 
-    void Started() { ++counts.started; }
-
-    void Reach() { ++counts.reached; }
-
-    void Note(Skip reason) {
-        switch (reason) {
-        case Skip::Cached: ++counts.cached; break;
-        case Skip::Duplicate: ++counts.duplicate; break;
-        case Skip::Unprepared: ++counts.unprepared; break;
-        case Skip::Unregistered: ++counts.unregistered; break;
-        case Skip::CaptureFailed: ++counts.captureFailed; break;
-        case Skip::Listed: ++counts.listed; break;
-        case Skip::Kernel: ++counts.kernel; break;
-        case Skip::Failed: ++counts.failed; break;
-        case Skip::Indirect: ++counts.indirect; break;
-        }
-    }
-
-    const Counts& Totals() const { return counts; }
+    std::size_t Visited() const { return visited; }
 
 private:
-    std::size_t buildCap;
-    std::size_t visitCap;
-    Counts counts;
+    std::size_t cap;
+    std::size_t visited = 0;
     std::set<std::uint64_t> keys;
 };
 
@@ -76,26 +48,6 @@ private:
     std::uint64_t lastSubmission = 0;
     std::uint32_t lastQueue = 0;
     std::size_t lastEnd = 0;
-};
-
-class MissAheadKnown {
-public:
-    void Insert(std::uint64_t key) {
-        std::lock_guard lock(mutex);
-        if (keys.size() >= Retained) keys.clear();
-        keys.insert(key);
-    }
-
-    bool Contains(std::uint64_t key) const {
-        std::lock_guard lock(mutex);
-        return keys.contains(key);
-    }
-
-    static constexpr std::size_t Retained = 16384;
-
-private:
-    mutable std::mutex mutex;
-    std::unordered_set<std::uint64_t> keys;
 };
 
 class MissAheadLedger {

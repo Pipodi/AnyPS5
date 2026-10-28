@@ -389,12 +389,9 @@ private:
     void resolveGroupAhead(const Submission& submission, const QueueState& live, std::size_t from);
     static MissAheadPlan*& missAheadPlan();
     static MissAheadLedger& missAheadLedger();
-    static MissAheadKnown& missAheadKnown();
-    static bool missAheadEnabled();
-    static bool missAheadProfiled();
     static void reportMissAhead();
     void missAhead(const Submission& submission, const QueueState& live, std::size_t from);
-    void prepareMissAhead(const std::shared_ptr<const ShaderSnapshot>& snapshot, std::size_t codeOffset, const ShaderRecompiler::RecompileRequest& request, std::span<const ShaderRecompiler::MemoryRegion> memory, std::uint64_t key, const std::shared_ptr<VulkanDevice>& localDevice, std::uint64_t address);
+    void prepareMissAhead(const std::shared_ptr<const ShaderSnapshot>& snapshot, std::size_t codeOffset, const ShaderRecompiler::RecompileRequest& request, std::span<const ShaderRecompiler::MemoryRegion> memory, std::uint64_t key, const std::shared_ptr<VulkanDevice>& localDevice, std::uint32_t queue, std::uint64_t address);
     static void clearResolvedAhead();
     static void reportGroupCapture(std::uint32_t queue);
     static PollStats& pollStats();

@@ -5,9 +5,9 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawPipeline.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/ShaderRegistry.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Memory/WriteEvidence.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/DemandPipelineCreations.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Synchronization/DeferredLabels.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
-#include "prx/libSceAgcDriver/Graphics/include/RuntimeSwitches.hpp"
 #include "prx/libSceAgcDriver/Execution/include/VideoOutput.hpp"
 #include "Optimization/ResourceProgram.hpp"
 #include <algorithm>
@@ -48,11 +48,6 @@ std::uint64_t Driver::DispatchesAdoptedAhead() const {
 
 std::uint64_t Driver::DispatchesRejectedAhead() const {
     return dispatchesRejectedAhead.load(std::memory_order_relaxed);
-}
-
-std::pair<std::uint64_t, std::uint64_t> Driver::MissAheadTotals() {
-    const auto totals = missAheadLedger().Snapshot();
-    return {totals.started, totals.hit + totals.waited};
 }
 
 void Driver::SetAheadAdoptHook(void (*hook)()) {
@@ -348,11 +343,6 @@ MissAheadLedger& Driver::missAheadLedger() {
     return ledger;
 }
 
-MissAheadKnown& Driver::missAheadKnown() {
-    static MissAheadKnown known;
-    return known;
-}
-
 namespace {
 
 bool MissAheadEnabled() {
@@ -360,22 +350,13 @@ bool MissAheadEnabled() {
         const char* text = std::getenv("APS5_DISPATCH_MISS_AHEAD");
         return text == nullptr || std::strcmp(text, "0") != 0;
     }();
-    // APS5_NO_DISPATCH_MISS_AHEAD (a runtime switch, for an in-run A/B) turns it off as APS5_DISPATCH_MISS_AHEAD=0 does.
-    return enabled && !Graphics::RuntimeSwitches::Set(Graphics::RuntimeSwitch::NoDispatchMissAhead);
+    return enabled;
 }
 
 std::size_t MissAheadMax() {
     static const std::size_t cap = [] {
         const char* text = std::getenv("APS5_DISPATCH_MISS_AHEAD_MAX");
         return text != nullptr ? static_cast<std::size_t>(std::strtoull(text, nullptr, 10)) : std::size_t{32};
-    }();
-    return cap;
-}
-
-std::size_t MissAheadVisits() {
-    static const std::size_t cap = [] {
-        const char* text = std::getenv("APS5_DISPATCH_MISS_AHEAD_VISITS");
-        return text != nullptr ? static_cast<std::size_t>(std::strtoull(text, nullptr, 10)) : std::size_t{4096};
     }();
     return cap;
 }
@@ -387,17 +368,9 @@ MissAheadRange& ScannedRange() {
 
 }
 
-bool Driver::missAheadEnabled() {
-    return MissAheadEnabled();
-}
-
-bool Driver::missAheadProfiled() {
-    static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
-    return profile;
-}
-
 void Driver::reportMissAhead() {
-    if (!missAheadProfiled()) return;
+    static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
+    if (!profile) return;
     static std::mutex mutex;
     static auto reported = std::chrono::steady_clock::now();
     const auto now = std::chrono::steady_clock::now();
@@ -422,8 +395,7 @@ void Driver::missAhead(const Submission& submission, const QueueState& live, std
     if ((firstOpcode != 0x15 && firstOpcode != 0x16) || firstCount < (firstOpcode == 0x15 ? 5u : 3u) || from + firstCount > commands.size()) return;
     QueueState scratch = live;
     Pm4::NoteDispatchRegisters(std::span(commands).subspan(from, firstCount), scratch);
-    MissAheadPlan plan(cap, MissAheadVisits());
-    const char* stop = "end";
+    MissAheadPlan plan(cap);
     struct Scanning {
         std::size_t offset;
         explicit Scanning(MissAheadPlan& plan) : offset(currentPacketOffset()) {
@@ -444,106 +416,50 @@ void Driver::missAhead(const Submission& submission, const QueueState& live, std
             continue;
         }
         const auto count = Pm4::PacketWords(header);
-        if (cursor + count > commands.size()) {
-            stop = "malformed";
-            break;
-        }
+        if (cursor + count > commands.size()) break;
         const auto packet = std::span(commands).subspan(cursor, count);
         const auto opcode = (header >> 8u) & 0xffu;
-        if (header == FlipPacketHeader) {
-            stop = "flip";
-            break;
-        }
-        if (header == RenderingWaitPacketHeader) {
-            stop = "rendering_wait";
-            break;
-        }
-        if (opcode == 0x22 || opcode == 0x3f) {
-            stop = opcode == 0x22 ? "opcode_0x22" : "opcode_0x3f";
-            break;
-        }
-        if (Pm4::Predicated(header) && scratch.predication.operation != 0) {
-            stop = "predicated";
-            break;
-        }
+        if (header == FlipPacketHeader || header == RenderingWaitPacketHeader || opcode == 0x22 || opcode == 0x3f) break;
+        if (Pm4::Predicated(header) && scratch.predication.operation != 0) break;
         if (opcode == 0x15 || opcode == 0x16) {
-            if (count < (opcode == 0x15 ? 5u : 3u)) {
-                stop = "malformed";
-                break;
-            }
-            if (plan.BuildsFull()) {
-                stop = "build_cap";
-                break;
-            }
-            if (!plan.Visit()) {
-                stop = "visit_cap";
-                break;
-            }
-            currentPacketOffset() = cursor;
-            try {
-                if (opcode == 0x15) {
+            if (count < (opcode == 0x15 ? 5u : 3u)) break;
+            if (opcode == 0x15) {
+                if (!plan.Visit()) break;
+                currentPacketOffset() = cursor;
+                try {
                     dispatchAttempt(scratch, packet, submission, 0, false);
-                } else if (const auto arguments = Pm4::DispatchArgumentAddress(packet, scratch); indirectArgumentsPath(packet, arguments) == IndirectGpu) {
-                    const std::array<std::uint32_t, 5> unresolved{0xc0031500u, 0, 0, 0, packet.back()};
-                    dispatchAttempt(scratch, unresolved, submission, arguments, false);
-                } else {
-                    plan.Note(MissAheadPlan::Skip::Indirect);
-                }
-            } catch (const std::exception&) {
-                plan.Note(MissAheadPlan::Skip::Failed);
+                } catch (const std::exception&) {}
             }
             Pm4::NoteDispatchRegisters(packet, scratch);
         } else if (Pm4::IndirectRegisterOpcode(opcode)) {
             const auto found = submission.registerLists.find(cursor);
-            if (count != 5 || found == submission.registerLists.end() || found->second.size() != static_cast<std::size_t>(packet[4]) * 2 || !Pm4::IndirectRegistersValid(found->second)) {
-                stop = "malformed";
-                break;
-            }
+            if (count != 5 || found == submission.registerLists.end() || found->second.size() != static_cast<std::size_t>(packet[4]) * 2 || !Pm4::IndirectRegistersValid(found->second)) break;
             Pm4::ExecuteIndirectRegisters(packet, found->second, scratch);
         } else if (!Pm4::AccessesMemory(header) && opcode != 0x3c && opcode != 0x93 && opcode != 0x37 && opcode != 0x42 && opcode != 0x46 && opcode != 0x49 && opcode != 0x58) {
             try {
                 Pm4::Execute(packet, scratch);
             } catch (const std::exception&) {
-                stop = "execute_failed";
                 break;
             }
         }
         cursor += count;
     }
     ScannedRange().Record(submission.serial, submission.queue, cursor);
-    if (missAheadProfiled() && missAheadLedger().Active()) {
-        const auto& totals = plan.Totals();
-        std::fprintf(stderr, "[miss-ahead] scan queue %u serial %llu from %zu to %zu of %zu: visited %zu started %zu returned_early %zu skipped cached %zu plan_duplicate %zu unprepared %zu unregistered %zu capture_failed %zu early_listed %zu early_kernel %zu early_failed %zu indirect_cpu_path %zu stop %s\n", submission.queue, static_cast<unsigned long long>(submission.serial), from, cursor, commands.size(),
-                     totals.visited, totals.started, totals.visited - totals.reached, totals.cached, totals.duplicate, totals.unprepared, totals.unregistered, totals.captureFailed, totals.listed, totals.kernel, totals.failed, totals.indirect, stop);
-    }
     reportMissAhead();
 }
 
-void Driver::prepareMissAhead(const std::shared_ptr<const ShaderSnapshot>& snapshot, std::size_t codeOffset, const ShaderRecompiler::RecompileRequest& request, std::span<const ShaderRecompiler::MemoryRegion> memory, std::uint64_t key, const std::shared_ptr<VulkanDevice>& localDevice, std::uint64_t address) {
+void Driver::prepareMissAhead(const std::shared_ptr<const ShaderSnapshot>& snapshot, std::size_t codeOffset, const ShaderRecompiler::RecompileRequest& request, std::span<const ShaderRecompiler::MemoryRegion> memory, std::uint64_t key, const std::shared_ptr<VulkanDevice>& localDevice, std::uint32_t queue, std::uint64_t address) {
     auto* plan = missAheadPlan();
     if (plan == nullptr || snapshot == nullptr || snapshot->prepared == nullptr || localDevice == nullptr) return;
     {
         std::lock_guard lock(dispatchCacheMutex);
-        if (dispatchCache.contains(key)) {
-            plan->Note(MissAheadPlan::Skip::Cached);
-            return;
-        }
+        if (dispatchCache.contains(key)) return;
     }
     {
         std::lock_guard lock(snapshot->prepared->mutex);
-        if (snapshot->prepared->pending || std::none_of(snapshot->prepared->entries.begin(), snapshot->prepared->entries.end(), [&](const auto& entry) { return entry.codeOffset == codeOffset; })) {
-            plan->Note(MissAheadPlan::Skip::Unprepared);
-            return;
-        }
+        if (snapshot->prepared->pending || std::none_of(snapshot->prepared->entries.begin(), snapshot->prepared->entries.end(), [&](const auto& entry) { return entry.codeOffset == codeOffset; })) return;
     }
-    if (!plan->Admit(key)) {
-        plan->Note(MissAheadPlan::Skip::Duplicate);
-        return;
-    }
-    if (missAheadKnown().Contains(key)) {
-        plan->Note(MissAheadPlan::Skip::Cached);
-        return;
-    }
+    if (!plan->Admit(key)) return;
     auto shaderMemory = std::make_shared<ShaderMemory>(memory, &queryPendingWrite, &observePendingWrite, hookWaitCounter(), &QueryPendingSpan);
     std::shared_ptr<const ShaderRecompiler::ResourceCapture> capture;
     try {
@@ -551,31 +467,25 @@ void Driver::prepareMissAhead(const std::shared_ptr<const ShaderSnapshot>& snaps
         const SampledReadScope sampling(evidenceReads);
         capture = CaptureInvocation(*shaderMemory, *snapshot, codeOffset, request, invocation);
     } catch (const std::exception&) {
-        plan->Note(MissAheadPlan::Skip::CaptureFailed);
         return;
     }
-    if (capture == nullptr) {
-        plan->Note(MissAheadPlan::Skip::CaptureFailed);
-        return;
-    }
-    plan->Started();
-    missAheadKnown().Insert(key);
-    const bool tracked = missAheadProfiled();
-    if (tracked) missAheadLedger().Started(key);
-    SubmitRegistrationPreparation([snapshot, codeOffset, localDevice, address, key, tracked, shaderMemory, capture, ownedRequest = request, userData = std::vector<std::uint32_t>(request.context.userData.begin(), request.context.userData.end()), ownedMemory = std::vector<ShaderRecompiler::MemoryRegion>(memory.begin(), memory.end())]() mutable {
+    if (capture == nullptr) return;
+    missAheadLedger().Started(key);
+    AgcDriver::ComputeTimeline::Mark(AgcDriver::ComputeTimeline::Event::Lookahead, address);
+    SubmitRegistrationPreparation([snapshot, codeOffset, localDevice, queue, address, key, shaderMemory, capture, ownedRequest = request, userData = std::vector<std::uint32_t>(request.context.userData.begin(), request.context.userData.end()), ownedMemory = std::vector<ShaderRecompiler::MemoryRegion>(memory.begin(), memory.end())]() mutable {
         struct Finish {
             std::uint64_t key;
-            bool tracked;
-            ~Finish() {
-                if (tracked) missAheadLedger().Finished(key);
-            }
-        } finish{key, tracked};
+            ~Finish() { missAheadLedger().Finished(key); }
+        } finish{key};
+        const Graphics::DemandPipelineCreations::Scope demand;
         try {
             ownedRequest.context.userData = userData;
             ownedRequest.context.memory = ownedMemory;
             auto invocation = InvocationFor(*snapshot, codeOffset, ownedRequest);
             const auto result = invocation.Materialize(*capture);
             if (result == nullptr) return;
+            const bool existing = localDevice->HasComputePipeline(*result);
+            std::fprintf(stderr, "[miss-ahead] start program 0x%llx words %zu queue %u%s t=%.0f\n", static_cast<unsigned long long>(address), result->spirv.size(), queue, existing ? " (already built or building)" : "", AgcDriver::ComputeTimeline::NowMs());
             localDevice->PrebuildComputePipeline(*result, address);
         } catch (const std::exception&) {}
     });

@@ -158,11 +158,8 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
     const bool itemsOn = DispatchItemsEnabled();
     const bool missItemsOn = itemsOn && DispatchMissItemsEnabled();
     const auto address = (static_cast<std::uint64_t>(readRegister(queue.shader, 0x20c)) << 8u) | (static_cast<std::uint64_t>(readRegister(queue.shader, 0x20d) & 0xffu) << 40u);
+    if (SkippedShader(address)) return;
     const bool preparingAhead = missAheadPlan() != nullptr;
-    if (SkippedShader(address)) {
-        if (preparingAhead) missAheadPlan()->Note(MissAheadPlan::Skip::Listed);
-        return;
-    }
     struct OriginScope {
         bool active;
         OriginScope(std::uint64_t program, bool active) : active(active) { if (active) Graphics::Recorder::SetWriteOrigin(program); }
@@ -170,10 +167,7 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
     } originScope(address, !preparingAhead);
     auto registeredShader = RegisteredProgram(*submission.shaders, address, {0});
     if (!registeredShader) {
-        if (preparingAhead) {
-            missAheadPlan()->Note(MissAheadPlan::Skip::Unregistered);
-            return;
-        }
+        if (preparingAhead) return;
         registeredShader = ReadRawShader(address);
     }
     const auto& snapshot = *registeredShader;
@@ -394,11 +388,10 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
         }
     }
     if (preparingAhead) {
-        missAheadPlan()->Reach();
-        prepareMissAhead(registeredShader, codeOffset, request, memory, key, localDevice, address);
+        prepareMissAhead(registeredShader, codeOffset, request, memory, key, localDevice, submission.queue, address);
         return;
     }
-    if (!resolving && missAheadProfiled() && missAheadLedger().Active()) {
+    if (!resolving && missAheadLedger().Active()) {
         missAheadLedger().Used(key);
         reportMissAhead();
     }
@@ -640,10 +633,7 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
             compiledResult = invocation.Materialize(*capture);
             CommandMix::NoteMaterialized(*compiledResult, *capture);
             timing.Mark("materialize");
-            if (!resolving && missAheadEnabled()) {
-                missAheadKnown().Insert(key);
-                if (!localDevice->HasComputePipeline(*compiledResult)) missAhead(submission, queue, currentPacketOffset());
-            }
+            if (!resolving && indirectArguments == 0 && !localDevice->HasComputePipeline(*compiledResult)) missAhead(submission, queue, currentPacketOffset());
             if (compiledResult->cacheHit) ++cacheHits;
             const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             static double totalMs = 0;
