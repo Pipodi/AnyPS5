@@ -19,7 +19,7 @@ void Require(bool condition, const std::string& message) {
 }
 
 void CheckLimitPolicy() {
-    Require(BackgroundCompileLimitFor(nullptr) == 4096u * 1024u, "an unset APS5_BACKGROUND_COMPILE_KIB is not 4 MiB");
+    Require(BackgroundCompileLimitFor(nullptr) == 8192u * 1024u, "an unset APS5_BACKGROUND_COMPILE_KIB is not 8 MiB");
     Require(BackgroundCompileLimitFor("16") == 16u * 1024u, "APS5_BACKGROUND_COMPILE_KIB=16 is not 16 KiB");
     Require(BackgroundCompileLimitFor("0") == 0u, "APS5_BACKGROUND_COMPILE_KIB=0 leaves room");
 }

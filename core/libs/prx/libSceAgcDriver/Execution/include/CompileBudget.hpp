@@ -63,7 +63,7 @@ private:
 };
 
 inline std::uint64_t BackgroundCompileLimitFor(const char* configured) {
-    constexpr std::uint64_t automaticKiB = 4096;
+    constexpr std::uint64_t automaticKiB = 8192;
     return (configured != nullptr ? std::strtoull(configured, nullptr, 10) : automaticKiB) * 1024u;
 }
 
