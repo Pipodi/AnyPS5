@@ -12,21 +12,42 @@ namespace AgcDriver::DriverDetail {
 
 class MissAheadPlan {
 public:
-    explicit MissAheadPlan(std::size_t cap) : cap(cap) {}
+    enum class Skip { Cached, Duplicate, Unprepared, Unregistered, CaptureFailed };
+
+    struct Counts {
+        std::size_t visited = 0, started = 0, cached = 0, duplicate = 0, unprepared = 0, unregistered = 0, captureFailed = 0;
+    };
+
+    MissAheadPlan(std::size_t buildCap, std::size_t visitCap) : buildCap(buildCap), visitCap(visitCap) {}
+
+    bool BuildsFull() const { return counts.started >= buildCap; }
 
     bool Visit() {
-        if (visited >= cap) return false;
-        ++visited;
+        if (counts.visited >= visitCap) return false;
+        ++counts.visited;
         return true;
     }
 
     bool Admit(std::uint64_t key) { return keys.insert(key).second; }
 
-    std::size_t Visited() const { return visited; }
+    void Started() { ++counts.started; }
+
+    void Note(Skip reason) {
+        switch (reason) {
+        case Skip::Cached: ++counts.cached; break;
+        case Skip::Duplicate: ++counts.duplicate; break;
+        case Skip::Unprepared: ++counts.unprepared; break;
+        case Skip::Unregistered: ++counts.unregistered; break;
+        case Skip::CaptureFailed: ++counts.captureFailed; break;
+        }
+    }
+
+    const Counts& Totals() const { return counts; }
 
 private:
-    std::size_t cap;
-    std::size_t visited = 0;
+    std::size_t buildCap;
+    std::size_t visitCap;
+    Counts counts;
     std::set<std::uint64_t> keys;
 };
 

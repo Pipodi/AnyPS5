@@ -162,7 +162,10 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
     } originScope(address, !preparingAhead);
     auto registeredShader = RegisteredProgram(*submission.shaders, address, {0});
     if (!registeredShader) {
-        if (preparingAhead) return;
+        if (preparingAhead) {
+            missAheadPlan()->Note(MissAheadPlan::Skip::Unregistered);
+            return;
+        }
         registeredShader = ReadRawShader(address);
     }
     const auto& snapshot = *registeredShader;

@@ -14,15 +14,27 @@ void Require(bool condition, const std::string& message) {
 }
 
 void CheckPlan() {
-    MissAheadPlan plan(3);
-    Require(plan.Visit() && plan.Visit() && plan.Visit(), "three visits fit the cap");
-    Require(!plan.Visit(), "a fourth visit exceeds the cap");
-    Require(plan.Visited() == 3, "visits are counted up to the cap");
+    MissAheadPlan plan(2, 5);
+    Require(!plan.BuildsFull(), "a new plan has started no builds");
+    Require(plan.Visit() && plan.Visit() && plan.Visit(), "visits do not consume the build cap");
+    Require(!plan.BuildsFull(), "visits alone leave the build cap open");
+    plan.Note(MissAheadPlan::Skip::Cached);
+    plan.Note(MissAheadPlan::Skip::Duplicate);
+    plan.Note(MissAheadPlan::Skip::Unprepared);
+    Require(!plan.BuildsFull(), "skipped dispatches are not builds");
+    plan.Started();
+    Require(!plan.BuildsFull(), "one build is under the cap of two");
+    plan.Started();
+    Require(plan.BuildsFull(), "the build cap is reached by started builds");
+    Require(plan.Visit() && plan.Visit(), "visits continue to their own cap");
+    Require(!plan.Visit(), "a sixth visit exceeds the visit cap");
+    const auto& counts = plan.Totals();
+    Require(counts.visited == 5 && counts.started == 2 && counts.cached == 1 && counts.duplicate == 1 && counts.unprepared == 1 && counts.unregistered == 0, "counts are kept per reason");
     Require(plan.Admit(7), "a new variant key is admitted");
     Require(!plan.Admit(7), "a repeated variant key is deduplicated");
     Require(plan.Admit(8), "another key is admitted");
-    MissAheadPlan none(0);
-    Require(!none.Visit(), "a zero cap visits nothing");
+    MissAheadPlan none(0, 0);
+    Require(none.BuildsFull() && !none.Visit(), "zero caps start and visit nothing");
 }
 
 void CheckRange() {
