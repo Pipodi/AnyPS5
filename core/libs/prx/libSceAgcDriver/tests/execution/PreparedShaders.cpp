@@ -503,6 +503,7 @@ void ReferencedRegistrationPreparation() {
     Require(AgcDriver::DriverDetail::ReferencedPrograms(lowOnly, {}).addresses.empty(), "a program address without its high register was resolved");
     Require(!AgcDriver::DriverDetail::ReferencedPrograms(lowOnly, {}).complete, "a program address without its high register was reported as fully scanned");
     Require(AgcDriver::DriverDetail::ReferencedPrograms(commands, {}).complete, "a program address written as a pair was reported as not fully scanned");
+    if (std::getenv("APS5_INLINE_SHADER_PREPARE") != nullptr) return;
     const auto workers = std::max(2u, std::thread::hardware_concurrency() / 2u);
     std::barrier started(static_cast<std::ptrdiff_t>(workers + 1u));
     std::counting_semaphore<> release(0);
@@ -651,6 +652,7 @@ void UnprovenProgramsAtSubmit() {
         while (!ran.load(std::memory_order_acquire)) std::this_thread::sleep_for(std::chrono::milliseconds(10));
         Require(rewindWaited, "a submission ending in a REWIND did not wait for the queued preparations, though its tail is not scanned");
     }
+    if (std::getenv("APS5_INLINE_SHADER_PREPARE") != nullptr) return;
     commands = pair;
     waited = SubmitBehindSlowPreparation(commands, done);
     std::cout << "proven pair submit waited " << waited.count() << " ms\n";
