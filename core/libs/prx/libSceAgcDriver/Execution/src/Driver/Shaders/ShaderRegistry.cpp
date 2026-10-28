@@ -52,6 +52,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <unordered_map>
 #include "Optimization/ShaderStageInputInfo.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/RegistrationPreparationBudget.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceOverlay.hpp"
@@ -1566,6 +1567,7 @@ public:
                 if (prepared != nullptr && prepared->demanded.load()) tasks.push_front({std::move(task), prepared, sequence});
                 else tasks.push_back({std::move(task), prepared, sequence});
                 unfinished.insert(sequence);
+                if (prepared != nullptr) owned.emplace(prepared, sequence);
                 lock.unlock();
                 ready.notify_one();
                 return;
@@ -1576,10 +1578,17 @@ public:
 
     void Prioritize(const PreparedShaders& prepared) {
         std::lock_guard lock(mutex);
-        const auto found = std::ranges::find_if(tasks, [&](const auto& task) { return task.prepared == &prepared; });
-        if (found == tasks.end()) return;
-        if (std::getenv("APS5_TRACE_PREPARATION_WAIT") != nullptr) std::fprintf(stderr, "[shader-prepare] demanded queued task at position %zu of %zu\n", static_cast<std::size_t>(std::distance(tasks.begin(), found)), tasks.size());
-        std::rotate(tasks.begin(), found, std::next(found));
+        moveToFront(prepared);
+    }
+
+    void AwaitOwned(const PreparedShaders& prepared) {
+        std::unique_lock lock(mutex);
+        const auto [first, last] = owned.equal_range(&prepared);
+        if (first == last) return;
+        std::vector<std::uint64_t> sequences;
+        for (auto entry = first; entry != last; ++entry) sequences.push_back(entry->second);
+        moveToFront(prepared);
+        idle.wait(lock, [&] { return std::ranges::none_of(sequences, [&](const auto sequence) { return unfinished.contains(sequence); }); });
     }
 
     void AwaitSubmitted() {
@@ -1596,7 +1605,10 @@ public:
             closed = true;
             if (dropQueued) {
                 dropped.swap(tasks);
-                for (const auto& task : dropped) unfinished.erase(task.sequence);
+                for (const auto& task : dropped) {
+                    unfinished.erase(task.sequence);
+                    disown(task.prepared, task.sequence);
+                }
                 idle.notify_all();
             }
             idle.wait(lock, [&] { return tasks.empty() && running == 0; });
@@ -1608,6 +1620,20 @@ public:
 
 private:
     static constexpr std::size_t StackBytes = 64u << 20u;
+
+    void moveToFront(const PreparedShaders& prepared) {
+        const auto found = std::ranges::find_if(tasks, [&](const auto& task) { return task.prepared == &prepared; });
+        if (found == tasks.end()) return;
+        if (std::getenv("APS5_TRACE_PREPARATION_WAIT") != nullptr) std::fprintf(stderr, "[shader-prepare] demanded queued task at position %zu of %zu\n", static_cast<std::size_t>(std::distance(tasks.begin(), found)), tasks.size());
+        std::rotate(tasks.begin(), found, std::next(found));
+    }
+
+    void disown(const PreparedShaders* prepared, std::uint64_t sequence) {
+        if (prepared == nullptr) return;
+        const auto [first, last] = owned.equal_range(prepared);
+        const auto found = std::find_if(first, last, [&](const auto& entry) { return entry.second == sequence; });
+        if (found != last) owned.erase(found);
+    }
 
 #ifdef _WIN32
     struct Worker {
@@ -1678,6 +1704,7 @@ private:
                 ++pool.running;
             }
             const auto sequence = task.sequence;
+            const auto* const prepared = task.prepared;
             task.function();
             task = {};
             bool drained = false;
@@ -1685,6 +1712,7 @@ private:
                 std::lock_guard lock(pool.mutex);
                 --pool.running;
                 pool.unfinished.erase(sequence);
+                pool.disown(prepared, sequence);
                 drained = pool.tasks.empty() && pool.running == 0;
                 pool.idle.notify_all();
             }
@@ -1711,6 +1739,7 @@ private:
     unsigned running = 0;
     std::uint64_t submitted = 0;
     std::set<std::uint64_t> unfinished;
+    std::unordered_multimap<const PreparedShaders*, std::uint64_t> owned;
     bool closed = false;
 };
 
@@ -1795,10 +1824,12 @@ void AwaitReferencedPreparations(const ShaderRegistry& registry, std::span<const
         for (const auto& snapshot : found->second) {
             if (address - snapshot->codeAddress >= snapshot->code.size() * sizeof(std::uint32_t)) continue;
             auto& prepared = *snapshot->prepared;
-            std::unique_lock lock(prepared.mutex);
-            if (!prepared.pending) continue;
-            PrioritizeRegistrationPreparation(prepared);
-            prepared.settled.wait(lock, [&] { return !prepared.pending; });
+            {
+                std::lock_guard lock(prepared.mutex);
+                if (!prepared.pending) continue;
+            }
+            prepared.demanded.store(true);
+            if (auto* pool = RegistrationPreparePool::Existing()) pool->AwaitOwned(prepared);
         }
     }
 }
