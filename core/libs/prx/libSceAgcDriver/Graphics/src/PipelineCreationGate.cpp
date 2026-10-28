@@ -61,6 +61,9 @@ PipelineCreationGate::Settings PipelineCreationGate::SettingsFromEnvironment() {
     settings.smallBytes = EnvironmentNumber("APS5_PIPELINE_COMPILE_SMALL_MIB", settings.smallBytes >> 20u) << 20u;
     settings.reserveBytes = EnvironmentNumber("APS5_PIPELINE_COMPILE_RESERVE_MIB", 0) << 20u;
     if (settings.reserveBytes != 0) settings.reserveAvailableBytes = &PipelineCreationGate::AvailableMemoryBytes;
+    settings.demandAllowanceBytes = EnvironmentNumber("APS5_PIPELINE_COMPILE_DEMAND_ALLOWANCE_MIB", settings.budgetBytes / 8u >> 20u) << 20u;
+    if (settings.demandAllowanceBytes != 0) settings.demandAvailableBytes = &PipelineCreationGate::AvailableMemoryBytes;
+    settings.demandFloorBytes = EnvironmentNumber("APS5_PIPELINE_COMPILE_DEMAND_FLOOR_MIB", std::max<std::uint64_t>(1024u, PhysicalMemoryBytes() / 16u >> 20u)) << 20u;
     settings.maxLarge = static_cast<std::uint32_t>(std::max<std::uint64_t>(1u, EnvironmentNumber("APS5_PIPELINE_COMPILE_MAX_LARGE", settings.maxLarge)));
     settings.log = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
     return settings;
@@ -76,7 +79,7 @@ void PipelineCreationGate::log(const char* what, std::uint64_t bytes, std::uint6
     std::fprintf(stderr, "[gate] %s est=%llu MiB avail=%llu MiB inflight=%llu MiB in %llu creations (%llu large)\n", what, static_cast<unsigned long long>(bytes >> 20u), static_cast<unsigned long long>(available >> 20u), static_cast<unsigned long long>(stats.inFlightBytes >> 20u), static_cast<unsigned long long>(stats.inFlight), static_cast<unsigned long long>(inFlightLarge));
 }
 
-PipelineCreationGate::Verdict PipelineCreationGate::evaluate(std::uint64_t bytes) {
+PipelineCreationGate::Verdict PipelineCreationGate::evaluate(std::uint64_t bytes, bool speculative) {
     if (stats.inFlight == 0) return Verdict::Budget;
     auto budget = settings.budgetBytes;
     if (settings.availableBytes) {
@@ -84,51 +87,62 @@ PipelineCreationGate::Verdict PipelineCreationGate::evaluate(std::uint64_t bytes
         if (available != 0) budget = std::min(budget, stats.inFlightBytes + available / 2u);
     }
     if (stats.inFlightBytes + bytes <= budget) return Verdict::Budget;
-    if (settings.reserveBytes == 0 || !settings.reserveAvailableBytes || bytes <= settings.smallBytes) return Verdict::Wait;
+    const auto blocked = [&] {
+        if (speculative || settings.demandAllowanceBytes == 0 || bytes <= settings.smallBytes) return Verdict::Wait;
+        if (!settings.demandAvailableBytes) return Verdict::Wait;
+        const auto available = settings.demandAvailableBytes();
+        if (available == 0 || available < bytes + settings.demandFloorBytes) return Verdict::Wait;
+        const auto demandBytes = stats.inFlightBytes - std::min(stats.inFlightBytes, speculativeInFlightBytes);
+        return demandBytes + bytes <= budget && stats.inFlightBytes + bytes <= budget + settings.demandAllowanceBytes ? Verdict::Demand : Verdict::Wait;
+    };
+    if (settings.reserveBytes == 0 || !settings.reserveAvailableBytes || bytes <= settings.smallBytes) return blocked();
     const auto available = settings.reserveAvailableBytes();
     if (available != 0) {
         stats.minAvailableBytes = hasMinAvailable ? std::min(stats.minAvailableBytes, available) : available;
         hasMinAvailable = true;
     }
-    if (available == 0 || inFlightLarge >= settings.maxLarge) return Verdict::Wait;
+    if (available == 0 || inFlightLarge >= settings.maxLarge) return blocked();
     const auto committed = stats.inFlightBytes + bytes;
-    return available >= committed && available - committed >= settings.reserveBytes ? Verdict::Reserve : Verdict::Wait;
+    return available >= committed && available - committed >= settings.reserveBytes ? Verdict::Reserve : blocked();
 }
 
-PipelineCreationGate::Ticket PipelineCreationGate::Admit(std::size_t words, bool mayWait) {
+PipelineCreationGate::Ticket PipelineCreationGate::Admit(std::size_t words, bool mayWait, bool speculative) {
     if (settings.budgetBytes == 0) return {};
     const auto bytes = EstimateBytes(words);
     const bool large = bytes > settings.smallBytes;
     std::unique_lock lock(mutex);
-    auto verdict = evaluate(bytes);
+    auto verdict = evaluate(bytes, speculative);
     if (verdict == Verdict::Wait) {
         if (mayWait && large) {
             const auto start = std::chrono::steady_clock::now();
             ++stats.waited;
             log("wait", bytes, settings.log && settings.reserveAvailableBytes ? settings.reserveAvailableBytes() : 0u);
-            while ((verdict = evaluate(bytes)) == Verdict::Wait) released.wait_for(lock, std::chrono::milliseconds(settings.recheckMilliseconds));
+            while ((verdict = evaluate(bytes, speculative)) == Verdict::Wait) released.wait_for(lock, std::chrono::milliseconds(settings.recheckMilliseconds));
             stats.waitNanoseconds += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
         } else {
             ++stats.unwaited;
         }
     }
     if (verdict == Verdict::Reserve) ++stats.admittedByReserve;
-    log(verdict == Verdict::Reserve ? "admit-by-reserve" : "admit", bytes, settings.log && settings.reserveAvailableBytes ? settings.reserveAvailableBytes() : 0u);
+    if (verdict == Verdict::Demand) ++stats.admittedByDemandAllowance;
+    log(verdict == Verdict::Reserve ? "admit-by-reserve" : verdict == Verdict::Demand ? "admit-by-demand-allowance" : "admit", bytes, settings.log && settings.reserveAvailableBytes ? settings.reserveAvailableBytes() : 0u);
     ++stats.admitted;
     ++stats.inFlight;
     if (large) ++inFlightLarge;
     stats.inFlightBytes += bytes;
+    if (speculative) speculativeInFlightBytes += bytes;
     stats.peakInFlight = std::max(stats.peakInFlight, stats.inFlight);
     stats.peakBytes = std::max(stats.peakBytes, stats.inFlightBytes);
-    return Ticket(this, bytes, large);
+    return Ticket(this, bytes, large, speculative);
 }
 
-void PipelineCreationGate::release(std::uint64_t bytes, bool large) noexcept {
+void PipelineCreationGate::release(std::uint64_t bytes, bool large, bool speculative) noexcept {
     {
         std::lock_guard lock(mutex);
         --stats.inFlight;
         if (large) --inFlightLarge;
         stats.inFlightBytes -= std::min(stats.inFlightBytes, bytes);
+        if (speculative) speculativeInFlightBytes -= std::min(speculativeInFlightBytes, bytes);
     }
     released.notify_all();
 }

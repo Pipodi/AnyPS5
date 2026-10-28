@@ -198,6 +198,73 @@ void reserveUnsetIsToday() {
     std::puts("an unset reserve leaves the gate as it was");
 }
 
+PipelineCreationGate::Settings DemandSettings(std::uint64_t allowanceMiB) {
+    auto settings = Settings(8 * MiB);
+    settings.demandAllowanceBytes = allowanceMiB * MiB;
+    settings.recheckMilliseconds = 20;
+    settings.demandAvailableBytes = [] { return 1024 * MiB; };
+    settings.demandFloorBytes = 100 * MiB;
+    return settings;
+}
+
+bool HeldBack(PipelineCreationGate& gate, PipelineCreationGate::Ticket& holder, std::size_t words, bool speculative) {
+    std::atomic<bool> admitted{false};
+    std::thread waiter([&] {
+        const auto ticket = gate.Admit(words, true, speculative);
+        admitted = true;
+    });
+    const bool early = AdmittedWithin(admitted, std::chrono::milliseconds(300));
+    holder = {};
+    waiter.join();
+    return !early;
+}
+
+void demandAllowance() {
+    PipelineCreationGate over(DemandSettings(4));
+    const auto spec = over.Admit(8 * 1024, true, true);
+    const auto demand = over.Admit(3 * 1024, true, false);
+    auto stats = over.Totals();
+    Require(stats.waited == 0 && stats.admittedByDemandAllowance == 1 && stats.inFlight == 2 && stats.inFlightBytes == 11 * MiB, "a demand creation was not admitted over the budget while speculative ones filled it");
+    PipelineCreationGate tooBig(DemandSettings(4));
+    auto specBig = tooBig.Admit(8 * 1024, true, true);
+    Require(HeldBack(tooBig, specBig, 5 * 1024, false) && tooBig.Totals().admittedByDemandAllowance == 0 && tooBig.Totals().waited == 1, "a demand creation overdrew past the allowance");
+    PipelineCreationGate full(DemandSettings(4));
+    auto demandHolder = full.Admit(8 * 1024, true, false);
+    Require(HeldBack(full, demandHolder, 2 * 1024, false) && full.Totals().admittedByDemandAllowance == 0, "a demand creation was admitted while non-speculative ones filled the budget");
+    PipelineCreationGate speculative(DemandSettings(4));
+    auto specHolder = speculative.Admit(8 * 1024, true, true);
+    Require(HeldBack(speculative, specHolder, 2 * 1024, true) && speculative.Totals().admittedByDemandAllowance == 0, "a speculative creation was admitted by the demand allowance");
+    PipelineCreationGate off(DemandSettings(0));
+    auto offHolder = off.Admit(8 * 1024, true, true);
+    Require(HeldBack(off, offHolder, 2 * 1024, false) && off.Totals().admittedByDemandAllowance == 0, "a zero allowance still admitted a demand creation over the budget");
+    auto lowSettings = DemandSettings(4);
+    lowSettings.demandAvailableBytes = [] { return 103 * MiB; };
+    PipelineCreationGate low(lowSettings);
+    auto lowHolder = low.Admit(8 * 1024, true, true);
+    Require(HeldBack(low, lowHolder, 4 * 1024, false) && low.Totals().admittedByDemandAllowance == 0, "the allowance admitted a creation with less available memory than its estimate plus the floor");
+    auto edgeSettings = DemandSettings(4);
+    edgeSettings.demandAvailableBytes = [] { return 104 * MiB; };
+    PipelineCreationGate edge(edgeSettings);
+    const auto edgeSpec = edge.Admit(8 * 1024, true, true);
+    const auto edgeDemand = edge.Admit(4 * 1024, true, false);
+    Require(edge.Totals().admittedByDemandAllowance == 1, "the allowance refused a creation leaving exactly the floor");
+    auto unknownSettings = DemandSettings(4);
+    unknownSettings.demandAvailableBytes = [] { return std::uint64_t{0}; };
+    PipelineCreationGate unknown(unknownSettings);
+    auto unknownHolder = unknown.Admit(8 * 1024, true, true);
+    Require(HeldBack(unknown, unknownHolder, 2 * 1024, false) && unknown.Totals().admittedByDemandAllowance == 0, "the allowance admitted a creation with unknown available memory");
+    auto noHookSettings = DemandSettings(4);
+    noHookSettings.demandAvailableBytes = nullptr;
+    PipelineCreationGate noHook(noHookSettings);
+    auto noHookHolder = noHook.Admit(8 * 1024, true, true);
+    Require(HeldBack(noHook, noHookHolder, 2 * 1024, false) && noHook.Totals().admittedByDemandAllowance == 0, "the allowance admitted a creation without an available-memory hook");
+    const auto settings = PipelineCreationGate::SettingsFromEnvironment();
+    if (std::getenv("APS5_PIPELINE_COMPILE_DEMAND_ALLOWANCE_MIB") == nullptr) Require(settings.demandAvailableBytes != nullptr, "the default allowance has no available-memory hook");
+    if (std::getenv("APS5_PIPELINE_COMPILE_DEMAND_FLOOR_MIB") == nullptr) Require(settings.demandFloorBytes >= 1024 * MiB, "the default floor is below 1 GiB");
+    if (std::getenv("APS5_PIPELINE_COMPILE_DEMAND_ALLOWANCE_MIB") == nullptr) Require(settings.demandAllowanceBytes == (settings.budgetBytes / 8u >> 20u << 20u), "the default allowance is not an eighth of the budget");
+    std::puts("a demand creation overdraws the budget by the allowance when speculative ones fill it, and nothing else does");
+}
+
 void disabled() {
     PipelineCreationGate gate(Settings(0));
     const auto first = gate.Admit(1u << 20u, true);
@@ -227,6 +294,7 @@ int main() {
         reserveAdmitsWhenAvailable();
         reserveHoldsWhenLow();
         reserveRechecksOnTimer();
+        demandAllowance();
         disabled();
         defaults();
         std::puts("pipeline creation gate tests passed");
