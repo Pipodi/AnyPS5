@@ -361,6 +361,14 @@ std::size_t MissAheadMax() {
     return cap;
 }
 
+std::size_t MissAheadVisits() {
+    static const std::size_t cap = [] {
+        const char* text = std::getenv("APS5_DISPATCH_MISS_AHEAD_VISITS");
+        return text != nullptr ? static_cast<std::size_t>(std::strtoull(text, nullptr, 10)) : std::size_t{4096};
+    }();
+    return cap;
+}
+
 MissAheadRange& ScannedRange() {
     static thread_local MissAheadRange range;
     return range;
@@ -395,7 +403,8 @@ void Driver::missAhead(const Submission& submission, const QueueState& live, std
     if ((firstOpcode != 0x15 && firstOpcode != 0x16) || firstCount < (firstOpcode == 0x15 ? 5u : 3u) || from + firstCount > commands.size()) return;
     QueueState scratch = live;
     Pm4::NoteDispatchRegisters(std::span(commands).subspan(from, firstCount), scratch);
-    MissAheadPlan plan(cap);
+    MissAheadPlan plan(cap, MissAheadVisits());
+    const char* stop = "end";
     struct Scanning {
         std::size_t offset;
         explicit Scanning(MissAheadPlan& plan) : offset(currentPacketOffset()) {
@@ -416,15 +425,42 @@ void Driver::missAhead(const Submission& submission, const QueueState& live, std
             continue;
         }
         const auto count = Pm4::PacketWords(header);
-        if (cursor + count > commands.size()) break;
+        if (cursor + count > commands.size()) {
+            stop = "malformed";
+            break;
+        }
         const auto packet = std::span(commands).subspan(cursor, count);
         const auto opcode = (header >> 8u) & 0xffu;
-        if (header == FlipPacketHeader || header == RenderingWaitPacketHeader || opcode == 0x22 || opcode == 0x3f) break;
-        if (Pm4::Predicated(header) && scratch.predication.operation != 0) break;
+        if (header == FlipPacketHeader) {
+            stop = "flip";
+            break;
+        }
+        if (header == RenderingWaitPacketHeader) {
+            stop = "rendering_wait";
+            break;
+        }
+        if (opcode == 0x22 || opcode == 0x3f) {
+            stop = opcode == 0x22 ? "opcode_0x22" : "opcode_0x3f";
+            break;
+        }
+        if (Pm4::Predicated(header) && scratch.predication.operation != 0) {
+            stop = "predicated";
+            break;
+        }
         if (opcode == 0x15 || opcode == 0x16) {
-            if (count < (opcode == 0x15 ? 5u : 3u)) break;
+            if (count < (opcode == 0x15 ? 5u : 3u)) {
+                stop = "malformed";
+                break;
+            }
             if (opcode == 0x15) {
-                if (!plan.Visit()) break;
+                if (plan.BuildsFull()) {
+                    stop = "build_cap";
+                    break;
+                }
+                if (!plan.Visit()) {
+                    stop = "visit_cap";
+                    break;
+                }
                 currentPacketOffset() = cursor;
                 try {
                     dispatchAttempt(scratch, packet, submission, 0, false);
@@ -433,18 +469,27 @@ void Driver::missAhead(const Submission& submission, const QueueState& live, std
             Pm4::NoteDispatchRegisters(packet, scratch);
         } else if (Pm4::IndirectRegisterOpcode(opcode)) {
             const auto found = submission.registerLists.find(cursor);
-            if (count != 5 || found == submission.registerLists.end() || found->second.size() != static_cast<std::size_t>(packet[4]) * 2 || !Pm4::IndirectRegistersValid(found->second)) break;
+            if (count != 5 || found == submission.registerLists.end() || found->second.size() != static_cast<std::size_t>(packet[4]) * 2 || !Pm4::IndirectRegistersValid(found->second)) {
+                stop = "malformed";
+                break;
+            }
             Pm4::ExecuteIndirectRegisters(packet, found->second, scratch);
         } else if (!Pm4::AccessesMemory(header) && opcode != 0x3c && opcode != 0x93 && opcode != 0x37 && opcode != 0x42 && opcode != 0x46 && opcode != 0x49 && opcode != 0x58) {
             try {
                 Pm4::Execute(packet, scratch);
             } catch (const std::exception&) {
+                stop = "execute_failed";
                 break;
             }
         }
         cursor += count;
     }
     ScannedRange().Record(submission.serial, submission.queue, cursor);
+    if (missAheadLedger().Active()) {
+        const auto& totals = plan.Totals();
+        std::fprintf(stderr, "[miss-ahead] scan queue %u serial %llu from %zu to %zu of %zu: visited %zu started %zu skipped cached %zu plan_duplicate %zu unprepared %zu unregistered %zu capture_failed %zu stop %s t=%.0f\n", submission.queue, static_cast<unsigned long long>(submission.serial), from, cursor, commands.size(),
+                     totals.visited, totals.started, totals.cached, totals.duplicate, totals.unprepared, totals.unregistered, totals.captureFailed, stop, AgcDriver::ComputeTimeline::NowMs());
+    }
     reportMissAhead();
 }
 
@@ -453,13 +498,22 @@ void Driver::prepareMissAhead(const std::shared_ptr<const ShaderSnapshot>& snaps
     if (plan == nullptr || snapshot == nullptr || snapshot->prepared == nullptr || localDevice == nullptr) return;
     {
         std::lock_guard lock(dispatchCacheMutex);
-        if (dispatchCache.contains(key)) return;
+        if (dispatchCache.contains(key)) {
+            plan->Note(MissAheadPlan::Skip::Cached);
+            return;
+        }
     }
     {
         std::lock_guard lock(snapshot->prepared->mutex);
-        if (snapshot->prepared->pending || std::none_of(snapshot->prepared->entries.begin(), snapshot->prepared->entries.end(), [&](const auto& entry) { return entry.codeOffset == codeOffset; })) return;
+        if (snapshot->prepared->pending || std::none_of(snapshot->prepared->entries.begin(), snapshot->prepared->entries.end(), [&](const auto& entry) { return entry.codeOffset == codeOffset; })) {
+            plan->Note(MissAheadPlan::Skip::Unprepared);
+            return;
+        }
     }
-    if (!plan->Admit(key)) return;
+    if (!plan->Admit(key)) {
+        plan->Note(MissAheadPlan::Skip::Duplicate);
+        return;
+    }
     auto shaderMemory = std::make_shared<ShaderMemory>(memory, &queryPendingWrite, &observePendingWrite, hookWaitCounter(), &QueryPendingSpan);
     std::shared_ptr<const ShaderRecompiler::ResourceCapture> capture;
     try {
@@ -467,9 +521,14 @@ void Driver::prepareMissAhead(const std::shared_ptr<const ShaderSnapshot>& snaps
         const SampledReadScope sampling(evidenceReads);
         capture = CaptureInvocation(*shaderMemory, *snapshot, codeOffset, request, invocation);
     } catch (const std::exception&) {
+        plan->Note(MissAheadPlan::Skip::CaptureFailed);
         return;
     }
-    if (capture == nullptr) return;
+    if (capture == nullptr) {
+        plan->Note(MissAheadPlan::Skip::CaptureFailed);
+        return;
+    }
+    plan->Started();
     missAheadLedger().Started(key);
     AgcDriver::ComputeTimeline::Mark(AgcDriver::ComputeTimeline::Event::Lookahead, address);
     SubmitRegistrationPreparation([snapshot, codeOffset, localDevice, queue, address, key, shaderMemory, capture, ownedRequest = request, userData = std::vector<std::uint32_t>(request.context.userData.begin(), request.context.userData.end()), ownedMemory = std::vector<ShaderRecompiler::MemoryRegion>(memory.begin(), memory.end())]() mutable {
@@ -484,8 +543,7 @@ void Driver::prepareMissAhead(const std::shared_ptr<const ShaderSnapshot>& snaps
             auto invocation = InvocationFor(*snapshot, codeOffset, ownedRequest);
             const auto result = invocation.Materialize(*capture);
             if (result == nullptr) return;
-            const bool existing = localDevice->HasComputePipeline(*result);
-            std::fprintf(stderr, "[miss-ahead] start program 0x%llx words %zu queue %u%s t=%.0f\n", static_cast<unsigned long long>(address), result->spirv.size(), queue, existing ? " (already built or building)" : "", AgcDriver::ComputeTimeline::NowMs());
+            if (!localDevice->HasComputePipeline(*result)) std::fprintf(stderr, "[miss-ahead] start program 0x%llx words %zu queue %u t=%.0f\n", static_cast<unsigned long long>(address), result->spirv.size(), queue, AgcDriver::ComputeTimeline::NowMs());
             localDevice->PrebuildComputePipeline(*result, address);
         } catch (const std::exception&) {}
     });
