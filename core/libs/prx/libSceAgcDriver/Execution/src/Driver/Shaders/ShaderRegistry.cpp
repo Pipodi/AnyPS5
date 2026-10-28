@@ -2638,7 +2638,7 @@ void Driver::RegisterShader(const Shader* shader) {
     snapshot.header.resize(fields.header_size);
     std::memcpy(snapshot.header.data(), static_cast<const void*>(shader), fields.header_size);
     if (snapshot.type == 0 && AgcDriver::ComputeTimeline::Enabled() && AgcDriver::ComputeTimeline::Once(AgcDriver::ComputeTimeline::Event::Registered, snapshot.codeAddress)) {
-        std::fprintf(stderr, "[compute-timeline] registered program 0x%llx code %zu words t=%.0f range 0x%llx-0x%llx\n", static_cast<unsigned long long>(snapshot.codeAddress), snapshot.code.size(), AgcDriver::ComputeTimeline::NowMs(), static_cast<unsigned long long>(snapshot.codeAddress), static_cast<unsigned long long>(snapshot.codeAddress + fields.shader_size));
+        WriteLogLine(stderr, "[compute-timeline] registered program 0x%llx code %zu words t=%.0f range 0x%llx-0x%llx\n", static_cast<unsigned long long>(snapshot.codeAddress), snapshot.code.size(), AgcDriver::ComputeTimeline::NowMs(), static_cast<unsigned long long>(snapshot.codeAddress), static_cast<unsigned long long>(snapshot.codeAddress + fields.shader_size));
     }
 
     transaction.Hold();

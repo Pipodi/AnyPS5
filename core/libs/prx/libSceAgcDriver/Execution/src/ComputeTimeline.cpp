@@ -1,4 +1,5 @@
 #include "prx/libSceAgcDriver/Execution/include/ComputeTimeline.hpp"
+#include "prx/libc/include/general/LogMacros.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -85,8 +86,8 @@ double ThreadCpuMs() {
 
 void Mark(Event event, std::uint64_t address, const char* pipeline) {
     if (!Enabled() || !Once(event, address)) return;
-    if (pipeline != nullptr) std::fprintf(stderr, "[compute-timeline] %s program 0x%llx t=%.0f pipeline=%s\n", Name(event), static_cast<unsigned long long>(address), NowMs(), pipeline);
-    else std::fprintf(stderr, "[compute-timeline] %s program 0x%llx t=%.0f\n", Name(event), static_cast<unsigned long long>(address), NowMs());
+    if (pipeline != nullptr) WriteLogLine(stderr, "[compute-timeline] %s program 0x%llx t=%.0f pipeline=%s\n", Name(event), static_cast<unsigned long long>(address), NowMs(), pipeline);
+    else WriteLogLine(stderr, "[compute-timeline] %s program 0x%llx t=%.0f\n", Name(event), static_cast<unsigned long long>(address), NowMs());
 }
 
 }

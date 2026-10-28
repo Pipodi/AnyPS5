@@ -1,5 +1,6 @@
 #include "prx/libSceAgcDriver/Execution/include/ComputeTimeline.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
+#include "prx/libc/include/general/LogMacros.hpp"
 #include "ThreadOwned.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawPipeline.hpp"
@@ -508,7 +509,7 @@ void Driver::missAhead(const Submission& submission, const QueueState& live, std
     ScannedRange().Record(submission.serial, submission.queue, cursor);
     if (missAheadLedger().Active()) {
         const auto& totals = plan.Totals();
-        std::fprintf(stderr, "[miss-ahead] scan queue %u serial %llu from %zu to %zu of %zu: visited %zu started %zu returned_early %zu skipped cached %zu plan_duplicate %zu unprepared %zu unregistered %zu capture_failed %zu early_listed %zu early_kernel %zu early_failed %zu indirect_cpu_path %zu stop %s t=%.0f\n", submission.queue, static_cast<unsigned long long>(submission.serial), from, cursor, commands.size(),
+        WriteLogLine(stderr, "[miss-ahead] scan queue %u serial %llu from %zu to %zu of %zu: visited %zu started %zu returned_early %zu skipped cached %zu plan_duplicate %zu unprepared %zu unregistered %zu capture_failed %zu early_listed %zu early_kernel %zu early_failed %zu indirect_cpu_path %zu stop %s t=%.0f\n", submission.queue, static_cast<unsigned long long>(submission.serial), from, cursor, commands.size(),
                      totals.visited, totals.started, totals.visited - totals.reached, totals.cached, totals.duplicate, totals.unprepared, totals.unregistered, totals.captureFailed, totals.listed, totals.kernel, totals.failed, totals.indirect, stop, AgcDriver::ComputeTimeline::NowMs());
     }
     reportMissAhead();
@@ -564,7 +565,7 @@ void Driver::prepareMissAhead(const std::shared_ptr<const ShaderSnapshot>& snaps
             auto invocation = InvocationFor(*snapshot, codeOffset, ownedRequest);
             const auto result = invocation.Materialize(*capture);
             if (result == nullptr) return;
-            if (!localDevice->HasComputePipeline(*result)) std::fprintf(stderr, "[miss-ahead] start program 0x%llx words %zu queue %u t=%.0f\n", static_cast<unsigned long long>(address), result->spirv.size(), queue, AgcDriver::ComputeTimeline::NowMs());
+            if (!localDevice->HasComputePipeline(*result)) WriteLogLine(stderr, "[miss-ahead] start program 0x%llx words %zu queue %u t=%.0f\n", static_cast<unsigned long long>(address), result->spirv.size(), queue, AgcDriver::ComputeTimeline::NowMs());
             localDevice->PrebuildComputePipeline(*result, address);
         } catch (const std::exception&) {}
     });
