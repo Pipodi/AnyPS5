@@ -10,6 +10,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawRegisterKey.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawAhead.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Dispatch/DispatchTiming.hpp"
+#include "prx/libSceAgcDriver/Execution/include/Driver/Dispatch/MissAhead.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawTiming.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Memory/BufferCopy.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Dispatch/IndirectDispatch.hpp"
@@ -369,6 +370,11 @@ private:
     static bool& resolvingAhead();
     static bool& gateOpened();
     void resolveGroupAhead(const Submission& submission, const QueueState& live, std::size_t from);
+    static MissAheadPlan*& missAheadPlan();
+    static MissAheadLedger& missAheadLedger();
+    static void reportMissAhead();
+    void missAhead(const Submission& submission, const QueueState& live, std::size_t from);
+    void prepareMissAhead(const std::shared_ptr<const ShaderSnapshot>& snapshot, std::size_t codeOffset, const ShaderRecompiler::RecompileRequest& request, std::span<const ShaderRecompiler::MemoryRegion> memory, std::uint64_t key, const std::shared_ptr<VulkanDevice>& localDevice, std::uint32_t queue, std::uint64_t address);
     static void clearResolvedAhead();
     static void reportGroupCapture(std::uint32_t queue);
     static PollStats& pollStats();
