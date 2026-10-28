@@ -17,6 +17,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/MultisampleTarget.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/DemandPipelineCreations.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/DispatchCreateContext.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/RuntimeSwitches.hpp"
 #include "Optimization/ResourceProgram.hpp"
 #include <algorithm>
@@ -177,6 +178,15 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
     }
     auto compute = Graphics::DecodeComputeStageInfo(queue.shader, snapshot.header);
     const bool resolving = resolvingAhead();
+    Graphics::DispatchCreateContext createContext;
+    createContext.queue = submission.queue;
+    createContext.serial = submission.serial;
+    createContext.offset = currentPacketOffset();
+    createContext.program = address;
+    createContext.indirect = indirectArguments != 0;
+    createContext.covered = ScannedRangeCovered;
+    std::optional<Graphics::DispatchCreateContext::Scope> createScope;
+    if (!resolving && !preparingAhead) createScope.emplace(createContext);
     if (SkipRefusedShaders() && SkipListedShader(address)) {
         if (resolving) return;
         char where[96];
@@ -377,6 +387,7 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
         }
     }
     if (preparingAhead) {
+        missAheadPlan()->Reach();
         prepareMissAhead(registeredShader, codeOffset, request, memory, key, localDevice, submission.queue, address);
         return;
     }
@@ -509,6 +520,12 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
         }
         if (!pipelined && !missItem && DrawPipeline::Queue0().Busy()) DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Packet, 0x15);
     }
+    createContext.fromAhead = fromAhead;
+    createContext.cached = cached;
+    createContext.dataHit = dataHit;
+    createContext.missItem = missItem;
+    createContext.pipelined = pipelined;
+    createContext.pipelineCandidate = pipelineCandidate;
     if (cached) {
         require(keepVariant != nullptr && keepVariant->shader == registeredShader, "dispatch cache belongs to another registered shader");
         captureMs += phaseTiming.Elapsed();
