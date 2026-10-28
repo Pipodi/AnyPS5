@@ -466,19 +466,26 @@ void Driver::missAhead(const Submission& submission, const QueueState& live, std
                 stop = "malformed";
                 break;
             }
-            if (opcode == 0x15) {
-                if (plan.BuildsFull()) {
-                    stop = "build_cap";
-                    break;
-                }
-                if (!plan.Visit()) {
-                    stop = "visit_cap";
-                    break;
-                }
-                currentPacketOffset() = cursor;
-                try {
+            if (plan.BuildsFull()) {
+                stop = "build_cap";
+                break;
+            }
+            if (!plan.Visit()) {
+                stop = "visit_cap";
+                break;
+            }
+            currentPacketOffset() = cursor;
+            try {
+                if (opcode == 0x15) {
                     dispatchAttempt(scratch, packet, submission, 0, false);
-                } catch (const std::exception&) {}
+                } else if (const auto arguments = Pm4::DispatchArgumentAddress(packet, scratch); indirectArgumentsPath(packet, arguments) == IndirectGpu) {
+                    const std::array<std::uint32_t, 5> unresolved{0xc0031500u, 0, 0, 0, packet.back()};
+                    dispatchAttempt(scratch, unresolved, submission, arguments, false);
+                } else {
+                    plan.Note(MissAheadPlan::Skip::Indirect);
+                }
+            } catch (const std::exception&) {
+                plan.Note(MissAheadPlan::Skip::Failed);
             }
             Pm4::NoteDispatchRegisters(packet, scratch);
         } else if (Pm4::IndirectRegisterOpcode(opcode)) {
@@ -501,8 +508,8 @@ void Driver::missAhead(const Submission& submission, const QueueState& live, std
     ScannedRange().Record(submission.serial, submission.queue, cursor);
     if (missAheadLedger().Active()) {
         const auto& totals = plan.Totals();
-        std::fprintf(stderr, "[miss-ahead] scan queue %u serial %llu from %zu to %zu of %zu: visited %zu started %zu returned_early %zu skipped cached %zu plan_duplicate %zu unprepared %zu unregistered %zu capture_failed %zu stop %s t=%.0f\n", submission.queue, static_cast<unsigned long long>(submission.serial), from, cursor, commands.size(),
-                     totals.visited, totals.started, totals.visited - totals.reached, totals.cached, totals.duplicate, totals.unprepared, totals.unregistered, totals.captureFailed, stop, AgcDriver::ComputeTimeline::NowMs());
+        std::fprintf(stderr, "[miss-ahead] scan queue %u serial %llu from %zu to %zu of %zu: visited %zu started %zu returned_early %zu skipped cached %zu plan_duplicate %zu unprepared %zu unregistered %zu capture_failed %zu early_listed %zu early_kernel %zu early_failed %zu indirect_cpu_path %zu stop %s t=%.0f\n", submission.queue, static_cast<unsigned long long>(submission.serial), from, cursor, commands.size(),
+                     totals.visited, totals.started, totals.visited - totals.reached, totals.cached, totals.duplicate, totals.unprepared, totals.unregistered, totals.captureFailed, totals.listed, totals.kernel, totals.failed, totals.indirect, stop, AgcDriver::ComputeTimeline::NowMs());
     }
     reportMissAhead();
 }

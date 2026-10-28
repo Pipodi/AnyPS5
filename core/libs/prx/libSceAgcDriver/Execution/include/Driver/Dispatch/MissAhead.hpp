@@ -12,10 +12,10 @@ namespace AgcDriver::DriverDetail {
 
 class MissAheadPlan {
 public:
-    enum class Skip { Cached, Duplicate, Unprepared, Unregistered, CaptureFailed };
+    enum class Skip { Cached, Duplicate, Unprepared, Unregistered, CaptureFailed, Listed, Kernel, Failed, Indirect };
 
     struct Counts {
-        std::size_t visited = 0, started = 0, cached = 0, duplicate = 0, unprepared = 0, unregistered = 0, captureFailed = 0, reached = 0;
+        std::size_t visited = 0, started = 0, cached = 0, duplicate = 0, unprepared = 0, unregistered = 0, captureFailed = 0, reached = 0, listed = 0, kernel = 0, failed = 0, indirect = 0;
     };
 
     MissAheadPlan(std::size_t buildCap, std::size_t visitCap) : buildCap(buildCap), visitCap(visitCap) {}
@@ -41,6 +41,10 @@ public:
         case Skip::Unprepared: ++counts.unprepared; break;
         case Skip::Unregistered: ++counts.unregistered; break;
         case Skip::CaptureFailed: ++counts.captureFailed; break;
+        case Skip::Listed: ++counts.listed; break;
+        case Skip::Kernel: ++counts.kernel; break;
+        case Skip::Failed: ++counts.failed; break;
+        case Skip::Indirect: ++counts.indirect; break;
         }
     }
 

@@ -33,6 +33,12 @@ void CheckPlan() {
     Require(plan.Admit(7), "a new variant key is admitted");
     Require(!plan.Admit(7), "a repeated variant key is deduplicated");
     Require(plan.Admit(8), "another key is admitted");
+    plan.Note(MissAheadPlan::Skip::Listed);
+    plan.Note(MissAheadPlan::Skip::Kernel);
+    plan.Note(MissAheadPlan::Skip::Kernel);
+    plan.Note(MissAheadPlan::Skip::Failed);
+    plan.Note(MissAheadPlan::Skip::Indirect);
+    Require(counts.listed == 1 && counts.kernel == 2 && counts.failed == 1 && counts.indirect == 1, "early-return reasons are counted separately");
     MissAheadPlan none(0, 0);
     Require(none.BuildsFull() && !none.Visit(), "zero caps start and visit nothing");
 }
