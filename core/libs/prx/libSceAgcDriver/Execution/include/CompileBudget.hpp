@@ -14,7 +14,13 @@ public:
     public:
         Hold(CompileBudget& budget, std::uint64_t bytes) : budget(budget), bytes(bytes) {
             std::unique_lock lock(budget.mutex);
-            budget.released.wait(lock, [&] { return budget.held == 0 || budget.held + bytes <= budget.limit; });
+            if (bytes > budget.limit) {
+                ++budget.waitingAlone;
+                budget.released.wait(lock, [&] { return budget.held == 0; });
+                --budget.waitingAlone;
+            } else {
+                budget.released.wait(lock, [&] { return budget.waitingAlone == 0 && budget.held + bytes <= budget.limit; });
+            }
             budget.held += bytes;
             if (budget.held > budget.peak) budget.peak = budget.held;
         }
@@ -42,12 +48,18 @@ public:
         return peak;
     }
 
+    std::uint64_t WaitingAlone() const {
+        std::lock_guard lock(mutex);
+        return waitingAlone;
+    }
+
 private:
     mutable std::mutex mutex;
     std::condition_variable released;
     std::uint64_t limit;
     std::uint64_t held = 0;
     std::uint64_t peak = 0;
+    std::uint64_t waitingAlone = 0;
 };
 
 inline std::uint64_t BackgroundCompileLimitFor(const char* configured) {

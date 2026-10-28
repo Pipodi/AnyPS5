@@ -61,6 +61,39 @@ void CheckLargerHoldRunsAlone() {
     Require(most == 500 && budget.Peak() == 500, "a 500-byte hold under a 100-byte budget did not run alone: " + std::to_string(most) + " bytes were held at once");
 }
 
+void CheckWaitingLargerHoldKeepsNewHoldsOut() {
+    CompileBudget budget(100);
+    std::atomic<bool> firstHeld{false};
+    std::atomic<bool> releaseFirst{false};
+    std::atomic<int> entries{0};
+    std::atomic<int> largeEntry{-1};
+    std::atomic<int> smallEntry{-1};
+    std::thread first([&] {
+        const CompileBudget::Hold hold(budget, 40);
+        firstHeld = true;
+        while (!releaseFirst) std::this_thread::sleep_for(1ms);
+    });
+    while (!firstHeld) std::this_thread::sleep_for(1ms);
+    std::thread large([&] {
+        const CompileBudget::Hold hold(budget, 500);
+        largeEntry = entries++;
+        std::this_thread::sleep_for(10ms);
+    });
+    while (budget.WaitingAlone() == 0) std::this_thread::sleep_for(1ms);
+    std::thread small([&] {
+        const CompileBudget::Hold hold(budget, 40);
+        smallEntry = entries++;
+    });
+    std::this_thread::sleep_for(20ms);
+    const bool enteredEarly = smallEntry != -1;
+    releaseFirst = true;
+    first.join();
+    large.join();
+    small.join();
+    Require(!enteredEarly, "a 40-byte hold that fits entered while a 500-byte hold was waiting to run alone");
+    Require(largeEntry == 0 && smallEntry == 1, "the waiting 500-byte hold did not run before the 40-byte hold that came after it");
+}
+
 }
 
 int main() {
@@ -69,6 +102,7 @@ int main() {
         CheckSharedLimit();
         CheckZeroLimitRunsOneAtATime();
         CheckLargerHoldRunsAlone();
+        CheckWaitingLargerHoldKeepsNewHoldsOut();
         std::cout << "compile budget tests passed\n";
         return 0;
     } catch (const std::exception& error) {
