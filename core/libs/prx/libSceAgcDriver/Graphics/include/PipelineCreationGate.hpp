@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include "prx/libSceAgcDriver/Graphics/include/DemandPipelineCreations.hpp"
 
 namespace AgcDriver::Graphics {
 
@@ -21,6 +22,9 @@ public:
         std::function<std::uint64_t()> availableBytes;
         std::uint64_t reserveBytes = 0;
         std::function<std::uint64_t()> reserveAvailableBytes;
+        std::uint64_t demandAllowanceBytes = 0;
+        std::function<std::uint64_t()> demandAvailableBytes;
+        std::uint64_t demandFloorBytes = 0;
         std::uint32_t maxLarge = 2;
         std::uint32_t recheckMilliseconds = 250;
         bool log = false;
@@ -37,6 +41,7 @@ public:
         std::uint64_t peakBytes = 0;
         std::uint64_t budgetBytes = 0;
         std::uint64_t admittedByReserve = 0;
+        std::uint64_t admittedByDemandAllowance = 0;
         std::uint64_t minAvailableBytes = 0;
         std::uint64_t reserveBytes = 0;
     };
@@ -44,16 +49,17 @@ public:
     class Ticket {
     public:
         Ticket() = default;
-        Ticket(PipelineCreationGate* gate, std::uint64_t bytes, bool large = false) : gate(gate), bytes(bytes), large(large) {}
+        Ticket(PipelineCreationGate* gate, std::uint64_t bytes, bool large = false, bool speculative = false) : gate(gate), bytes(bytes), large(large), speculative(speculative) {}
         Ticket(const Ticket&) = delete;
         Ticket& operator=(const Ticket&) = delete;
-        Ticket(Ticket&& other) noexcept : gate(other.gate), bytes(other.bytes), large(other.large) { other.gate = nullptr; }
+        Ticket(Ticket&& other) noexcept : gate(other.gate), bytes(other.bytes), large(other.large), speculative(other.speculative) { other.gate = nullptr; }
         Ticket& operator=(Ticket&& other) noexcept {
             if (this != &other) {
                 release();
                 gate = other.gate;
                 bytes = other.bytes;
                 large = other.large;
+                speculative = other.speculative;
                 other.gate = nullptr;
             }
             return *this;
@@ -62,13 +68,14 @@ public:
 
     private:
         void release() noexcept {
-            if (gate != nullptr) gate->release(bytes, large);
+            if (gate != nullptr) gate->release(bytes, large, speculative);
             gate = nullptr;
         }
 
         PipelineCreationGate* gate = nullptr;
         std::uint64_t bytes = 0;
         bool large = false;
+        bool speculative = false;
     };
 
     explicit PipelineCreationGate(Settings settings);
@@ -79,20 +86,21 @@ public:
     static std::uint64_t AvailableMemoryBytes();
 
     std::uint64_t EstimateBytes(std::size_t words) const { return static_cast<std::uint64_t>(words) * settings.bytesPerWord; }
-    Ticket Admit(std::size_t words, bool mayWait);
+    Ticket Admit(std::size_t words, bool mayWait, bool speculative = DemandPipelineCreations::OnSpeculativeThread());
     Stats Totals() const;
 
 private:
-    enum class Verdict { Wait, Budget, Reserve };
-    Verdict evaluate(std::uint64_t bytes);
+    enum class Verdict { Wait, Budget, Reserve, Demand };
+    Verdict evaluate(std::uint64_t bytes, bool speculative);
     void log(const char* what, std::uint64_t bytes, std::uint64_t available) const;
-    void release(std::uint64_t bytes, bool large) noexcept;
+    void release(std::uint64_t bytes, bool large, bool speculative) noexcept;
 
     Settings settings;
     mutable std::mutex mutex;
     std::condition_variable released;
     Stats stats;
     std::uint64_t inFlightLarge = 0;
+    std::uint64_t speculativeInFlightBytes = 0;
     bool hasMinAvailable = false;
 };
 
