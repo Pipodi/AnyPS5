@@ -6,6 +6,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/ShaderRegistry.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Memory/WriteEvidence.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/DemandPipelineCreations.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/DispatchCreateContext.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Synchronization/DeferredLabels.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
 #include "prx/libSceAgcDriver/Execution/include/VideoOutput.hpp"
@@ -392,15 +393,28 @@ void Driver::reportMissAhead() {
                                          static_cast<unsigned long long>(totals.started), static_cast<unsigned long long>(totals.hit + totals.waited), static_cast<unsigned long long>(totals.hit), static_cast<unsigned long long>(totals.waited), static_cast<unsigned long long>(totals.Unused()));
 }
 
+bool ScannedRangeCovered(std::uint64_t submission, std::uint32_t queue, std::size_t from) {
+    return ScannedRange().Covered(submission, queue, from);
+}
+
 void Driver::missAhead(const Submission& submission, const QueueState& live, std::size_t from) {
-    if (!MissAheadEnabled() || submission.shaders == nullptr || resolvingAhead() || missAheadPlan() != nullptr) return;
+    using Outcome = Graphics::DispatchCreateContext::MissAheadOutcome;
+    const auto note = [](Outcome outcome) {
+        if (auto* context = Graphics::DispatchCreateContext::Current()) context->outcome = outcome;
+    };
+    if (!MissAheadEnabled() || submission.shaders == nullptr) return note(Outcome::Disabled);
+    if (resolvingAhead()) return note(Outcome::Resolving);
+    if (missAheadPlan() != nullptr) return note(Outcome::PlanActive);
     const auto cap = MissAheadMax();
     const auto& commands = submission.commands;
-    if (cap == 0 || from >= commands.size() || ScannedRange().Covered(submission.serial, submission.queue, from)) return;
+    if (cap == 0) return note(Outcome::CapZero);
+    if (from >= commands.size()) return note(Outcome::FirstPacket);
+    if (ScannedRange().Covered(submission.serial, submission.queue, from)) return note(Outcome::Covered);
     const auto first = commands[from];
     const auto firstOpcode = (first >> 8u) & 0xffu;
     const auto firstCount = Pm4::PacketWords(first);
-    if ((firstOpcode != 0x15 && firstOpcode != 0x16) || firstCount < (firstOpcode == 0x15 ? 5u : 3u) || from + firstCount > commands.size()) return;
+    if ((firstOpcode != 0x15 && firstOpcode != 0x16) || firstCount < (firstOpcode == 0x15 ? 5u : 3u) || from + firstCount > commands.size()) return note(Outcome::FirstPacket);
+    note(Outcome::Scanned);
     QueueState scratch = live;
     Pm4::NoteDispatchRegisters(std::span(commands).subspan(from, firstCount), scratch);
     MissAheadPlan plan(cap, MissAheadVisits());
@@ -487,8 +501,8 @@ void Driver::missAhead(const Submission& submission, const QueueState& live, std
     ScannedRange().Record(submission.serial, submission.queue, cursor);
     if (missAheadLedger().Active()) {
         const auto& totals = plan.Totals();
-        std::fprintf(stderr, "[miss-ahead] scan queue %u serial %llu from %zu to %zu of %zu: visited %zu started %zu skipped cached %zu plan_duplicate %zu unprepared %zu unregistered %zu capture_failed %zu stop %s t=%.0f\n", submission.queue, static_cast<unsigned long long>(submission.serial), from, cursor, commands.size(),
-                     totals.visited, totals.started, totals.cached, totals.duplicate, totals.unprepared, totals.unregistered, totals.captureFailed, stop, AgcDriver::ComputeTimeline::NowMs());
+        std::fprintf(stderr, "[miss-ahead] scan queue %u serial %llu from %zu to %zu of %zu: visited %zu started %zu returned_early %zu skipped cached %zu plan_duplicate %zu unprepared %zu unregistered %zu capture_failed %zu stop %s t=%.0f\n", submission.queue, static_cast<unsigned long long>(submission.serial), from, cursor, commands.size(),
+                     totals.visited, totals.started, totals.visited - totals.reached, totals.cached, totals.duplicate, totals.unprepared, totals.unregistered, totals.captureFailed, stop, AgcDriver::ComputeTimeline::NowMs());
     }
     reportMissAhead();
 }

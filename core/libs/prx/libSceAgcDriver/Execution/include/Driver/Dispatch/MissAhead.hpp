@@ -15,7 +15,7 @@ public:
     enum class Skip { Cached, Duplicate, Unprepared, Unregistered, CaptureFailed };
 
     struct Counts {
-        std::size_t visited = 0, started = 0, cached = 0, duplicate = 0, unprepared = 0, unregistered = 0, captureFailed = 0;
+        std::size_t visited = 0, started = 0, cached = 0, duplicate = 0, unprepared = 0, unregistered = 0, captureFailed = 0, reached = 0;
     };
 
     MissAheadPlan(std::size_t buildCap, std::size_t visitCap) : buildCap(buildCap), visitCap(visitCap) {}
@@ -31,6 +31,8 @@ public:
     bool Admit(std::uint64_t key) { return keys.insert(key).second; }
 
     void Started() { ++counts.started; }
+
+    void Reach() { ++counts.reached; }
 
     void Note(Skip reason) {
         switch (reason) {
@@ -70,6 +72,8 @@ private:
     std::uint32_t lastQueue = 0;
     std::size_t lastEnd = 0;
 };
+
+bool ScannedRangeCovered(std::uint64_t submission, std::uint32_t queue, std::size_t from);
 
 class MissAheadLedger {
 public:
