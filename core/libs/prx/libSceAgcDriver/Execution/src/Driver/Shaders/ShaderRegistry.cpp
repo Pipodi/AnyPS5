@@ -1962,13 +1962,13 @@ private:
 
 public:
 
-    void Submit(std::function<void()> task, const PreparedShaders* prepared = nullptr, std::uint64_t cost = 0) {
+    void Submit(std::function<void()> task, const PreparedShaders* prepared = nullptr, std::uint64_t cost = 0, bool budgeted = false) {
         {
             std::unique_lock lock(mutex);
             if (threads != 0 && !closed) {
                 const auto sequence = ++submitted;
-                if (prepared != nullptr && prepared->demanded.load()) tasks.push_front({std::move(task), prepared, sequence, cost});
-                else tasks.push_back({std::move(task), prepared, sequence, cost});
+                if (prepared != nullptr && prepared->demanded.load()) tasks.push_front({std::move(task), prepared, sequence, cost, budgeted});
+                else tasks.push_back({std::move(task), prepared, sequence, cost, budgeted});
                 unfinished.insert(sequence);
                 if (prepared != nullptr) owned.emplace(prepared, sequence);
                 lock.unlock();
@@ -2086,6 +2086,7 @@ private:
         }
         pthread_attr_destroy(&attributes);
 #endif
+        budgetedLimit = std::max(1u, threads / 2u);
     }
 
 #ifdef _WIN32
@@ -2106,29 +2107,36 @@ private:
             Task task;
             {
                 std::unique_lock lock(pool.mutex);
-                pool.ready.wait(lock, [&] { return !pool.tasks.empty() || pool.closed; });
-                if (pool.tasks.empty()) {
+                auto next = pool.tasks.end();
+                pool.ready.wait(lock, [&] {
+                    next = pool.nextTask();
+                    return next != pool.tasks.end() || (pool.closed && pool.tasks.empty());
+                });
+                if (next == pool.tasks.end()) {
                     liveWorkers.fetch_sub(1, std::memory_order_acq_rel);
                     return nullptr;
                 }
-                const auto next = pool.nextTask();
                 task = std::move(*next);
                 pool.tasks.erase(next);
                 ++pool.running;
+                if (task.budgeted) ++pool.budgetedRunning;
             }
             const auto sequence = task.sequence;
             const auto* const prepared = task.prepared;
+            const bool budgeted = task.budgeted;
             task.function();
             task = {};
             bool drained = false;
             {
                 std::lock_guard lock(pool.mutex);
                 --pool.running;
+                if (budgeted) --pool.budgetedRunning;
                 pool.unfinished.erase(sequence);
                 pool.disown(prepared, sequence);
                 drained = pool.tasks.empty() && pool.running == 0;
                 pool.idle.notify_all();
             }
+            if (budgeted) pool.ready.notify_all();
 #ifdef __GLIBC__
             if (drained) trimFreedMemory();
 #endif
@@ -2141,6 +2149,7 @@ private:
         const PreparedShaders* prepared = nullptr;
         std::uint64_t sequence = 0;
         std::uint64_t cost = 0;
+        bool budgeted = false;
     };
 
     static bool LargestFirst() {
@@ -2151,11 +2160,19 @@ private:
         return enabled;
     }
 
+    bool startable(const Task& queued) const {
+        return !queued.budgeted || budgetedRunning < budgetedLimit;
+    }
+
     std::deque<Task>::iterator nextTask() {
-        if (!prebuild || !LargestFirst()) return tasks.begin();
-        const auto& front = tasks.front();
-        if (front.prepared != nullptr && front.prepared->demanded.load()) return tasks.begin();
-        return std::ranges::max_element(tasks, [](const Task& left, const Task& right) { return left.cost < right.cost; });
+        const auto first = std::ranges::find_if(tasks, [&](const Task& queued) { return startable(queued); });
+        if (first == tasks.end() || !prebuild || !LargestFirst()) return first;
+        if (first->prepared != nullptr && first->prepared->demanded.load()) return first;
+        auto best = first;
+        for (auto it = std::next(first); it != tasks.end(); ++it) {
+            if (startable(*it) && it->cost > best->cost) best = it;
+        }
+        return best;
     }
 
     std::mutex mutex;
@@ -2166,6 +2183,8 @@ private:
     unsigned threads = 0;
     inline static std::atomic<unsigned> liveWorkers{0};
     unsigned running = 0;
+    unsigned budgetedRunning = 0;
+    unsigned budgetedLimit = 1;
     std::uint64_t submitted = 0;
     std::set<std::uint64_t> unfinished;
     std::unordered_multimap<const PreparedShaders*, std::uint64_t> owned;
@@ -2239,6 +2258,10 @@ void AwaitReferencedPreparations(const ShaderRegistry& registry, std::span<const
 
 void SubmitLibraryPrebuild(std::function<void()> task, std::uint64_t cost, const PreparedShaders* prepared) {
     RegistrationPreparePool::Prebuild().Submit(std::move(task), prepared, cost);
+}
+
+void SubmitComputePrebuild(std::function<void()> task, std::uint64_t cost) {
+    RegistrationPreparePool::Prebuild().Submit(std::move(task), nullptr, cost, true);
 }
 
 void AwaitLibraryPrebuilds() {

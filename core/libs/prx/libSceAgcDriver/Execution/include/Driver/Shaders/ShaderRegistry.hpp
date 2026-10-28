@@ -240,6 +240,7 @@ void PrioritizeRegistrationPreparation(PreparedShaders& prepared);
 void AwaitRegistrationPreparation();
 void AwaitReferencedPreparations(const ShaderRegistry& registry, std::span<const std::uint64_t> addresses);
 void SubmitLibraryPrebuild(std::function<void()> task, std::uint64_t cost = 0, const PreparedShaders* prepared = nullptr);
+void SubmitComputePrebuild(std::function<void()> task, std::uint64_t cost = 0);
 void AwaitLibraryPrebuilds();
 bool RegisteredComputeGateLogging();
 void LogRegisteredComputeGate(std::uint64_t address, std::size_t guestWords, const char* via, const char* outcome, const std::string& detail = {});
