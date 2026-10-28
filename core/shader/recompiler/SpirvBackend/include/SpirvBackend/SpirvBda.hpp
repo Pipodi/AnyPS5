@@ -45,6 +45,7 @@ std::uint32_t EmitBdaSpanRead(SpirvValueEmitContext& ctx, const IrValue& inst, s
 bool BdaByteReadsForced();
 std::uint32_t AddBdaAddress(SpirvValueEmitContext& ctx, const IrValue& inst, std::uint32_t address, std::uint32_t offset, bool subtract);
 bool RoutesApertures(const SpirvEmitterState& state, const MemoryInfo& mem);
+bool RoutesPrivateAperture(const IrProgram& program);
 std::uint32_t UsedBdaDwords(const IrValue& inst, std::uint32_t dwords);
 std::vector<const IrValue*> BdaReadSites(const SpirvEmitterState& state);
 void CollectBdaAnchors(SpirvEmitterState& state);

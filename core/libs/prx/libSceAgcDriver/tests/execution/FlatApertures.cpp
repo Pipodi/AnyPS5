@@ -42,6 +42,7 @@ constexpr std::uint32_t GuestStoreSlot = 0x200u;
 constexpr std::uint32_t GuestAtomicSlot = 0x800u;
 constexpr std::uint32_t WaitCnt0 = 0xbf8c0070u;
 constexpr std::uint32_t EndProgram = 0xbf810000u;
+constexpr std::uint32_t MovPrivateBase = 0xbe8a04edu;
 constexpr std::uint32_t ShiftLaneBy5 = 0x34020085u;
 constexpr std::uint32_t StoreByteOp = 0x18u;
 constexpr std::uint32_t StoreShortOp = 0x1au;
@@ -146,6 +147,7 @@ std::uint32_t LoadOp(std::uint32_t width) {
 
 Words Kernel32(const Row& row) {
     Words code{ShiftLaneBy5};
+    if (row.target == Target::Private || row.target == Target::Mixed) code.push_back(MovPrivateBase);
     EmitTableLoad(code, 2u, 0u);
     EmitTableLoad(code, 6u, 16u);
     code.push_back(WaitCnt0);
@@ -176,6 +178,7 @@ Words Kernel32(const Row& row) {
 
 Words Kernel64(const Row& row) {
     Words code{ShiftLaneBy5};
+    if (row.target == Target::Private || row.target == Target::Mixed) code.push_back(MovPrivateBase);
     EmitTableLoad(code, 2u, 0u);
     EmitTableLoad(code, 6u, 16u);
     code.push_back(WaitCnt0);
