@@ -1026,6 +1026,125 @@ void testSpecializedPrivateCompositeTableLoad() {
     }
 }
 
+struct SelectionCase {
+    std::string capabilities;
+    std::string declarations;
+    std::string thenBody;
+    std::string elseBody;
+    std::string phiType = "%uint";
+    std::string thenValue = "%a";
+    std::string elseValue = "%b";
+    std::string consume = "OpStore %p0 %r\n";
+    bool singleArm = false;
+};
+
+std::string selectionModuleSource(const SelectionCase& selection) {
+    std::string text = "OpCapability Shader\n" + selection.capabilities;
+    text += R"(OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %array ArrayStride 4
+OpDecorate %block Block
+OpMemberDecorate %block 0 Offset 0
+OpDecorate %buffer DescriptorSet 0
+OpDecorate %buffer Binding 0
+%void = OpTypeVoid
+%function = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%uvec2 = OpTypeVector %uint 2
+%uvec4 = OpTypeVector %uint 4
+%zero = OpConstant %uint 0
+%one = OpConstant %uint 1
+%four = OpConstant %uint 4
+%subgroup = OpConstant %uint 3
+%array = OpTypeArray %uint %four
+%block = OpTypeStruct %array
+%blockPointer = OpTypePointer StorageBuffer %block
+%uintPointer = OpTypePointer StorageBuffer %uint
+%buffer = OpVariable %blockPointer StorageBuffer
+)";
+    text += selection.declarations;
+    text += R"(%main = OpFunction %void None %function
+%entry = OpLabel
+%p0 = OpAccessChain %uintPointer %buffer %zero %zero
+%v = OpLoad %uint %p0
+%cond = OpINotEqual %bool %v %zero
+OpSelectionMerge %merge None
+)";
+    text += selection.singleArm ? "OpBranchConditional %cond %then %merge\n" : "OpBranchConditional %cond %then %else\n";
+    text += "%then = OpLabel\n" + selection.thenBody + "OpBranch %merge\n";
+    if (!selection.singleArm) text += "%else = OpLabel\n" + selection.elseBody + "OpBranch %merge\n";
+    text += "%merge = OpLabel\n%r = OpPhi " + selection.phiType + " " + selection.thenValue + " %then " + selection.elseValue +
+            (selection.singleArm ? " %entry\n" : " %else\n");
+    text += selection.consume + "OpReturn\nOpFunctionEnd\n";
+    return text;
+}
+
+SelectionCase pureDiamond() {
+    SelectionCase selection;
+    selection.thenBody = "%a = OpIAdd %uint %v %one\n";
+    selection.elseBody = "%b = OpISub %uint %v %one\n";
+    return selection;
+}
+
+void expectUnchanged(const SelectionCase& selection, const std::string& label) {
+    const auto words = assemble(selectionModuleSource(selection));
+    std::size_t converted = 99;
+    const auto result = ShaderRecompiler::HoistPureSelections(words, &converted);
+    check(converted == 0u, label + ": a selection was converted");
+    check(result == words, label + ": module changed");
+}
+
+void expectConverted(const SelectionCase& selection, const std::string& label) {
+    const auto words = assemble(selectionModuleSource(selection));
+    std::size_t converted = 0;
+    const auto result = ShaderRecompiler::HoistPureSelections(words, &converted);
+    check(converted == 1u, label + ": selection was not converted");
+    check(opcodeCount(result, spv::OpBranchConditional) == 0u, label + ": conditional branch remains");
+    check(opcodeCount(result, spv::OpPhi) == 0u, label + ": phi remains");
+    check(opcodeCount(result, spv::OpSelect) == 1u, label + ": select missing");
+    try {
+        static_cast<void>(ShaderRecompiler::ValidateAndOptimizeSpirv(result, Vulkan11, Spirv13, false, false));
+    } catch (const std::exception& error) {
+        check(false, label + ": converted module is invalid: " + error.what());
+    }
+}
+
+void testHoistPureSelections() {
+    expectConverted(pureDiamond(), "pure diamond");
+
+    auto singleArm = pureDiamond();
+    singleArm.singleArm = true;
+    singleArm.elseValue = "%zero";
+    expectConverted(singleArm, "single arm");
+
+    auto store = pureDiamond();
+    store.thenBody += "OpStore %p0 %one\n";
+    expectUnchanged(store, "arm with store");
+
+    auto ballot = pureDiamond();
+    ballot.capabilities = "OpCapability GroupNonUniformBallot\n";
+    ballot.thenBody = "%ballot = OpGroupNonUniformBallot %uvec4 %subgroup %cond\n%a = OpCompositeExtract %uint %ballot 0\n";
+    expectUnchanged(ballot, "arm with ballot");
+
+    auto sharedLoad = pureDiamond();
+    sharedLoad.declarations = "%sharedPointer = OpTypePointer Workgroup %uint\n%shared = OpVariable %sharedPointer Workgroup\n";
+    sharedLoad.thenBody = "%a = OpLoad %uint %shared\n";
+    expectUnchanged(sharedLoad, "arm with workgroup load");
+
+    auto bufferLoad = pureDiamond();
+    bufferLoad.thenBody = "%q = OpAccessChain %uintPointer %buffer %zero %one\n%a = OpLoad %uint %q\n";
+    expectConverted(bufferLoad, "arm with storage buffer load");
+
+    auto vectorPhi = pureDiamond();
+    vectorPhi.thenBody = "%a = OpCompositeConstruct %uvec2 %v %v\n";
+    vectorPhi.elseBody = "%b = OpCompositeConstruct %uvec2 %v %one\n";
+    vectorPhi.phiType = "%uvec2";
+    vectorPhi.consume = "%rx = OpCompositeExtract %uint %r 0\nOpStore %p0 %rx\n";
+    expectUnchanged(vectorPhi, "vector phi on SPIR-V 1.3");
+}
+
 }
 
 int main() {
@@ -1045,6 +1164,7 @@ int main() {
     testSharedBooleanConstantsKeepTheirValues();
     testSpecializedPrivateCompositeTableLoad();
     testBallotsMergedIntoOneBlockShareOneBallot(optimizationEnabled);
+    testHoistPureSelections();
     if (failures != 0) {
         std::fprintf(stderr, "%d optimizer check(s) failed\n", failures);
         return 1;

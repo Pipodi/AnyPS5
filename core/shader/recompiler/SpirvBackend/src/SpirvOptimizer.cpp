@@ -1,15 +1,20 @@
 #include "SpirvBackend/SpirvOptimizer.hpp"
 #include <spirv-tools/libspirv.hpp>
 #include <spirv-tools/optimizer.hpp>
+#include <spirv/unified1/GLSL.std.450.h>
 #include <spirv/unified1/spirv.hpp>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdlib>
 #include <exception>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -25,8 +30,20 @@ namespace {
 
 constexpr std::uint32_t ScalarReplacementLimit = 64;
 constexpr std::uintptr_t InlineOptimizerStackBytes = 256 * 1024;
+constexpr std::uint32_t LargeOptimizeRounds = 3;
+constexpr std::uint32_t SelectOnVectorsVersion = 0x00010400u;
 
 std::atomic<std::uint64_t> optimizerHostThreads{0};
+std::atomic<std::uint64_t> largeModuleOptimizeFallbacks{0};
+
+std::size_t LargeOptimizeMinWords() {
+    const char* value = std::getenv("APS5_SPIRV_LARGE_OPT_MIN_WORDS");
+    if (value == nullptr || *value == '\0') return 0;
+    char* end = nullptr;
+    const auto parsed = std::strtoull(value, &end, 10);
+    if (end == value || *end != '\0') return 0;
+    return static_cast<std::size_t>(parsed);
+}
 
 bool StackHoldsOptimizer() {
 #ifdef _WIN32
@@ -144,6 +161,38 @@ std::vector<std::uint32_t> CollapseBlockBallots(std::span<const std::uint32_t> s
     return collapsed;
 }
 
+std::optional<std::vector<std::uint32_t>> OptimizeLargeModule(std::span<const std::uint32_t> input, spv_target_env environment, const spvtools::MessageConsumer& consumer, const spvtools::OptimizerOptions& options, bool allowFolding, const spvtools::SpirvTools& tools, const spvtools::ValidatorOptions& validatorOptions, std::string& diagnostics) {
+    try {
+        std::vector<std::uint32_t> current;
+        spvtools::Optimizer extra(environment);
+        extra.SetMessageConsumer(consumer);
+        extra.RegisterPass(spvtools::CreateLoopUnrollPass(true))
+            .RegisterPass(spvtools::CreateDeadBranchElimPass())
+            .RegisterPass(spvtools::CreateRedundancyEliminationPass())
+            .RegisterPass(spvtools::CreateCombineAccessChainsPass());
+        if (allowFolding) extra.RegisterPass(spvtools::CreateSimplificationPass());
+        extra.SetValidateAfterAll(false);
+        diagnostics.clear();
+        if (!extra.Run(input.data(), input.size(), &current, options)) return std::nullopt;
+        for (std::uint32_t round = 0; round < LargeOptimizeRounds; ++round) {
+            std::size_t converted = 0;
+            const auto hoisted = HoistPureSelections(current, &converted);
+            if (converted == 0) break;
+            spvtools::Optimizer merge(environment);
+            merge.SetMessageConsumer(consumer);
+            merge.RegisterPass(spvtools::CreateBlockMergePass());
+            merge.SetValidateAfterAll(false);
+            if (!merge.Run(hoisted.data(), hoisted.size(), &current, options)) return std::nullopt;
+        }
+        current = CollapseBlockBallots(current);
+        diagnostics.clear();
+        if (!tools.Validate(current.data(), current.size(), validatorOptions)) return std::nullopt;
+        return current;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
 std::vector<std::uint32_t> ValidateAndOptimizeSpirvInline(std::span<const std::uint32_t> spirv, std::uint32_t vulkanVersion, std::uint32_t spirvVersion, bool allowOffsetTextureOperand, bool optimize, bool specialize) {
     spv_target_env environment;
     const auto apiVersion = vulkanVersion & ~0xfffu;
@@ -175,13 +224,33 @@ std::vector<std::uint32_t> ValidateAndOptimizeSpirvInline(std::span<const std::u
     spvtools::ValidatorOptions validatorOptions;
     validatorOptions.SetAllowOffsetTextureOperand(allowOffsetTextureOperand);
     validatorOptions.SetFriendlyNames(false);
+    spvtools::OptimizerOptions options;
+    options.set_run_validator(false);
+    options.set_preserve_bindings(true);
+    options.set_preserve_spec_constants(!specialize);
+    options.set_validator_options(validatorOptions);
+    static const char* mode = std::getenv("APS5_SPIRV_OPT");
+    static const std::size_t largeMinWords = LargeOptimizeMinWords();
+    if (mode != nullptr && std::string(mode) == "large") {
+        if (!optimize || largeMinWords == 0 || spirv.size() < largeMinWords) return {spirv.begin(), spirv.end()};
+        bool allowFolding = false;
+        try {
+            allowFolding = !HasLimitedUseTypes(spirv);
+        } catch (...) {
+            largeModuleOptimizeFallbacks.fetch_add(1, std::memory_order_relaxed);
+            return {spirv.begin(), spirv.end()};
+        }
+        auto large = OptimizeLargeModule(spirv, environment, consumer, options, allowFolding, tools, validatorOptions, diagnostics);
+        if (large.has_value()) return std::move(*large);
+        largeModuleOptimizeFallbacks.fetch_add(1, std::memory_order_relaxed);
+        return {spirv.begin(), spirv.end()};
+    }
     if (!tools.Validate(spirv.data(), spirv.size(), validatorOptions)) {
         throw std::runtime_error("SPIR-V validation before optimization failed:\n" + diagnostics);
     }
     if (!optimize) return CollapseBlockBallots(spirv);
     spvtools::Optimizer optimizer(environment);
     optimizer.SetMessageConsumer(consumer);
-    static const char* mode = std::getenv("APS5_SPIRV_OPT");
     if (mode != nullptr && std::string(mode) == "none") return CollapseBlockBallots(spirv);
     // The recompiler emits helpers (BDA lookup, fault reporting) as functions called from every memory
     // access. Exhaustive inlining multiplies module size by ~10x and optimization time by ~20x, so the
@@ -244,11 +313,6 @@ std::vector<std::uint32_t> ValidateAndOptimizeSpirvInline(std::span<const std::u
     }
     // Validating after every pass costs more than the passes on large shaders; the result is validated below.
     optimizer.SetValidateAfterAll(false);
-    spvtools::OptimizerOptions options;
-    options.set_run_validator(false);
-    options.set_preserve_bindings(true);
-    options.set_preserve_spec_constants(!specialize);
-    options.set_validator_options(validatorOptions);
     std::vector<std::uint32_t> optimized;
     diagnostics.clear();
     if (!optimizer.Run(spirv.data(), spirv.size(), &optimized, options)) {
@@ -259,9 +323,382 @@ std::vector<std::uint32_t> ValidateAndOptimizeSpirvInline(std::span<const std::u
     if (!tools.Validate(optimized.data(), optimized.size(), validatorOptions)) {
         throw std::runtime_error("SPIR-V validation after optimization failed:\n" + diagnostics);
     }
+    if (largeMinWords != 0 && !full && spirv.size() >= largeMinWords) {
+        auto large = OptimizeLargeModule(optimized, environment, consumer, options, allowFolding, tools, validatorOptions, diagnostics);
+        if (large.has_value()) return std::move(*large);
+        largeModuleOptimizeFallbacks.fetch_add(1, std::memory_order_relaxed);
+    }
     return optimized;
 }
 
+}
+
+std::vector<std::uint32_t> HoistPureSelections(std::span<const std::uint32_t> spirv, std::size_t* converted) {
+    using Words = std::vector<std::uint32_t>;
+    struct Block {
+        std::uint32_t id = 0;
+        bool alive = true;
+        std::vector<Words> body;
+    };
+    struct Function {
+        std::vector<Words> head;
+        std::vector<Block> blocks;
+        Words tail;
+    };
+    if (converted != nullptr) *converted = 0;
+    if (spirv.size() < 5) throw std::runtime_error("SPIRV-Tools: incomplete module header");
+    if (spirv[0] != spv::MagicNumber) throw std::runtime_error("SPIRV-Tools: unsupported module byte order");
+    const auto opcodeOf = [](const Words& words) { return static_cast<spv::Op>(words[0] & spv::OpCodeMask); };
+    std::vector<Words> pre;
+    std::vector<Function> functions;
+    Function* current = nullptr;
+    Block* block = nullptr;
+    for (std::size_t offset = 5; offset < spirv.size();) {
+        const auto wordCount = spirv[offset] >> spv::WordCountShift;
+        if (wordCount == 0 || wordCount > spirv.size() - offset) {
+            throw std::runtime_error("SPIRV-Tools: malformed instruction while hoisting selections");
+        }
+        Words words(spirv.begin() + offset, spirv.begin() + offset + wordCount);
+        offset += wordCount;
+        const auto opcode = opcodeOf(words);
+        if (opcode == spv::OpFunction) {
+            functions.emplace_back();
+            current = &functions.back();
+            current->head.push_back(std::move(words));
+            block = nullptr;
+            continue;
+        }
+        if (current == nullptr) {
+            pre.push_back(std::move(words));
+            continue;
+        }
+        if (opcode == spv::OpFunctionEnd) {
+            current->tail = std::move(words);
+            current = nullptr;
+            block = nullptr;
+            continue;
+        }
+        if (opcode == spv::OpLabel) {
+            if (words.size() < 2) throw std::runtime_error("SPIRV-Tools: malformed label while hoisting selections");
+            current->blocks.push_back(Block{words[1], true, {}});
+            block = &current->blocks.back();
+            continue;
+        }
+        if (block == nullptr) current->head.push_back(std::move(words));
+        else block->body.push_back(std::move(words));
+    }
+    if (current != nullptr) throw std::runtime_error("SPIRV-Tools: unterminated function while hoisting selections");
+
+    const auto version = spirv[1];
+    std::unordered_map<std::uint32_t, std::uint32_t> typeKind;
+    std::unordered_set<std::uint32_t> pointerTypes;
+    std::unordered_map<std::uint32_t, std::uint32_t> variableStorage;
+    std::unordered_map<std::uint32_t, std::uint32_t> chainBase;
+    std::uint32_t glslSet = 0;
+    const auto scan = [&](const Words& words) {
+        switch (opcodeOf(words)) {
+        case spv::OpTypeBool:
+        case spv::OpTypeInt:
+        case spv::OpTypeFloat:
+            if (words.size() >= 2) typeKind[words[1]] = 1;
+            break;
+        case spv::OpTypeVector:
+            if (words.size() >= 3) {
+                const auto component = typeKind.find(words[2]);
+                if (component != typeKind.end() && component->second == 1) typeKind[words[1]] = 2;
+            }
+            break;
+        case spv::OpTypePointer:
+        case spv::OpTypeForwardPointer:
+            if (words.size() >= 2) pointerTypes.insert(words[1]);
+            break;
+        case spv::OpVariable:
+            if (words.size() >= 4) variableStorage[words[2]] = words[3];
+            break;
+        case spv::OpAccessChain:
+        case spv::OpInBoundsAccessChain:
+        case spv::OpPtrAccessChain:
+            if (words.size() >= 4) chainBase[words[2]] = words[3];
+            break;
+        case spv::OpExtInstImport:
+            if (words.size() >= 3) {
+                std::string name;
+                bool terminated = false;
+                for (std::size_t index = 2; index < words.size() && !terminated; ++index) {
+                    for (std::uint32_t shift = 0; shift < 32; shift += 8) {
+                        const auto character = static_cast<char>((words[index] >> shift) & 0xffu);
+                        if (character == '\0') {
+                            terminated = true;
+                            break;
+                        }
+                        name += character;
+                    }
+                }
+                if (name == "GLSL.std.450") glslSet = words[1];
+            }
+            break;
+        default:
+            break;
+        }
+    };
+    for (const auto& words : pre) scan(words);
+    for (const auto& function : functions) {
+        for (const auto& words : function.head) scan(words);
+        for (const auto& candidate : function.blocks) {
+            for (const auto& words : candidate.body) scan(words);
+        }
+    }
+
+    const auto loadIsSafe = [&](const Words& words) {
+        if (words.size() != 4) return false;
+        auto pointer = words[3];
+        for (std::size_t depth = 0; depth < 64; ++depth) {
+            const auto chain = chainBase.find(pointer);
+            if (chain == chainBase.end()) break;
+            pointer = chain->second;
+        }
+        const auto variable = variableStorage.find(pointer);
+        if (variable == variableStorage.end()) return false;
+        return variable->second == spv::StorageClassInput || variable->second == spv::StorageClassFunction ||
+               variable->second == spv::StorageClassPushConstant || variable->second == spv::StorageClassStorageBuffer;
+    };
+    const auto hoistable = [&](const Words& words) {
+        const auto opcode = opcodeOf(words);
+        if (opcode == spv::OpExtInst) {
+            if (words.size() < 5 || glslSet == 0 || words[3] != glslSet) return false;
+            switch (words[4]) {
+            case GLSLstd450Modf:
+            case GLSLstd450Frexp:
+            case GLSLstd450FrexpStruct:
+            case GLSLstd450InterpolateAtCentroid:
+            case GLSLstd450InterpolateAtSample:
+            case GLSLstd450InterpolateAtOffset:
+                return false;
+            default:
+                return true;
+            }
+        }
+        if (opcode == spv::OpLoad) return loadIsSafe(words);
+        if (opcode == spv::OpConvertPtrToU || opcode == spv::OpConvertUToPtr) return false;
+        switch (opcode) {
+        case spv::OpNop:
+        case spv::OpUndef:
+        case spv::OpLine:
+        case spv::OpNoLine:
+        case spv::OpCopyObject:
+        case spv::OpVectorExtractDynamic:
+        case spv::OpVectorInsertDynamic:
+        case spv::OpVectorShuffle:
+        case spv::OpCompositeConstruct:
+        case spv::OpCompositeExtract:
+        case spv::OpCompositeInsert:
+        case spv::OpAccessChain:
+        case spv::OpInBoundsAccessChain:
+            return true;
+        default:
+            break;
+        }
+        return (opcode >= spv::OpConvertFToU && opcode <= spv::OpBitcast) ||
+               (opcode >= spv::OpSNegate && opcode <= spv::OpSMulExtended) ||
+               (opcode >= spv::OpAny && opcode <= spv::OpFUnordGreaterThanEqual) ||
+               (opcode >= spv::OpShiftRightLogical && opcode <= spv::OpNot) ||
+               (opcode >= spv::OpBitFieldInsert && opcode <= spv::OpBitCount);
+    };
+    const auto phiTypeAllowed = [&](std::uint32_t type) {
+        if (pointerTypes.count(type) != 0) return false;
+        const auto kind = typeKind.find(type);
+        if (kind == typeKind.end()) return false;
+        return kind->second == 1 || (kind->second == 2 && version >= SelectOnVectorsVersion);
+    };
+
+    std::size_t total = 0;
+    for (auto& function : functions) {
+        auto& blocks = function.blocks;
+        std::unordered_map<std::uint32_t, std::size_t> index;
+        bool supported = true;
+        for (std::size_t position = 0; position < blocks.size(); ++position) {
+            index[blocks[position].id] = position;
+            const auto& body = blocks[position].body;
+            if (body.empty() || opcodeOf(body.back()) == spv::OpLine || opcodeOf(body.back()) == spv::OpNoLine) {
+                supported = false;
+            }
+        }
+        if (!supported) continue;
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> preds;
+            std::unordered_set<std::uint32_t> mergeTargets;
+            std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> phiParents;
+            for (const auto& candidate : blocks) {
+                if (!candidate.alive) continue;
+                for (const auto& words : candidate.body) {
+                    switch (opcodeOf(words)) {
+                    case spv::OpSelectionMerge:
+                        if (words.size() >= 2) mergeTargets.insert(words[1]);
+                        break;
+                    case spv::OpLoopMerge:
+                        if (words.size() >= 3) {
+                            mergeTargets.insert(words[1]);
+                            mergeTargets.insert(words[2]);
+                        }
+                        break;
+                    case spv::OpPhi:
+                        for (std::size_t operand = 4; operand < words.size(); operand += 2) {
+                            phiParents[words[operand]].push_back(candidate.id);
+                        }
+                        break;
+                    default:
+                        break;
+                    }
+                }
+                const auto& last = candidate.body.back();
+                switch (opcodeOf(last)) {
+                case spv::OpBranch:
+                    if (last.size() >= 2) preds[last[1]].push_back(candidate.id);
+                    break;
+                case spv::OpBranchConditional:
+                    if (last.size() >= 4) {
+                        preds[last[2]].push_back(candidate.id);
+                        preds[last[3]].push_back(candidate.id);
+                    }
+                    break;
+                case spv::OpSwitch:
+                    if (last.size() >= 3) {
+                        preds[last[2]].push_back(candidate.id);
+                        for (std::size_t operand = 4; operand < last.size(); operand += 2) {
+                            preds[last[operand]].push_back(candidate.id);
+                        }
+                    }
+                    break;
+                default:
+                    break;
+                }
+            }
+            for (std::size_t headerPosition = 0; headerPosition < blocks.size(); ++headerPosition) {
+                auto& header = blocks[headerPosition];
+                if (!header.alive || header.body.size() < 2) continue;
+                const auto& mergeInstruction = header.body[header.body.size() - 2];
+                const auto& branch = header.body.back();
+                if (opcodeOf(mergeInstruction) != spv::OpSelectionMerge || mergeInstruction.size() < 2 ||
+                    opcodeOf(branch) != spv::OpBranchConditional || branch.size() < 4) {
+                    continue;
+                }
+                const auto merge = mergeInstruction[1];
+                const auto condition = branch[1];
+                const auto trueTarget = branch[2];
+                const auto falseTarget = branch[3];
+                if (trueTarget == falseTarget || merge == header.id) continue;
+                const auto mergeIndex = index.find(merge);
+                if (mergeIndex == index.end() || !blocks[mergeIndex->second].alive) continue;
+                std::vector<std::uint32_t> arms;
+                for (const auto target : {trueTarget, falseTarget}) {
+                    if (target != merge) arms.push_back(target);
+                }
+                bool ok = true;
+                std::vector<Words> hoisted;
+                for (const auto arm : arms) {
+                    const auto armIndex = index.find(arm);
+                    if (arm == header.id || armIndex == index.end() || !blocks[armIndex->second].alive) {
+                        ok = false;
+                        break;
+                    }
+                    const auto& armBlock = blocks[armIndex->second];
+                    const auto armPreds = preds.find(arm);
+                    if (armPreds == preds.end() || armPreds->second.size() != 1 || armPreds->second[0] != header.id ||
+                        mergeTargets.count(arm) != 0) {
+                        ok = false;
+                        break;
+                    }
+                    const auto parents = phiParents.find(arm);
+                    if (parents != phiParents.end() &&
+                        std::any_of(parents->second.begin(), parents->second.end(), [merge](std::uint32_t id) { return id != merge; })) {
+                        ok = false;
+                        break;
+                    }
+                    const auto& terminator = armBlock.body.back();
+                    if (opcodeOf(terminator) != spv::OpBranch || terminator.size() < 2 || terminator[1] != merge) {
+                        ok = false;
+                        break;
+                    }
+                    for (std::size_t position = 0; position + 1 < armBlock.body.size(); ++position) {
+                        if (!hoistable(armBlock.body[position])) {
+                            ok = false;
+                            break;
+                        }
+                        hoisted.push_back(armBlock.body[position]);
+                    }
+                    if (!ok) break;
+                }
+                if (!ok) continue;
+                std::vector<std::uint32_t> expected = arms;
+                if (arms.size() == 1) expected.push_back(header.id);
+                auto actual = preds[merge];
+                std::sort(expected.begin(), expected.end());
+                std::sort(actual.begin(), actual.end());
+                if (actual != expected) continue;
+                auto& mergeBlock = blocks[mergeIndex->second];
+                const auto trueSource = trueTarget != merge ? trueTarget : header.id;
+                const auto falseSource = falseTarget != merge ? falseTarget : header.id;
+                std::vector<Words> selects;
+                std::vector<Words> remaining;
+                for (const auto& words : mergeBlock.body) {
+                    if (opcodeOf(words) != spv::OpPhi) {
+                        remaining.push_back(words);
+                        continue;
+                    }
+                    if (words.size() < 5 || (words.size() & 1u) == 0 || !phiTypeAllowed(words[1])) {
+                        ok = false;
+                        break;
+                    }
+                    std::uint32_t trueValue = 0, falseValue = 0;
+                    bool hasTrue = false, hasFalse = false;
+                    for (std::size_t operand = 3; operand + 1 < words.size(); operand += 2) {
+                        if (words[operand + 1] == trueSource) {
+                            trueValue = words[operand];
+                            hasTrue = true;
+                        }
+                        if (words[operand + 1] == falseSource) {
+                            falseValue = words[operand];
+                            hasFalse = true;
+                        }
+                    }
+                    if (!hasTrue || !hasFalse) {
+                        ok = false;
+                        break;
+                    }
+                    selects.push_back({(6u << spv::WordCountShift) | spv::OpSelect, words[1], words[2], condition, trueValue, falseValue});
+                }
+                if (!ok) continue;
+                header.body.pop_back();
+                header.body.pop_back();
+                for (auto& words : hoisted) header.body.push_back(std::move(words));
+                for (auto& words : selects) header.body.push_back(std::move(words));
+                header.body.push_back({(2u << spv::WordCountShift) | spv::OpBranch, merge});
+                for (const auto arm : arms) blocks[index[arm]].alive = false;
+                mergeBlock.body = std::move(remaining);
+                preds[merge] = {header.id};
+                ++total;
+                changed = true;
+            }
+        }
+    }
+    if (converted != nullptr) *converted = total;
+
+    Words output(spirv.begin(), spirv.begin() + 5);
+    output.reserve(spirv.size());
+    const auto emit = [&output](const Words& words) { output.insert(output.end(), words.begin(), words.end()); };
+    for (const auto& words : pre) emit(words);
+    for (const auto& function : functions) {
+        for (const auto& words : function.head) emit(words);
+        for (const auto& candidate : function.blocks) {
+            if (!candidate.alive) continue;
+            output.insert(output.end(), {(2u << spv::WordCountShift) | spv::OpLabel, candidate.id});
+            for (const auto& words : candidate.body) emit(words);
+        }
+        emit(function.tail);
+    }
+    return output;
 }
 
 std::vector<std::uint32_t> ValidateAndOptimizeSpirv(std::span<const std::uint32_t> spirv, std::uint32_t vulkanVersion, std::uint32_t spirvVersion, bool allowOffsetTextureOperand, bool optimize, bool specialize) {
@@ -283,6 +720,10 @@ std::vector<std::uint32_t> ValidateAndOptimizeSpirv(std::span<const std::uint32_
 
 std::uint64_t OptimizerHostThreads() {
     return optimizerHostThreads.load(std::memory_order_relaxed);
+}
+
+std::uint64_t LargeModuleOptimizeFallbacks() {
+    return largeModuleOptimizeFallbacks.load(std::memory_order_relaxed);
 }
 
 }
