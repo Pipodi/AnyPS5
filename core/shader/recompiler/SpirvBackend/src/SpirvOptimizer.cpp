@@ -232,7 +232,7 @@ std::vector<std::uint32_t> ValidateAndOptimizeSpirvInline(std::span<const std::u
     static const char* mode = std::getenv("APS5_SPIRV_OPT");
     static const std::size_t largeMinWords = LargeOptimizeMinWords();
     if (mode != nullptr && std::string(mode) == "large") {
-        if (!optimize || largeMinWords == 0 || spirv.size() < largeMinWords) return {spirv.begin(), spirv.end()};
+        if (!optimize || !specialize || largeMinWords == 0 || spirv.size() < largeMinWords) return {spirv.begin(), spirv.end()};
         bool allowFolding = false;
         try {
             allowFolding = !HasLimitedUseTypes(spirv);
