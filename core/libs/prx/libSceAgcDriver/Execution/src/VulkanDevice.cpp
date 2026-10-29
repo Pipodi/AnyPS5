@@ -2627,6 +2627,10 @@ bool VulkanDevice::ReplayComputePipeline(const ShaderRecompiler::RecompileResult
         if (state->computePipelines.contains(key) || state->computePipelinesBuilding.contains(key)) return false;
     }
     const CompileBudget::Hold hold(BackgroundCompileBudget(), shader.spirv.size() * sizeof(std::uint32_t));
+    {
+        std::lock_guard pipelines(state->computePipelinesMutex);
+        if (state->computePipelines.contains(key) || state->computePipelinesBuilding.contains(key)) return false;
+    }
     const auto context = graphicsContext();
     const std::array<Graphics::CompiledShader, 1> shaders{{{ShaderRecompiler::ShaderStage::Compute, &shader, 0}}};
     const auto layouts = Graphics::DescribeSetLayouts(context, shaders);
