@@ -241,6 +241,8 @@ void AwaitRegistrationPreparation();
 void AwaitReferencedPreparations(const ShaderRegistry& registry, std::span<const std::uint64_t> addresses);
 void SubmitLibraryPrebuild(std::function<void()> task, std::uint64_t cost = 0, const PreparedShaders* prepared = nullptr);
 void AwaitLibraryPrebuilds();
+bool RegisteredComputeGateLogging();
+void LogRegisteredComputeGate(std::uint64_t address, std::size_t guestWords, const char* via, const char* outcome, const std::string& detail = {});
 void ReleaseRegisteredComputePrebuilds();
 void PromoteRegisteredCompute(std::uint64_t address);
 void PrebuildStageLibrary(const std::shared_ptr<VulkanDevice>& device, const Graphics::ShaderStages& stages, ShaderRecompiler::ShaderStage stage, std::shared_ptr<const ShaderRecompiler::RecompileResult> result, std::uint32_t pushOffset);

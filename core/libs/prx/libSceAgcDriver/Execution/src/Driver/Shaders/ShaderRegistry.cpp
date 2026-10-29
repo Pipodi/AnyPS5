@@ -1668,6 +1668,23 @@ void PrebuildStageLibrary(const std::shared_ptr<VulkanDevice>& device, const Gra
     });
 }
 
+bool RegisteredComputeGateLogging() {
+    static const bool enabled = [] {
+        const char* text = std::getenv("APS5_LOG_REGCOMPUTE_GATES");
+        return text != nullptr && text[0] != '\0' && std::strcmp(text, "0") != 0;
+    }();
+    return enabled;
+}
+
+void LogRegisteredComputeGate(std::uint64_t address, std::size_t guestWords, const char* via, const char* outcome, const std::string& detail) {
+    if (!RegisteredComputeGateLogging()) return;
+    WriteLogLine(stderr, "[regcompute-gate] program 0x%llx guest_words %zu outcome %s%s%s via=%s t=%.0f\n", static_cast<unsigned long long>(address), guestWords, outcome, detail.empty() ? "" : " ", detail.c_str(), via, AgcDriver::ComputeTimeline::NowMs());
+}
+
+void LogRegisteredComputeGate(const ShaderSnapshot& snapshot, const char* via, const char* outcome, const std::string& detail = {}) {
+    if (snapshot.type == 0) LogRegisteredComputeGate(snapshot.codeAddress, snapshot.code.size(), via, outcome, detail);
+}
+
 namespace {
 
 std::atomic<RegistrationPrebuildQueue*>& RegisteredComputeQueueSlot() {
@@ -1693,17 +1710,35 @@ RegistrationPrebuildQueue& RegisteredComputeQueue() {
     return *queue;
 }
 
-void PrebuildRegisteredCompute(const std::shared_ptr<VulkanDevice>& device, const ShaderRecompiler::RecompileRequest& request, const ShaderRecompiler::SourceHandle& handle) {
-    if (!ShaderRecompiler::GetPreparedArtifact(handle).registrationModule || CodeCallsSubroutines(request.shader.code)) return;
+void PrebuildRegisteredCompute(const std::shared_ptr<VulkanDevice>& device, const ShaderRecompiler::RecompileRequest& request, const ShaderRecompiler::SourceHandle& handle, const char* via) {
+    const auto address = request.shader.codeAddress;
+    const auto guestWords = request.shader.code.size();
+    if (!ShaderRecompiler::GetPreparedArtifact(handle).registrationModule) {
+        LogRegisteredComputeGate(address, guestWords, via, "not-registration-module");
+        return;
+    }
+    if (CodeCallsSubroutines(request.shader.code)) {
+        LogRegisteredComputeGate(address, guestWords, via, "calls-subroutines");
+        return;
+    }
     std::shared_ptr<const ShaderRecompiler::RecompileResult> result;
     try {
         result = ShaderRecompiler::RegistrationResult(request, handle);
     } catch (const std::exception& error) {
         APS5_LOG_OUT("compute registration prebuild skipped: %s", error.what());
+        LogRegisteredComputeGate(address, guestWords, via, "registration-result-threw", error.what());
         return;
     }
-    if (result == nullptr || !ShaderRecompiler::ComputeRegistrationPrebuildable(*result)) return;
-    const auto address = request.shader.codeAddress;
+    if (result == nullptr) {
+        LogRegisteredComputeGate(address, guestWords, via, "registration-result-null");
+        return;
+    }
+    if (!ShaderRecompiler::ComputeRegistrationPrebuildable(*result)) {
+        if (!result->registrationModule) LogRegisteredComputeGate(address, guestWords, via, "not-registration-module", "spirv_words " + std::to_string(result->spirv.size()));
+        else LogRegisteredComputeGate(address, guestWords, via, "below-min-words", std::to_string(result->spirv.size()) + " " + std::to_string(ShaderRecompiler::ComputeRegistrationMinWordsLimit()));
+        return;
+    }
+    LogRegisteredComputeGate(address, guestWords, via, "queued", std::to_string(result->spirv.size()));
     const auto cost = Graphics::PipelineCreationGate::Shared().EstimateBytes(result->spirv.size());
     RegisteredComputeQueue().Enqueue(address, cost, [device, result = std::move(result), address] {
         const Graphics::DemandPipelineCreations::SpeculativeThread speculative;
@@ -1727,7 +1762,7 @@ void PrebuildRegisteredCompute(const std::shared_ptr<VulkanDevice>& device, cons
     });
 }
 
-std::vector<PreparedShaders::Entry> PrepareRegistered(RegisteredPreparation& plan) {
+std::vector<PreparedShaders::Entry> PrepareRegistered(RegisteredPreparation& plan, const char* via = "registration") {
     auto& request = *plan.request;
     std::vector<PreparedShaders::Entry> entries;
     ShaderRecompiler::ShaderPreparationContext preparation;
@@ -1743,7 +1778,11 @@ std::vector<PreparedShaders::Entry> PrepareRegistered(RegisteredPreparation& pla
             APS5_LOG_OUT("shader library prebuild skipped: %s", error.what());
         }
     }
-    if (plan.prebuildDevice != nullptr && request.target.registrationModules && request.shader.stage == ShaderRecompiler::ShaderStage::Compute && entries.front().handle != nullptr && !LibraryPrebuildDisabled()) PrebuildRegisteredCompute(plan.prebuildDevice, request, *entries.front().handle);
+    if (request.shader.stage == ShaderRecompiler::ShaderStage::Compute) {
+        const char* gate = plan.prebuildDevice == nullptr ? "no-device" : !request.target.registrationModules ? "no-registration-target" : entries.front().handle == nullptr ? "no-handle" : LibraryPrebuildDisabled() ? "library-prebuild-disabled" : nullptr;
+        if (gate != nullptr) LogRegisteredComputeGate(request.shader.codeAddress, request.shader.code.size(), via, gate);
+        else PrebuildRegisteredCompute(plan.prebuildDevice, request, *entries.front().handle, via);
+    }
     if (request.context.compute) {
         request.context.compute->partialThreads = {1, 1, 1};
         append();
@@ -1796,9 +1835,12 @@ PreparedAtUse PrepareDeferredAbis(const ShaderSnapshot& snapshot, std::unique_lo
         for (const auto& [offset, value] : abi.primitive) state.userConfig[offset] = value;
         try {
             const auto plan = PlanRegistered(snapshot, *device, state, false);
-            if (plan == nullptr) continue;
+            if (plan == nullptr) {
+                LogRegisteredComputeGate(snapshot, "deferred-abi", "plan-null");
+                continue;
+            }
             plan->prebuildDevice = device;
-            auto made = PrepareRegistered(*plan);
+            auto made = PrepareRegistered(*plan, "deferred-abi");
             std::ranges::move(made, std::back_inserter(entries));
         } catch (const std::exception& error) {
             APS5_LOG_ERR("Shader 0x%llx could not be prepared at its first use for its resolved ABI (%s); preparing it for the use instead", static_cast<unsigned long long>(snapshot.codeAddress), error.what());
@@ -2592,15 +2634,19 @@ void Driver::ResolveShaderAbi(const Shader* shader, std::span<const ShaderRegist
         for (const auto reg : primitive) deferred.primitive.emplace_back(reg.offset, reg.value);
         std::lock_guard lock(snapshot->prepared->mutex);
         snapshot->prepared->deferredAbis.push_back(std::move(deferred));
+        LogRegisteredComputeGate(*snapshot, "first-use", "deferred-abi");
         return;
     }
     std::optional<std::string> deferral;
     const auto prepare = [&] {
         try {
             const auto plan = PlanRegistered(*snapshot, *localDevice, state, false);
-            if (plan == nullptr) return std::vector<PreparedShaders::Entry>{};
+            if (plan == nullptr) {
+                LogRegisteredComputeGate(*snapshot, "first-use", "plan-null");
+                return std::vector<PreparedShaders::Entry>{};
+            }
             plan->prebuildDevice = localDevice;
-            return PrepareRegistered(*plan);
+            return PrepareRegistered(*plan, "first-use");
         } catch (const std::exception& error) {
             deferral = error.what();
             return std::vector<PreparedShaders::Entry>{};
@@ -2910,11 +2956,13 @@ void Driver::RegisterShader(const Shader* shader) {
     if (LazyShaderPreparation()) {
         static_cast<void>(PlanRegistered(snapshot, *localDevice, registered, true, &snapshot.prepared->deferred));
         snapshot.prepared->deferred = true;
+        LogRegisteredComputeGate(snapshot, "registration", "lazy");
     } else if (AsyncRegistrationPrepare()) {
         preparation = PlanRegistered(snapshot, *localDevice, registered, true, &snapshot.prepared->deferred);
         if (preparation != nullptr) preparation->prebuildDevice = localDevice;
         if (preparation != nullptr && (snapshot.type == 0 || snapshot.type == 1)) BuildRegisteredAbiKey(registered, *localDevice, preparation->abiKey);
         snapshot.prepared->pending = preparation != nullptr;
+        LogRegisteredComputeGate(snapshot, "registration", preparation != nullptr ? "async" : snapshot.prepared->deferred ? "plan-deferred" : "plan-null");
     } else {
         try {
             snapshot.prepared->entries = PrepareRegistered(snapshot, *localDevice, registered, true, &snapshot.prepared->deferred);
@@ -2923,6 +2971,7 @@ void Driver::RegisterShader(const Shader* shader) {
             APS5_LOG_ERR("Shader 0x%llx could not be prepared at registration: %s", static_cast<unsigned long long>(snapshot.codeAddress), refusal.what());
             snapshot.prepared->failure = std::current_exception();
         }
+        LogRegisteredComputeGate(snapshot, "registration", !snapshot.prepared->entries.empty() ? "sync" : snapshot.prepared->deferred ? "plan-deferred" : "plan-null");
         if ((snapshot.type == 0 || snapshot.type == 1) && !snapshot.prepared->entries.empty()) {
             std::vector<std::uint64_t> key;
             BuildRegisteredAbiKey(registered, *localDevice, key);

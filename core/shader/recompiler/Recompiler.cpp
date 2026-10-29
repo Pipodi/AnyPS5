@@ -2420,6 +2420,10 @@ bool ComputeRegistrationPrebuildable(const RecompileResult& result, std::uint32_
     return result.registrationModule && result.spirv.size() >= minWords;
 }
 
+std::uint32_t ComputeRegistrationMinWordsLimit() {
+    return ComputeRegistrationMinWords();
+}
+
 bool ComputeRegistrationPrebuildable(const RecompileResult& result) {
     return ComputeRegistrationPrebuildable(result, ComputeRegistrationMinWords());
 }

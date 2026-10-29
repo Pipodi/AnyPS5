@@ -90,6 +90,7 @@ void BuildPreparedShaderKey(const RecompileRequest& request, std::vector<std::ui
 [[nodiscard]] std::shared_ptr<const RecompileResult> RegistrationResult(const RecompileRequest& request, const SourceHandle& handle);
 [[nodiscard]] bool ComputeRegistrationPrebuildable(const RecompileResult& result, std::uint32_t minWords);
 [[nodiscard]] bool ComputeRegistrationPrebuildable(const RecompileResult& result);
+[[nodiscard]] std::uint32_t ComputeRegistrationMinWordsLimit();
 [[nodiscard]] std::vector<std::uint64_t> RegistrationSpirvHashes(std::uint64_t variantId);
 [[nodiscard]] std::shared_ptr<const RecompileResult> MaterializeShader(const RecompileRequest& request, const ResourceCapture& capture, const SourceHandle& handle);
 [[nodiscard]] std::shared_ptr<const SourceHandle> ResolveSource(const RecompileRequest& request);

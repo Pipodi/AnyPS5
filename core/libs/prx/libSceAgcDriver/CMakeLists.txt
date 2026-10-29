@@ -3054,6 +3054,12 @@ if(BUILD_TESTING)
         set_tests_properties(agc_driver_registration_prebuild_order_largest_first PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
+    add_test(NAME agc_driver_registration_compute_gate_log_on COMMAND agc_driver_registration_compute_gate_log_tests --on)
+    set_tests_properties(agc_driver_registration_compute_gate_log_on PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1" SKIP_RETURN_CODE 77 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" TIMEOUT 60)
+    if(WIN32)
+        set_tests_properties(agc_driver_registration_compute_gate_log_on PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
     add_test(NAME agc_driver_gpu_buffer_format_store_spanned COMMAND agc_driver_gpu_buffer_format_store_tests --wave64)
     set_tests_properties(agc_driver_gpu_buffer_format_store_spanned PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_SPANNED_WAVE=1;APS5_BINDLESS_IMAGES=1" SKIP_RETURN_CODE 77 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" TIMEOUT 60)
     add_test(NAME agc_driver_gpu_skinning_loop_spanned COMMAND agc_driver_gpu_skinning_loop_tests)
