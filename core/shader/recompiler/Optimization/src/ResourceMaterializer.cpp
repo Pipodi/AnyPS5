@@ -2511,7 +2511,7 @@ const char* ResourceMaterializer::UnnormalizedSampleMismatch(const ImageResource
     return nullptr;
 }
 
-RuntimeImageModeMatch ResourceMaterializer::TryRuntimeImageMode(const ImageResource& image, const DescriptorValue& descriptor, std::span<const ImageResource> modes, bool nativeCompare) {
+RuntimeImageModeMatch ResourceMaterializer::TryRuntimeImageMode(const ImageResource& image, const DescriptorValue& descriptor, std::span<const ImageResource> modes, bool nativeCompare, bool instructionDimension) {
     RuntimeImageModeMatch result;
     const auto reject = [&](PoisonReason reason, std::string detail) {
         result.reason = reason;
@@ -2527,7 +2527,11 @@ RuntimeImageModeMatch ResourceMaterializer::TryRuntimeImageMode(const ImageResou
     const auto inspected = inspectImageDescriptor(descriptor, image, image.srgbDecodeFormats);
     if (inspected.reason.has_value()) return reject(*inspected.reason, inspected.detail);
     result.descriptorInspected = true;
-    const auto& decoded = inspected.decoded;
+    auto decoded = inspected.decoded;
+    if (instructionDimension && ResourceMaterializer::PlaceholderExtent(descriptor) && image.table == NoTable && image.dimension != RdnaImageDimension::Dim2DMsaa && image.dimension != RdnaImageDimension::Dim2DMsaaArray) {
+        decoded.dimension = image.dimension;
+        decoded.cube = false;
+    }
     const auto format = rawImageFormat(descriptor);
     const bool emulated = !nativeCompare && image.depthCompare && format != IrBufferFormat::Format32Float && format != IrBufferFormat::Format16UNorm && !IsDepthBitsTexture(descriptor.dwords[1], descriptor.dwords[3]);
     if (!emulated && (image.emulatedCompare & EmulatedCompare::NativeOffsetUnsupported) != 0u) return reject(PoisonReason::UnsupportedOperation, "native comparison with a nonconstant texel offset requires VK_KHR_maintenance8 and shaderImageGatherExtended");
@@ -2605,11 +2609,11 @@ std::uint32_t ResourceMaterializer::RuntimeImageMode(const ImageResource& image,
     return *match.mode;
 }
 
-std::uint32_t ResourceMaterializer::DirectImageMode(const ShaderInfo& info, IrShaderStage stage, std::uint32_t index, const DescriptorValue& descriptor, bool allowRefusal, bool nativeCompare) {
+std::uint32_t ResourceMaterializer::DirectImageMode(const ShaderInfo& info, IrShaderStage stage, std::uint32_t index, const DescriptorValue& descriptor, bool allowRefusal, bool nativeCompare, bool instructionDimension) {
     if (index >= info.images.size()) throw std::runtime_error("ShaderRecompiler: direct image resource is missing");
     if (index >= info.runtimeImageModes.size()) throw std::runtime_error("ShaderRecompiler: direct image runtime modes are missing");
     const auto& image = info.images.at(index);
-    const auto match = TryRuntimeImageMode(image, descriptor, info.runtimeImageModes.at(index), nativeCompare);
+    const auto match = TryRuntimeImageMode(image, descriptor, info.runtimeImageModes.at(index), nativeCompare, instructionDimension);
     if (match.mode.has_value()) return *match.mode;
     if (allowRefusal && !DirectImageLoopGuardEnabled() && ShaderRecompiler::CanDeferDirectImage(image, stage)
         && std::none_of(info.sampledPairs.begin(), info.sampledPairs.end(), [&](const auto& pair) { return pair.image == index; })
@@ -2678,6 +2682,24 @@ bool ResourceMaterializer::EmulatesDepthCompare(const ImageResource& image, cons
     if (!image.depthCompare || image.table != NoTable || descriptor.dwordCount != 8u || nullImageDescriptor(image, descriptor)) return false;
     const auto format = rawImageFormat(descriptor);
     return format != IrBufferFormat::Format32Float && format != IrBufferFormat::Format16UNorm && !IsDepthBitsTexture(descriptor.dwords[1], descriptor.dwords[3]);
+}
+
+bool ResourceMaterializer::PlaceholderExtent(const DescriptorValue& descriptor) {
+    if (descriptor.dwordCount != 8u || nullImageDescriptor(descriptor)) return false;
+    const auto type = rawImageType(descriptor);
+    return (type == ImageType::Color1D || type == ImageType::Color2D) && (descriptor.dwords[2] & 0x0fffffffu) == 0u;
+}
+
+std::uint64_t ResourceMaterializer::PlaceholderDimensionImages(const ShaderInfo& info, const ResourceSnapshot& snapshot) {
+    std::uint64_t mask = 0u;
+    for (std::uint32_t index = 0; index < info.images.size() && index < snapshot.images.size() && index < info.runtimeImageModes.size() && index < 64u; ++index) {
+        const auto& descriptor = snapshot.images[index];
+        if (info.images[index].table != NoTable || !PlaceholderExtent(descriptor)) continue;
+        const auto selected = TryRuntimeImageMode(info.images[index], descriptor, info.runtimeImageModes[index]);
+        const auto assumed = TryRuntimeImageMode(info.images[index], descriptor, info.runtimeImageModes[index], false, true);
+        if (selected.mode.has_value() && assumed.mode.has_value() && *selected.mode != *assumed.mode) mask |= std::uint64_t{1} << index;
+    }
+    return mask;
 }
 
 std::uint32_t ResourceMaterializer::EmulatedCompareState(const ShaderInfo& info, const ResourceSnapshot& snapshot, std::uint32_t index) {

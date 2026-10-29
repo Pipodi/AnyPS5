@@ -1090,13 +1090,14 @@ std::shared_ptr<const SpecializedModule> registrationModule(std::uint64_t varian
     return entry->module;
 }
 
-std::shared_ptr<PreparedBindingPlan> preparedBindingPlan(const CompiledVariant& variant, const ResourceSnapshot& snapshot, std::span<const std::uint8_t> exports, bool fragmentDescriptorSet, std::uint64_t codeAddress, std::uint64_t nativeCompare = 0u) {
+std::shared_ptr<PreparedBindingPlan> preparedBindingPlan(const CompiledVariant& variant, const ResourceSnapshot& snapshot, std::span<const std::uint8_t> exports, bool fragmentDescriptorSet, std::uint64_t codeAddress, std::uint64_t nativeCompare = 0u, std::uint64_t instructionDimension = 0u) {
     struct BindingPlanKeyStorage {};
     auto& key = HostThreadLocal<std::vector<std::uint64_t>, BindingPlanKeyStorage>();
     key.clear();
     key.push_back(variant.artifact.variantId);
     key.push_back(UnnormalizedWrapEnabled() ? 1u : 0u);
     key.push_back(nativeCompare);
+    key.push_back(instructionDimension);
     const auto substitutes = variant.substitutes != nullptr ? variant.substitutes->Slots() : std::vector<BufferSubstitute>{};
     for (std::size_t index = 0; index < variant.info.info.buffers.size(); ++index) {
         const auto& descriptor = snapshot.buffers.at(index);
@@ -1134,7 +1135,7 @@ std::shared_ptr<PreparedBindingPlan> preparedBindingPlan(const CompiledVariant& 
     }
     std::call_once(plan->ready, [&] {
         try {
-            plan->bindings = DescriptorBindingBuilder{}.Prepare(variant.bindings.layout, variant.info.info, variant.info.stage, snapshot, exports, variant.artifact.registrationModule, fragmentDescriptorSet, substitutes, nativeCompare);
+            plan->bindings = DescriptorBindingBuilder{}.Prepare(variant.bindings.layout, variant.info.info, variant.info.stage, snapshot, exports, variant.artifact.registrationModule, fragmentDescriptorSet, substitutes, nativeCompare, instructionDimension);
             static const bool logCompare = [] { const char* value = std::getenv("APS5_LOG_COMPARE_MODES"); return value != nullptr && value[0] != '\0' && value[0] != '0'; }();
             if (logCompare) {
                 const auto& images = variant.info.info.images;
@@ -1145,7 +1146,7 @@ std::shared_ptr<PreparedBindingPlan> preparedBindingPlan(const CompiledVariant& 
                 }
             }
             static const bool logModes = [] { const char* value = std::getenv("APS5_LOG_MODE_CHANGES"); return value != nullptr && value[0] != '\0' && value[0] != '0'; }();
-            if (logModes && nativeCompare == 0u) {
+            if (logModes && nativeCompare == 0u && instructionDimension == 0u) {
                 const auto& info = variant.info.info;
                 std::vector<std::array<std::uint32_t, 5>> current(info.images.size());
                 for (std::uint32_t index = 0; index < info.images.size(); ++index) {
@@ -1432,7 +1433,7 @@ const ResourceSnapshot& mergeTargetImage(const CompiledVariant& variant, const R
     return merged;
 }
 
-RecompileResult materializeResult(const CompiledVariant& variant, const RecompileRequest& request, const ResourceSnapshot& captured, bool registrationDefaults = false, std::uint64_t nativeCompare = 0u) {
+RecompileResult materializeResult(const CompiledVariant& variant, const RecompileRequest& request, const ResourceSnapshot& captured, bool registrationDefaults = false, std::uint64_t nativeCompare = 0u, std::uint64_t instructionDimension = 0u) {
     ResourceSnapshot merged;
     const auto& snapshot = mergeTargetImage(variant, request, captured, registrationDefaults, merged);
     ResourceMaterializer::ValidateDirectImageRefusals(variant.info.info, variant.info.stage, snapshot, request.target.bdaAbiVersion == BdaAbi::Version && variant.artifact.bdaAbiVersion == BdaAbi::Version);
@@ -1473,7 +1474,7 @@ RecompileResult materializeResult(const CompiledVariant& variant, const Recompil
         const auto index = reg - request.context.userDataBaseRegister;
         result.userDataRegisterReads |= reg >= request.context.userDataBaseRegister && index < 64u ? std::uint64_t{1} << index : ~std::uint64_t{0};
     }
-    const auto plan = preparedBindingPlan(variant, snapshot, request.context.pixel ? std::span<const std::uint8_t>(request.context.pixel->targetExportMapping) : std::span<const std::uint8_t>{}, request.target.registrationModules, request.shader.codeAddress, nativeCompare);
+    const auto plan = preparedBindingPlan(variant, snapshot, request.context.pixel ? std::span<const std::uint8_t>(request.context.pixel->targetExportMapping) : std::span<const std::uint8_t>{}, request.target.registrationModules, request.shader.codeAddress, nativeCompare, instructionDimension);
     const bool guardedWrap = std::any_of(plan->bindings.specialization.begin(), plan->bindings.specialization.end(), [](const auto& value) {
         return value.id >= PipelineSpecialization::UnnormalizedWrapBase && value.id < PipelineSpecialization::UnnormalizedWrapBase + ShaderInfo::MaxSamplers && value.value != 0u;
     });
@@ -2327,6 +2328,11 @@ std::shared_ptr<const RecompileResult> PreparedShaderInvocation::Materialize(con
     return result;
 }
 
+std::uint64_t PreparedShaderInvocation::PlaceholderDimensionImages(const ResourceCapture& capture) const {
+    if (capture.source != handle->source || handle->artifact->artifact.registrationModule) return 0u;
+    return ResourceMaterializer::PlaceholderDimensionImages(handle->artifact->info.info, capture.snapshot);
+}
+
 std::uint64_t PreparedShaderInvocation::EmulatedCompareImages(const ResourceCapture& capture) const {
     if (capture.source != handle->source || handle->artifact->artifact.registrationModule) return 0u;
     const auto& images = handle->artifact->info.info.images;
@@ -2337,9 +2343,9 @@ std::uint64_t PreparedShaderInvocation::EmulatedCompareImages(const ResourceCapt
     return mask;
 }
 
-std::shared_ptr<const RecompileResult> PreparedShaderInvocation::MaterializeNativeCompare(const ResourceCapture& capture, std::uint64_t images) const {
-    if (images == 0u || capture.source != handle->source) return nullptr;
-    return std::make_shared<RecompileResult>(materializeResult(*handle->artifact, request, capture.snapshot, false, images));
+std::shared_ptr<const RecompileResult> PreparedShaderInvocation::MaterializeCounterpart(const ResourceCapture& capture, std::uint64_t images, std::uint64_t instructionDimension) const {
+    if ((images == 0u && instructionDimension == 0u) || capture.source != handle->source) return nullptr;
+    return std::make_shared<RecompileResult>(materializeResult(*handle->artifact, request, capture.snapshot, false, images, instructionDimension));
 }
 
 const CompiledShaderArtifact& GetPreparedArtifact(const SourceHandle& handle) {

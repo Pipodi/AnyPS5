@@ -8930,6 +8930,52 @@ void verifyNativeCompareCounterpart() {
     require(DescriptorBindingBuilder{}.Prepare(plainLayout, plain, IrShaderStage::Compute, swizzled).specialization != DescriptorBindingBuilder{}.Prepare(plainLayout, plain, IrShaderStage::Compute, identity).specialization, "native compare counterpart: a color image lost its swizzle specialization");
 }
 
+void verifyPlaceholderDimensionCounterpart() {
+    using namespace ShaderRecompiler;
+    ImageResource image{};
+    image.resourceClass = ImageResourceClass::Sampled;
+    image.numericClass = IrTextureNumericClass::Float;
+    image.dimension = RdnaImageDimension::Dim3D;
+    image.read = true;
+    ShaderInfo info;
+    info.images = {image};
+    info.runtimeImageModes = {ResourceMaterializer::RuntimeImageModes(image)};
+    info.samplers = {SamplerResource{}};
+    info.sampledPairs = {SampledResourcePair{0u, 0u, 0u}};
+    IrBindingLayout layout;
+    std::set<DescriptorBindingKind> kinds;
+    for (const auto& mode : info.runtimeImageModes[0]) {
+        if (kinds.insert(DescriptorBindingForImage(mode)).second) layout.descriptors.push_back({DescriptorBindingForImage(mode), {0u}});
+    }
+    ResourceSnapshot early;
+    early.samplers = {DescriptorValue{{0u, 0u, 0u, 0u}, 4u}};
+    early.images = {DescriptorValue{{0x50091c04u, 0x03800000u, 0x00000000u, 0x90000facu, 0u, 0u, 0u, 0u}, 8u}};
+    ResourceSnapshot real = early;
+    real.images = {DescriptorValue{{0x50aa2000u, 0xc4700000u, 0x015fc15fu, 0xa1b00facu, 0u, 0u, 0u, 0u}, 8u}};
+    require(ResourceMaterializer::PlaceholderExtent(early.images[0]) && !ResourceMaterializer::PlaceholderExtent(real.images[0]), "placeholder dimension counterpart: the 1x1 T# and the volume were not told apart");
+    require(ResourceMaterializer::PlaceholderDimensionImages(info, early) == 1u, "placeholder dimension counterpart: the 2D placeholder under a 3D instruction named no counterpart image");
+    require(ResourceMaterializer::PlaceholderDimensionImages(info, real) == 0u, "placeholder dimension counterpart: the real volume named a counterpart image");
+    const DescriptorBindingBuilder builder;
+    const auto placeholder = builder.Prepare(layout, info, IrShaderStage::Compute, early);
+    const auto counterpart = builder.Prepare(layout, info, IrShaderStage::Compute, early, {}, false, false, {}, 0u, 1u);
+    const auto volume = builder.Prepare(layout, info, IrShaderStage::Compute, real);
+    require(placeholder.specialization != volume.specialization, "placeholder dimension counterpart: the placeholder and the volume share a specialization without the counterpart");
+    require(counterpart.specialization == volume.specialization, "placeholder dimension counterpart: the counterpart and the volume differ in their specialization");
+    require(counterpart.bindings.size() == volume.bindings.size(), "placeholder dimension counterpart: the binding counts differ");
+    for (std::size_t index = 0; index < volume.bindings.size(); ++index) {
+        const auto& left = counterpart.bindings[index];
+        const auto& right = volume.bindings[index];
+        require(left.descriptor.binding == right.descriptor.binding && left.descriptor.count == right.descriptor.count && left.descriptor.kind == right.descriptor.kind && left.descriptor.role == right.descriptor.role && left.descriptor.imageShape == right.descriptor.imageShape && left.resources == right.resources && left.identityImageSwizzle == right.identityImageSwizzle, "placeholder dimension counterpart: the counterpart and the volume differ in a binding");
+    }
+    ResourceSnapshot flat = early;
+    flat.images[0].dwords[2] = 0x00ff00ffu;
+    require(ResourceMaterializer::PlaceholderDimensionImages(info, flat) == 0u, "placeholder dimension counterpart: a 2D texture with an extent named a counterpart image");
+    image.dimension = RdnaImageDimension::Dim2D;
+    info.images = {image};
+    info.runtimeImageModes = {ResourceMaterializer::RuntimeImageModes(image)};
+    require(ResourceMaterializer::PlaceholderDimensionImages(info, early) == 0u, "placeholder dimension counterpart: a 2D placeholder under a 2D instruction named a counterpart image");
+}
+
 int main(int argc, char** argv) {
     try {
 #ifdef _WIN32
@@ -9115,6 +9161,7 @@ int main(int argc, char** argv) {
         verifyDynamicStorageMipChain();
         verifySrgbDepthCompareModes();
         verifyNativeCompareCounterpart();
+        verifyPlaceholderDimensionCounterpart();
         verifyQuadMaskNeighbourReads();
         verifyCoherentGds();
 #if ANYPS5_ENABLE_SPIRV_TOOLS

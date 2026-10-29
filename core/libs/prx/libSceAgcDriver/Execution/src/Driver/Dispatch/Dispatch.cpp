@@ -33,6 +33,7 @@
 #include <functional>
 #include <mutex>
 #include <set>
+#include <tuple>
 #include <cstring>
 #include <optional>
 #include <stdexcept>
@@ -57,30 +58,41 @@ bool DispatchUsesImages(const ShaderRecompiler::RecompileResult& compiled) {
     return false;
 }
 
+bool EnvSwitch(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
 bool PrebuildNativeCompareEnabled() {
-    static const bool enabled = [] { const char* value = std::getenv("APS5_PREBUILD_NATIVE_COMPARE"); return value != nullptr && value[0] != '\0' && value[0] != '0'; }();
+    static const bool enabled = EnvSwitch("APS5_PREBUILD_NATIVE_COMPARE");
+    return enabled;
+}
+
+bool PrebuildPlaceholderDimensionEnabled() {
+    static const bool enabled = EnvSwitch("APS5_PREBUILD_PLACEHOLDER_DIM");
     return enabled;
 }
 
 void QueueNativeCompareCounterpart(const ShaderRecompiler::PreparedShaderInvocation& invocation, const std::shared_ptr<const ShaderRecompiler::ResourceCapture>& capture, const ShaderRecompiler::RecompileResult& compiled, std::uint64_t address, const std::shared_ptr<VulkanDevice>& device) {
-    if (!PrebuildNativeCompareEnabled() || capture == nullptr) return;
-    const auto images = invocation.EmulatedCompareImages(*capture);
-    if (images == 0u) return;
+    if (capture == nullptr) return;
+    const auto images = PrebuildNativeCompareEnabled() ? invocation.EmulatedCompareImages(*capture) : 0u;
+    const auto dimensions = PrebuildPlaceholderDimensionEnabled() ? invocation.PlaceholderDimensionImages(*capture) : 0u;
+    if (images == 0u && dimensions == 0u) return;
     static std::mutex mutex;
-    static std::set<std::pair<std::uint64_t, std::uint64_t>> queued;
+    static std::set<std::tuple<std::uint64_t, std::uint64_t, std::uint64_t>> queued;
     {
         std::lock_guard lock(mutex);
-        if (!queued.emplace(compiled.variantId, images).second) return;
+        if (!queued.emplace(compiled.variantId, images, dimensions).second) return;
     }
-    WriteLogLine(stderr, "[compare-ahead] queued program 0x%llx variant %llx images 0x%llx\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(compiled.variantId), static_cast<unsigned long long>(images));
-    SubmitLibraryPrebuild([invocation, capture, device, address, images, demand = std::make_shared<Graphics::DemandPipelineCreations::Scope>()] {
+    WriteLogLine(stderr, "[compare-ahead] queued program 0x%llx variant %llx images 0x%llx dimensions 0x%llx\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(compiled.variantId), static_cast<unsigned long long>(images), static_cast<unsigned long long>(dimensions));
+    SubmitLibraryPrebuild([invocation, capture, device, address, images, dimensions, demand = std::make_shared<Graphics::DemandPipelineCreations::Scope>()] {
         try {
-            const auto counterpart = invocation.MaterializeNativeCompare(*capture, images);
+            const auto counterpart = invocation.MaterializeCounterpart(*capture, images, dimensions);
             if (counterpart == nullptr || device->HasComputePipeline(*counterpart)) return;
             device->PrebuildComputePipeline(*counterpart, address);
             std::uint64_t layoutHash = 0xcbf29ce484222325ull;
             for (const auto word : device->PlannedComputeLayoutKey(*counterpart)) layoutHash = (layoutHash ^ word) * 0x100000001b3ull;
-            WriteLogLine(stderr, "[compare-ahead] created program 0x%llx words %zu layout=%08x images 0x%llx\n", static_cast<unsigned long long>(address), counterpart->spirv.size(), static_cast<unsigned>(layoutHash ^ (layoutHash >> 32u)), static_cast<unsigned long long>(images));
+            WriteLogLine(stderr, "[compare-ahead] created program 0x%llx words %zu layout=%08x images 0x%llx dimensions 0x%llx\n", static_cast<unsigned long long>(address), counterpart->spirv.size(), static_cast<unsigned>(layoutHash ^ (layoutHash >> 32u)), static_cast<unsigned long long>(images), static_cast<unsigned long long>(dimensions));
         } catch (const std::exception& error) {
             WriteLogLine(stderr, "[compare-ahead] refused program 0x%llx: %s\n", static_cast<unsigned long long>(address), error.what());
         }

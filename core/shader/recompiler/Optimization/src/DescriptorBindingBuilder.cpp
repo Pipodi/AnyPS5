@@ -323,7 +323,7 @@ BufferSubstitute SpecializedBufferFields(const BufferResource& buffer, IrShaderS
     return {stage == IrShaderStage::Compute ? 0u : fields.word1, word3, fields.misalignment, true};
 }
 
-DescriptorBindingPlan DescriptorBindingBuilder::Prepare(const IrBindingLayout& layout, const ShaderInfo& info, IrShaderStage stage, const ResourceSnapshot& snapshot, std::span<const std::uint8_t> exportMappings, bool registrationModules, bool fragmentDescriptorSet, std::span<const BufferSubstitute> substitutes, std::uint64_t nativeCompare) const {
+DescriptorBindingPlan DescriptorBindingBuilder::Prepare(const IrBindingLayout& layout, const ShaderInfo& info, IrShaderStage stage, const ResourceSnapshot& snapshot, std::span<const std::uint8_t> exportMappings, bool registrationModules, bool fragmentDescriptorSet, std::span<const BufferSubstitute> substitutes, std::uint64_t nativeCompare, std::uint64_t instructionDimension) const {
     if (stage == IrShaderStage::Pixel && exportMappings.size() != 8u) fail("fragment runtime export mappings are missing");
     if (info.images.size() > ShaderInfo::MaxImages) fail("runtime image count exceeds the static capacity");
     DescriptorBindingPlan plan;
@@ -347,7 +347,7 @@ DescriptorBindingPlan DescriptorBindingBuilder::Prepare(const IrBindingLayout& l
     }
     std::vector<std::uint32_t> imageModes(info.images.size());
     for (std::size_t index = 0; index < info.images.size(); ++index) {
-        if (info.images[index].table == NoTable) imageModes[index] = ResourceMaterializer::DirectImageMode(info, stage, static_cast<std::uint32_t>(index), snapshot.images.at(index), info.usesFaultBuffer, (nativeCompare >> index & 1u) != 0u);
+        if (info.images[index].table == NoTable) imageModes[index] = ResourceMaterializer::DirectImageMode(info, stage, static_cast<std::uint32_t>(index), snapshot.images.at(index), info.usesFaultBuffer, (nativeCompare >> index & 1u) != 0u, (instructionDimension >> index & 1u) != 0u);
     }
     for (std::uint32_t index = 0; index < info.buffers.size(); ++index) {
         const auto& descriptor = snapshot.buffers.at(index);
