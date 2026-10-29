@@ -2511,7 +2511,7 @@ const char* ResourceMaterializer::UnnormalizedSampleMismatch(const ImageResource
     return nullptr;
 }
 
-RuntimeImageModeMatch ResourceMaterializer::TryRuntimeImageMode(const ImageResource& image, const DescriptorValue& descriptor, std::span<const ImageResource> modes) {
+RuntimeImageModeMatch ResourceMaterializer::TryRuntimeImageMode(const ImageResource& image, const DescriptorValue& descriptor, std::span<const ImageResource> modes, bool nativeCompare) {
     RuntimeImageModeMatch result;
     const auto reject = [&](PoisonReason reason, std::string detail) {
         result.reason = reason;
@@ -2529,7 +2529,7 @@ RuntimeImageModeMatch ResourceMaterializer::TryRuntimeImageMode(const ImageResou
     result.descriptorInspected = true;
     const auto& decoded = inspected.decoded;
     const auto format = rawImageFormat(descriptor);
-    const bool emulated = image.depthCompare && format != IrBufferFormat::Format32Float && format != IrBufferFormat::Format16UNorm && !IsDepthBitsTexture(descriptor.dwords[1], descriptor.dwords[3]);
+    const bool emulated = !nativeCompare && image.depthCompare && format != IrBufferFormat::Format32Float && format != IrBufferFormat::Format16UNorm && !IsDepthBitsTexture(descriptor.dwords[1], descriptor.dwords[3]);
     if (!emulated && (image.emulatedCompare & EmulatedCompare::NativeOffsetUnsupported) != 0u) return reject(PoisonReason::UnsupportedOperation, "native comparison with a nonconstant texel offset requires VK_KHR_maintenance8 and shaderImageGatherExtended");
     if (image.packed && decoded.packedFormat != IrBufferFormat::Invalid) {
         const auto packedFormat = GetFormatInfo(decoded.packedFormat);
@@ -2605,11 +2605,11 @@ std::uint32_t ResourceMaterializer::RuntimeImageMode(const ImageResource& image,
     return *match.mode;
 }
 
-std::uint32_t ResourceMaterializer::DirectImageMode(const ShaderInfo& info, IrShaderStage stage, std::uint32_t index, const DescriptorValue& descriptor, bool allowRefusal) {
+std::uint32_t ResourceMaterializer::DirectImageMode(const ShaderInfo& info, IrShaderStage stage, std::uint32_t index, const DescriptorValue& descriptor, bool allowRefusal, bool nativeCompare) {
     if (index >= info.images.size()) throw std::runtime_error("ShaderRecompiler: direct image resource is missing");
     if (index >= info.runtimeImageModes.size()) throw std::runtime_error("ShaderRecompiler: direct image runtime modes are missing");
     const auto& image = info.images.at(index);
-    const auto match = TryRuntimeImageMode(image, descriptor, info.runtimeImageModes.at(index));
+    const auto match = TryRuntimeImageMode(image, descriptor, info.runtimeImageModes.at(index), nativeCompare);
     if (match.mode.has_value()) return *match.mode;
     if (allowRefusal && !DirectImageLoopGuardEnabled() && ShaderRecompiler::CanDeferDirectImage(image, stage)
         && std::none_of(info.sampledPairs.begin(), info.sampledPairs.end(), [&](const auto& pair) { return pair.image == index; })
@@ -2672,6 +2672,12 @@ void ResourceMaterializer::ValidateDirectImageRefusals(const ShaderInfo& info, I
             static_cast<void>(DirectImageMode(info, stage, index, snapshot.images.at(index), false));
         }
     }
+}
+
+bool ResourceMaterializer::EmulatesDepthCompare(const ImageResource& image, const DescriptorValue& descriptor) {
+    if (!image.depthCompare || image.table != NoTable || descriptor.dwordCount != 8u || nullImageDescriptor(image, descriptor)) return false;
+    const auto format = rawImageFormat(descriptor);
+    return format != IrBufferFormat::Format32Float && format != IrBufferFormat::Format16UNorm && !IsDepthBitsTexture(descriptor.dwords[1], descriptor.dwords[3]);
 }
 
 std::uint32_t ResourceMaterializer::EmulatedCompareState(const ShaderInfo& info, const ResourceSnapshot& snapshot, std::uint32_t index) {

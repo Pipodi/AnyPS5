@@ -1,4 +1,5 @@
 #include "prx/libSceAgcDriver/Execution/include/ComputeTimeline.hpp"
+#include "prx/libc/include/general/LogMacros.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
@@ -30,6 +31,8 @@
 #include <string>
 #include <cstdlib>
 #include <functional>
+#include <mutex>
+#include <set>
 #include <cstring>
 #include <optional>
 #include <stdexcept>
@@ -52,6 +55,36 @@ bool DispatchUsesImages(const ShaderRecompiler::RecompileResult& compiled) {
         }
     }
     return false;
+}
+
+bool PrebuildNativeCompareEnabled() {
+    static const bool enabled = [] { const char* value = std::getenv("APS5_PREBUILD_NATIVE_COMPARE"); return value != nullptr && value[0] != '\0' && value[0] != '0'; }();
+    return enabled;
+}
+
+void QueueNativeCompareCounterpart(const ShaderRecompiler::PreparedShaderInvocation& invocation, const std::shared_ptr<const ShaderRecompiler::ResourceCapture>& capture, const ShaderRecompiler::RecompileResult& compiled, std::uint64_t address, const std::shared_ptr<VulkanDevice>& device) {
+    if (!PrebuildNativeCompareEnabled() || capture == nullptr) return;
+    const auto images = invocation.EmulatedCompareImages(*capture);
+    if (images == 0u) return;
+    static std::mutex mutex;
+    static std::set<std::pair<std::uint64_t, std::uint64_t>> queued;
+    {
+        std::lock_guard lock(mutex);
+        if (!queued.emplace(compiled.variantId, images).second) return;
+    }
+    WriteLogLine(stderr, "[compare-ahead] queued program 0x%llx variant %llx images 0x%llx\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(compiled.variantId), static_cast<unsigned long long>(images));
+    SubmitLibraryPrebuild([invocation, capture, device, address, images, demand = std::make_shared<Graphics::DemandPipelineCreations::Scope>()] {
+        try {
+            const auto counterpart = invocation.MaterializeNativeCompare(*capture, images);
+            if (counterpart == nullptr || device->HasComputePipeline(*counterpart)) return;
+            device->PrebuildComputePipeline(*counterpart, address);
+            std::uint64_t layoutHash = 0xcbf29ce484222325ull;
+            for (const auto word : device->PlannedComputeLayoutKey(*counterpart)) layoutHash = (layoutHash ^ word) * 0x100000001b3ull;
+            WriteLogLine(stderr, "[compare-ahead] created program 0x%llx words %zu layout=%08x images 0x%llx\n", static_cast<unsigned long long>(address), counterpart->spirv.size(), static_cast<unsigned>(layoutHash ^ (layoutHash >> 32u)), static_cast<unsigned long long>(images));
+        } catch (const std::exception& error) {
+            WriteLogLine(stderr, "[compare-ahead] refused program 0x%llx: %s\n", static_cast<unsigned long long>(address), error.what());
+        }
+    });
 }
 
 // APS5_PIPELINE_DISPATCH / APS5_PIPELINE_DISPATCH_MISSES are runtime switches (in-run A/B): set when the variable is
@@ -656,6 +689,7 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
             compiledResult = invocation.Materialize(*capture);
             CommandMix::NoteMaterialized(*compiledResult, *capture);
             timing.Mark("materialize");
+            QueueNativeCompareCounterpart(invocation, capture, *compiledResult, address, localDevice);
             if (!resolving && !localDevice->HasComputePipeline(*compiledResult)) missAhead(submission, queue, currentPacketOffset());
             if (compiledResult->cacheHit) ++cacheHits;
             const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();

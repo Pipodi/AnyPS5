@@ -8870,6 +8870,66 @@ void verifySrgbDepthCompareModes() {
     }
 }
 
+void verifyNativeCompareCounterpart() {
+    using namespace ShaderRecompiler;
+    for (const bool queried : {false, true}) {
+        ImageResource image{};
+        image.resourceClass = ImageResourceClass::Sampled;
+        image.numericClass = IrTextureNumericClass::Float;
+        image.dimension = RdnaImageDimension::Dim2D;
+        image.depthCompare = true;
+        image.read = true;
+        image.levelUses = queried ? ImageLevelUseQuery : 0u;
+        ShaderInfo info;
+        info.images = {image};
+        info.runtimeImageModes = {ResourceMaterializer::RuntimeImageModes(image)};
+        info.samplers = {SamplerResource{}};
+        info.sampledPairs = {SampledResourcePair{0u, 0u, 0u}};
+        IrBindingLayout layout;
+        std::set<DescriptorBindingKind> kinds;
+        for (const auto& mode : info.runtimeImageModes[0]) {
+            if (kinds.insert(DescriptorBindingForImage(mode)).second) layout.descriptors.push_back({DescriptorBindingForImage(mode), {0u}});
+        }
+        ResourceSnapshot early;
+        early.samplers = {DescriptorValue{{0u, 0u, 0u, 0u}, 4u}};
+        early.images = {DescriptorValue{{0x50091c01u, 0x03800000u, 0x00000000u, 0x90000facu, 0u, 0u, 0u, 0u}, 8u}};
+        require(ResourceMaterializer::EmulatesDepthCompare(image, early.images[0]), "native compare counterpart: the 1x1 8_8_8_8 placeholder did not take the emulated comparison");
+        const DescriptorBindingBuilder builder;
+        const auto emulated = builder.Prepare(layout, info, IrShaderStage::Compute, early);
+        const auto counterpart = builder.Prepare(layout, info, IrShaderStage::Compute, early, {}, false, false, {}, 1u);
+        require(emulated.specialization != counterpart.specialization, "native compare counterpart: forcing the native comparison changed no specialization");
+        const std::array<std::array<std::uint32_t, 4>, 3> real{{{0x508d3500u, 0xc1600000u, 0x01ffc1ffu, 0x91800924u}, {0x508c3100u, 0xc1600000u, 0x01ffc1ffu, 0x91800924u}, {0x509e3200u, 0xc1600000u, 0x00ffc0ffu, 0x91800924u}}};
+        for (const auto& words : real) {
+            ResourceSnapshot snapshot = early;
+            snapshot.images = {DescriptorValue{{words[0], words[1], words[2], words[3], 0u, 0u, 0u, 0u}, 8u}};
+            require(!ResourceMaterializer::EmulatesDepthCompare(image, snapshot.images[0]), "native compare counterpart: the real 32_FLOAT shadow map takes the emulated comparison");
+            const auto native = builder.Prepare(layout, info, IrShaderStage::Compute, snapshot);
+            require(native.specialization == counterpart.specialization, "native compare counterpart: the counterpart of the placeholder and the real shadow map differ in their specialization");
+            require(native.bindings.size() == counterpart.bindings.size(), "native compare counterpart: the binding counts differ");
+            for (std::size_t index = 0; index < native.bindings.size(); ++index) {
+                const auto& left = native.bindings[index];
+                const auto& right = counterpart.bindings[index];
+                require(left.descriptor.binding == right.descriptor.binding && left.descriptor.count == right.descriptor.count && left.descriptor.kind == right.descriptor.kind && left.descriptor.role == right.descriptor.role && left.descriptor.imageDepthCompare == right.descriptor.imageDepthCompare && left.resources == right.resources && left.identityImageSwizzle == right.identityImageSwizzle, "native compare counterpart: the counterpart and the real shadow map differ in a binding");
+            }
+        }
+    }
+    ImageResource color{};
+    color.resourceClass = ImageResourceClass::Sampled;
+    color.numericClass = IrTextureNumericClass::Float;
+    color.dimension = RdnaImageDimension::Dim2D;
+    color.read = true;
+    ShaderInfo plain;
+    plain.images = {color};
+    plain.runtimeImageModes = {ResourceMaterializer::RuntimeImageModes(color)};
+    IrBindingLayout plainLayout;
+    plainLayout.descriptors = {{DescriptorBindingForImage(color), {0u}}};
+    ResourceSnapshot swizzled;
+    swizzled.images = {DescriptorValue{{0x50091c01u, 0x03800000u, 0x00000000u, 0x90000924u, 0u, 0u, 0u, 0u}, 8u}};
+    ResourceSnapshot identity = swizzled;
+    identity.images[0].dwords[3] = 0x90000facu;
+    require(DescriptorBindingBuilder{}.Prepare(plainLayout, plain, IrShaderStage::Compute, swizzled).specialization != DescriptorBindingBuilder{}.Prepare(plainLayout, plain, IrShaderStage::Compute, identity).specialization, "native compare counterpart: a color image lost its swizzle specialization");
+}
+
 int main(int argc, char** argv) {
     try {
 #ifdef _WIN32
@@ -9054,6 +9114,7 @@ int main(int argc, char** argv) {
         verifySamplerTableDeduplication();
         verifyDynamicStorageMipChain();
         verifySrgbDepthCompareModes();
+        verifyNativeCompareCounterpart();
         verifyQuadMaskNeighbourReads();
         verifyCoherentGds();
 #if ANYPS5_ENABLE_SPIRV_TOOLS

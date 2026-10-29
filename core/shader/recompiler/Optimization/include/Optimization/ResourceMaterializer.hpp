@@ -83,12 +83,13 @@ public:
 class ResourceMaterializer {
 public:
     static ViewLevelsPastChain LevelsPastChain(const DescriptorValue& descriptor);
+    static bool EmulatesDepthCompare(const ImageResource& image, const DescriptorValue& descriptor);
     static std::uint32_t EmulatedCompareState(const ShaderInfo& info, const ResourceSnapshot& snapshot, std::uint32_t index);
     void ApplyStaticInterface(IrProgram& program, bool nativeSampleOffsets = true) const;
     static std::vector<ImageResource> RuntimeImageModes(const ImageResource& image);
-    static RuntimeImageModeMatch TryRuntimeImageMode(const ImageResource& image, const DescriptorValue& descriptor, std::span<const ImageResource> modes);
+    static RuntimeImageModeMatch TryRuntimeImageMode(const ImageResource& image, const DescriptorValue& descriptor, std::span<const ImageResource> modes, bool nativeCompare = false);
     static std::uint32_t RuntimeImageMode(const ImageResource& image, const DescriptorValue& descriptor, std::span<const ImageResource> modes);
-    static std::uint32_t DirectImageMode(const ShaderInfo& info, IrShaderStage stage, std::uint32_t index, const DescriptorValue& descriptor, bool allowRefusal = false);
+    static std::uint32_t DirectImageMode(const ShaderInfo& info, IrShaderStage stage, std::uint32_t index, const DescriptorValue& descriptor, bool allowRefusal = false, bool nativeCompare = false);
     static bool CanDeferDirectImage(const IrProgram& program, std::uint32_t index);
     static bool CanGuardUnnormalizedWrap(const IrProgram& program, std::uint32_t index);
     static void PrepareDirectImageRefusals(IrProgram& program, bool faultAbi);

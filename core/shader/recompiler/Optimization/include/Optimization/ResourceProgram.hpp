@@ -69,6 +69,8 @@ public:
     const RecompileRequest& Request() const { return request; }
     std::shared_ptr<const ResourceCapture> Capture(const SrtRuntime& runtime) const;
     std::shared_ptr<const RecompileResult> Materialize(const ResourceCapture& capture) const;
+    std::uint64_t EmulatedCompareImages(const ResourceCapture& capture) const;
+    std::shared_ptr<const RecompileResult> MaterializeNativeCompare(const ResourceCapture& capture, std::uint64_t images) const;
 
 private:
     PreparedShaderInvocation(const RecompileRequest& request, const std::shared_ptr<const SourceHandle>& handle);
