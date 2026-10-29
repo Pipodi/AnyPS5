@@ -758,7 +758,7 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
         if (!cached && compiledResult != nullptr && !localDevice->HasComputePipeline(*compiledResult)) {
             SubmitLibraryPrebuild([localDevice, compiledResult, address, demand = std::make_shared<Graphics::DemandPipelineCreations::Scope>()] {
                 try { localDevice->PrebuildComputePipeline(*compiledResult, address); } catch (const std::exception&) {}
-            });
+            }, compiledResult->spirv.size());
         }
         return;
     }

@@ -1920,13 +1920,13 @@ private:
 
 public:
 
-    void Submit(std::function<void()> task, const PreparedShaders* prepared = nullptr) {
+    void Submit(std::function<void()> task, const PreparedShaders* prepared = nullptr, std::uint64_t cost = 0) {
         {
             std::unique_lock lock(mutex);
             if (threads != 0 && !closed) {
                 const auto sequence = ++submitted;
-                if (prepared != nullptr && prepared->demanded.load()) tasks.push_front({std::move(task), prepared, sequence});
-                else tasks.push_back({std::move(task), prepared, sequence});
+                if (prepared != nullptr && prepared->demanded.load()) tasks.push_front({std::move(task), prepared, sequence, cost});
+                else tasks.push_back({std::move(task), prepared, sequence, cost});
                 unfinished.insert(sequence);
                 if (prepared != nullptr) owned.emplace(prepared, sequence);
                 lock.unlock();
@@ -2069,8 +2069,9 @@ private:
                     liveWorkers.fetch_sub(1, std::memory_order_acq_rel);
                     return nullptr;
                 }
-                task = std::move(pool.tasks.front());
-                pool.tasks.pop_front();
+                const auto next = pool.nextTask();
+                task = std::move(*next);
+                pool.tasks.erase(next);
                 ++pool.running;
             }
             const auto sequence = task.sequence;
@@ -2097,7 +2098,23 @@ private:
         std::function<void()> function;
         const PreparedShaders* prepared = nullptr;
         std::uint64_t sequence = 0;
+        std::uint64_t cost = 0;
     };
+
+    static bool LargestFirst() {
+        static const bool enabled = [] {
+            const char* text = std::getenv("APS5_PREBUILD_LARGEST_FIRST");
+            return text != nullptr && text[0] != '\0' && std::strcmp(text, "0") != 0;
+        }();
+        return enabled;
+    }
+
+    std::deque<Task>::iterator nextTask() {
+        if (!prebuild || !LargestFirst()) return tasks.begin();
+        const auto& front = tasks.front();
+        if (front.prepared != nullptr && front.prepared->demanded.load()) return tasks.begin();
+        return std::ranges::max_element(tasks, [](const Task& left, const Task& right) { return left.cost < right.cost; });
+    }
 
     std::mutex mutex;
     std::condition_variable ready;
@@ -2178,8 +2195,8 @@ void AwaitReferencedPreparations(const ShaderRegistry& registry, std::span<const
     }
 }
 
-void SubmitLibraryPrebuild(std::function<void()> task) {
-    RegistrationPreparePool::Prebuild().Submit(std::move(task));
+void SubmitLibraryPrebuild(std::function<void()> task, std::uint64_t cost, const PreparedShaders* prepared) {
+    RegistrationPreparePool::Prebuild().Submit(std::move(task), prepared, cost);
 }
 
 void AwaitLibraryPrebuilds() {

@@ -239,7 +239,7 @@ void SubmitRegistrationPreparation(std::function<void()> task, const PreparedSha
 void PrioritizeRegistrationPreparation(PreparedShaders& prepared);
 void AwaitRegistrationPreparation();
 void AwaitReferencedPreparations(const ShaderRegistry& registry, std::span<const std::uint64_t> addresses);
-void SubmitLibraryPrebuild(std::function<void()> task);
+void SubmitLibraryPrebuild(std::function<void()> task, std::uint64_t cost = 0, const PreparedShaders* prepared = nullptr);
 void AwaitLibraryPrebuilds();
 void ReleaseRegisteredComputePrebuilds();
 void PromoteRegisteredCompute(std::uint64_t address);
