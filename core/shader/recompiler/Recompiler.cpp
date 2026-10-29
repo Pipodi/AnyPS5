@@ -20,6 +20,7 @@
 #include "SpirvBackend/SpirvSpecialization.hpp"
 #include "RdnaDecoder/RdnaDescriptorFormat.hpp"
 #include "ShaderDiskCache.hpp"
+#include "prx/libc/include/general/LogMacros.hpp"
 #include <list>
 #include <functional>
 #include <map>
@@ -1089,7 +1090,7 @@ std::shared_ptr<const SpecializedModule> registrationModule(std::uint64_t varian
     return entry->module;
 }
 
-std::shared_ptr<PreparedBindingPlan> preparedBindingPlan(const CompiledVariant& variant, const ResourceSnapshot& snapshot, std::span<const std::uint8_t> exports, bool fragmentDescriptorSet) {
+std::shared_ptr<PreparedBindingPlan> preparedBindingPlan(const CompiledVariant& variant, const ResourceSnapshot& snapshot, std::span<const std::uint8_t> exports, bool fragmentDescriptorSet, std::uint64_t codeAddress) {
     struct BindingPlanKeyStorage {};
     auto& key = HostThreadLocal<std::vector<std::uint64_t>, BindingPlanKeyStorage>();
     key.clear();
@@ -1133,6 +1134,15 @@ std::shared_ptr<PreparedBindingPlan> preparedBindingPlan(const CompiledVariant& 
     std::call_once(plan->ready, [&] {
         try {
             plan->bindings = DescriptorBindingBuilder{}.Prepare(variant.bindings.layout, variant.info.info, variant.info.stage, snapshot, exports, variant.artifact.registrationModule, fragmentDescriptorSet, substitutes);
+            static const bool logCompare = [] { const char* value = std::getenv("APS5_LOG_COMPARE_MODES"); return value != nullptr && value[0] != '\0' && value[0] != '0'; }();
+            if (logCompare) {
+                const auto& images = variant.info.info.images;
+                for (std::uint32_t index = 0; index < images.size(); ++index) {
+                    if (!images[index].depthCompare) continue;
+                    const auto& descriptor = snapshot.images.at(index);
+                    WriteLogLine(stderr, "[compare-mode] program 0x%llx variant %llx image %u table %u words %u compare_state %08x tsharp %08x %08x %08x %08x\n", static_cast<unsigned long long>(codeAddress), static_cast<unsigned long long>(variant.artifact.variantId), index, images[index].table, descriptor.dwordCount, ResourceMaterializer::EmulatedCompareState(variant.info.info, snapshot, index), descriptor.dwords[0], descriptor.dwords[1], descriptor.dwords[2], descriptor.dwords[3]);
+                }
+            }
         } catch (...) {
             plan->failure = std::current_exception();
         }
@@ -1439,7 +1449,7 @@ RecompileResult materializeResult(const CompiledVariant& variant, const Recompil
         const auto index = reg - request.context.userDataBaseRegister;
         result.userDataRegisterReads |= reg >= request.context.userDataBaseRegister && index < 64u ? std::uint64_t{1} << index : ~std::uint64_t{0};
     }
-    const auto plan = preparedBindingPlan(variant, snapshot, request.context.pixel ? std::span<const std::uint8_t>(request.context.pixel->targetExportMapping) : std::span<const std::uint8_t>{}, request.target.registrationModules);
+    const auto plan = preparedBindingPlan(variant, snapshot, request.context.pixel ? std::span<const std::uint8_t>(request.context.pixel->targetExportMapping) : std::span<const std::uint8_t>{}, request.target.registrationModules, request.shader.codeAddress);
     const bool guardedWrap = std::any_of(plan->bindings.specialization.begin(), plan->bindings.specialization.end(), [](const auto& value) {
         return value.id >= PipelineSpecialization::UnnormalizedWrapBase && value.id < PipelineSpecialization::UnnormalizedWrapBase + ShaderInfo::MaxSamplers && value.value != 0u;
     });
