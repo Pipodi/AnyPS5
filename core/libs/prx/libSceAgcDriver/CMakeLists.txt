@@ -4164,6 +4164,17 @@ target_link_libraries(agc_compute_pipeline_replay PRIVATE libSceAgcDriver libc)
 set_target_properties(agc_compute_pipeline_replay PROPERTIES CXX_EXTENSIONS OFF)
 configure_windows_unwind(agc_compute_pipeline_replay)
 
+add_executable(agc_compute_optimization_bench tools/ComputeOptimizationBench.cpp)
+target_include_directories(agc_compute_optimization_bench PRIVATE
+        ${LIBS_INCLUDE_DIR}
+        ${CMAKE_SOURCE_DIR}/core/shader/recompiler
+        ${ANYPS5_VULKAN_HEADERS_INCLUDE_DIR}
+        ${ANYPS5_SPIRV_HEADERS_INCLUDE_DIR}
+)
+target_link_libraries(agc_compute_optimization_bench PRIVATE libSceAgcDriver libc)
+set_target_properties(agc_compute_optimization_bench PROPERTIES CXX_EXTENSIONS OFF)
+configure_windows_unwind(agc_compute_optimization_bench)
+
 if(BUILD_TESTING)
     add_test_executable(agc_compute_pipeline_capture_tests tests/ComputePipelineCapture.cpp Execution/src/ComputePipelineCapture.cpp)
     target_include_directories(agc_compute_pipeline_capture_tests PRIVATE ${LIBS_INCLUDE_DIR} ${ANYPS5_VULKAN_HEADERS_INCLUDE_DIR})
