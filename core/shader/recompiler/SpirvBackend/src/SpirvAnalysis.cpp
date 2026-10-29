@@ -1,6 +1,5 @@
 #include "SpirvBackend/SpirvAnalysis.hpp"
 #include "RdnaDecoder/RdnaInstruction.hpp"
-#include "SpirvBackend/SpirvBda.hpp"
 #include <algorithm>
 #include <optional>
 #include <stdexcept>
@@ -362,7 +361,7 @@ SpirvRequirements AnalyzeProgramRequirements(const IrProgram& program) {
                     }
                     requirements.functionScratch = true;
                 }
-                if (program.Resources().memoryInfo.at(memoryIndex).kind == ResourceKind::Flat && program.Resources().stage == IrShaderStage::Compute && program.Info().scratchDwords != 0u && RoutesPrivateAperture(program)) {
+                if (program.Resources().memoryInfo.at(memoryIndex).kind == ResourceKind::Flat && program.Resources().stage == IrShaderStage::Compute && program.Info().scratchDwords != 0u) {
                     requirements.functionScratch = true;
                 }
                 if (program.Resources().memoryInfo.at(memoryIndex).kind == ResourceKind::Flat && program.Resources().stage == IrShaderStage::Compute && addressAccess == AddressAccess::Atomic && inst->Type() == IrType::U64) {

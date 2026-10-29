@@ -474,13 +474,7 @@ struct ApertureAddress {
 ApertureAddress SplitAperture(SpirvEmitterState& state, std::uint32_t address) {
     const auto u32 = TypeU32(state);
     const auto high = Unary(state, spv::OpUConvert, u32, Binary(state, spv::OpShiftRightLogical, TypeScalarU64(state), address, BdaConstant(state, 32u)));
-    const auto priv = RoutesPrivateAperture(state.program) ? Binary(state, spv::OpIEqual, TypeBool(state), high, ConstantU32(state, PrivateApertureHigh)) : 0u;
-    return {Unary(state, spv::OpUConvert, u32, address), Binary(state, spv::OpIEqual, TypeBool(state), high, ConstantU32(state, SharedApertureHigh)), priv};
-}
-
-std::uint32_t NotAperture(SpirvEmitterState& state, const ApertureAddress& split) {
-    const auto any = split.priv != 0u ? Binary(state, spv::OpLogicalOr, TypeBool(state), split.shared, split.priv) : split.shared;
-    return Unary(state, spv::OpLogicalNot, TypeBool(state), any);
+    return {Unary(state, spv::OpUConvert, u32, address), Binary(state, spv::OpIEqual, TypeBool(state), high, ConstantU32(state, SharedApertureHigh)), Binary(state, spv::OpIEqual, TypeBool(state), high, ConstantU32(state, PrivateApertureHigh))};
 }
 
 std::uint32_t ApertureByteInBounds(SpirvEmitterState& state, const MemoryResourceAccess& resource, std::uint32_t byteOffset, std::uint32_t offset, std::uint32_t index) {
@@ -595,9 +589,6 @@ void StoreApertureElement(SpirvValueEmitContext& ctx, ResourceKind kind, std::ui
 template<typename TAperture, typename TGlobal>
 std::uint32_t RouteFlatAccess(SpirvEmitterState& state, std::uint32_t address, std::uint32_t type, TAperture&& aperture, TGlobal&& global) {
     const auto split = SplitAperture(state, address);
-    if (split.priv == 0u) {
-        return EmitValueIfElse(state, split.shared, type, [&] { return aperture(ResourceKind::Lds, split.low); }, global);
-    }
     return EmitValueIfElse(state, split.shared, type, [&] { return aperture(ResourceKind::Lds, split.low); }, [&] {
         return EmitValueIfElse(state, split.priv, type, [&] { return aperture(ResourceKind::Scratch, split.low); }, global);
     });
@@ -689,8 +680,8 @@ void StoreAddress(SpirvValueEmitContext& ctx, const IrValue& inst, std::uint32_t
             }
             const auto split = SplitAperture(state, address);
             EmitIfCondition(state, split.shared, [&] { StoreApertureElement(ctx, ResourceKind::Lds, split.low, bits, data); });
-            if (split.priv != 0u) EmitIfCondition(state, split.priv, [&] { StoreApertureElement(ctx, ResourceKind::Scratch, split.low, bits, data); });
-            const auto global = NotAperture(state, split);
+            EmitIfCondition(state, split.priv, [&] { StoreApertureElement(ctx, ResourceKind::Scratch, split.low, bits, data); });
+            const auto global = Unary(state, spv::OpLogicalNot, TypeBool(state), Binary(state, spv::OpLogicalOr, TypeBool(state), split.shared, split.priv));
             EmitIfCondition(state, global, [&] { EmitBdaStore(ctx, inst, address, data, bits); });
         });
         return;
@@ -1668,8 +1659,8 @@ void StoreAddressWide(SpirvValueEmitContext& ctx, const IrValue& inst, std::uint
             }
         };
         EmitIfCondition(state, split.shared, [&] { storeAperture(ResourceKind::Lds); });
-        if (split.priv != 0u) EmitIfCondition(state, split.priv, [&] { storeAperture(ResourceKind::Scratch); });
-        const auto global = NotAperture(state, split);
+        EmitIfCondition(state, split.priv, [&] { storeAperture(ResourceKind::Scratch); });
+        const auto global = Unary(state, spv::OpLogicalNot, TypeBool(state), Binary(state, spv::OpLogicalOr, TypeBool(state), split.shared, split.priv));
         EmitIfCondition(state, global, [&] { EmitBdaDwordWrites(ctx, inst, base, mem.offset, components, data); });
     });
 }

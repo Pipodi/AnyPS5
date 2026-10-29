@@ -380,15 +380,6 @@ bool RoutesApertures(const SpirvEmitterState& state, const MemoryInfo& mem) {
     return mem.kind == ResourceKind::Flat && state.program.Resources().stage == IrShaderStage::Compute;
 }
 
-bool FlatPrivateAlwaysForced() {
-    static const bool forced = std::getenv("APS5_FLAT_PRIVATE_ALWAYS") != nullptr;
-    return forced;
-}
-
-bool RoutesPrivateAperture(const IrProgram& program) {
-    return FlatPrivateAlwaysForced() || program.Info().formsPrivateAperture;
-}
-
 std::uint32_t BdaInstructionPc(SpirvEmitterState& state, const IrValue& inst) {
     return state.bdaPcOverride != 0u ? state.bdaPcOverride : ConstantU32(state, inst.Flags<MemoryFlags>().pc);
 }
