@@ -1144,6 +1144,29 @@ std::shared_ptr<PreparedBindingPlan> preparedBindingPlan(const CompiledVariant& 
                     WriteLogLine(stderr, "[compare-mode] program 0x%llx variant %llx image %u table %u words %u compare_state %08x tsharp %08x %08x %08x %08x\n", static_cast<unsigned long long>(codeAddress), static_cast<unsigned long long>(variant.artifact.variantId), index, images[index].table, descriptor.dwordCount, ResourceMaterializer::EmulatedCompareState(variant.info.info, snapshot, index), descriptor.dwords[0], descriptor.dwords[1], descriptor.dwords[2], descriptor.dwords[3]);
                 }
             }
+            static const bool logModes = [] { const char* value = std::getenv("APS5_LOG_MODE_CHANGES"); return value != nullptr && value[0] != '\0' && value[0] != '0'; }();
+            if (logModes && nativeCompare == 0u) {
+                const auto& info = variant.info.info;
+                std::vector<std::array<std::uint32_t, 5>> current(info.images.size());
+                for (std::uint32_t index = 0; index < info.images.size(); ++index) {
+                    const auto& descriptor = snapshot.images.at(index);
+                    const auto match = index < info.runtimeImageModes.size() ? ResourceMaterializer::TryRuntimeImageMode(info.images[index], descriptor, info.runtimeImageModes[index]) : RuntimeImageModeMatch{};
+                    current[index] = {match.mode.value_or(0xffffffffu), descriptor.dwords[0], descriptor.dwords[1], descriptor.dwords[2], descriptor.dwords[3]};
+                }
+                static std::mutex modesMutex;
+                static std::unordered_map<std::uint64_t, std::vector<std::array<std::uint32_t, 5>>> lastModes;
+                std::lock_guard lock(modesMutex);
+                const auto [entry, inserted] = lastModes.try_emplace(variant.artifact.variantId, current);
+                if (!inserted) {
+                    for (std::uint32_t index = 0; index < current.size() && index < entry->second.size(); ++index) {
+                        const auto& before = entry->second[index];
+                        const auto& after = current[index];
+                        if (before[0] == after[0]) continue;
+                        WriteLogLine(stderr, "[mode-change] program 0x%llx variant %llx image %u table %u depth_compare %u mode %d -> %d tsharp %08x %08x %08x %08x -> %08x %08x %08x %08x\n", static_cast<unsigned long long>(codeAddress), static_cast<unsigned long long>(variant.artifact.variantId), index, info.images[index].table, info.images[index].depthCompare ? 1u : 0u, static_cast<int>(before[0]), static_cast<int>(after[0]), before[1], before[2], before[3], before[4], after[1], after[2], after[3], after[4]);
+                    }
+                    entry->second = current;
+                }
+            }
         } catch (...) {
             plan->failure = std::current_exception();
         }
