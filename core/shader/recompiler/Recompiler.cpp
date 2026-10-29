@@ -718,6 +718,7 @@ CompiledVariant emitVariant(const RecompileRequest& request, IrProgram& program)
     result.fullSubgroups = emitted.fullSubgroups;
     result.functionLdsBuffer = emitted.functionLdsBuffer;
     result.meshWindowBuffer = emitted.meshWindowBuffer;
+    result.scratchPoolSlotDwords = emitted.scratchPoolSlotDwords;
     result.vertexOffsetSgpr = program.Info().vertexOffsetSgpr;
     result.instanceOffsetSgpr = program.Info().instanceOffsetSgpr;
     result.vertexOffsetShared = program.Info().vertexOffsetShared;
@@ -1131,6 +1132,7 @@ RecompileResult materializeResult(const CompiledVariant& variant, const Recompil
         .fullSubgroups = artifact.fullSubgroups,
         .functionLdsBuffer = artifact.functionLdsBuffer,
         .meshWindowBuffer = artifact.meshWindowBuffer,
+        .scratchPoolSlotDwords = artifact.scratchPoolSlotDwords,
         .parameterExports = artifact.parameterExports,
         .fragmentParameters = artifact.fragmentParameters,
         .barycentricEmulation = artifact.barycentricEmulation,
