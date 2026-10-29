@@ -353,8 +353,11 @@ std::vector<std::uint32_t> SpirvEmitter::Emit(const IrProgram& program, const Sh
     if (info != nullptr) {
         info->fullSubgroups = state.spannedWave;
         info->functionLdsBuffer = state.pixelFunctionLdsBuffer;
+        info->scratchPoolSlotDwords = ScratchPoolActive(state) ? ScratchPoolSlotDwords(state) : 0u;
     }
-    return state.module.Finalize();
+    auto words = state.module.Finalize();
+    VerifyScratchPoolReturns(state, words);
+    return words;
 }
 
 }

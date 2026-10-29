@@ -51,6 +51,7 @@ struct SpirvTargetOptions {
 struct SpirvEmitInfo {
     bool fullSubgroups = false;
     bool functionLdsBuffer = false;
+    std::uint32_t scratchPoolSlotDwords = 0;
 };
 
 struct SpannedWaveUnsupported : std::runtime_error {
