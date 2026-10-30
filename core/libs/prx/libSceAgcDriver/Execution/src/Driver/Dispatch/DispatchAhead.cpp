@@ -566,7 +566,7 @@ void Driver::prepareMissAhead(const std::shared_ptr<const ShaderSnapshot>& snaps
             const auto result = invocation.Materialize(*capture);
             if (result == nullptr) return;
             if (!localDevice->HasComputePipeline(*result)) WriteLogLine(stderr, "[miss-ahead] start program 0x%llx words %zu queue %u t=%.0f\n", static_cast<unsigned long long>(address), result->spirv.size(), queue, AgcDriver::ComputeTimeline::NowMs());
-            localDevice->PrebuildComputePipeline(*result, address);
+            localDevice->PrebuildComputePipeline(*result, address, false);
         } catch (const std::exception&) {}
     });
 }

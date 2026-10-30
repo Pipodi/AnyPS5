@@ -2655,7 +2655,7 @@ const char* VulkanDevice::ComputePipelineStatus(const ShaderRecompiler::Recompil
     return state->computePipelinesBuilding.contains(key) ? "building" : "create";
 }
 
-void VulkanDevice::PrebuildComputePipeline(const ShaderRecompiler::RecompileResult& shader, std::uint64_t programAddress) {
+void VulkanDevice::PrebuildComputePipeline(const ShaderRecompiler::RecompileResult& shader, std::uint64_t programAddress, bool budgeted) {
     if (shader.spirv.size() < 5 || shader.spirv[0] != 0x07230203u) return;
     ShaderRecompiler::RuntimeAbi::RequireVersion(shader.runtimeAbiVersion);
     const auto context = graphicsContext();
@@ -2665,7 +2665,8 @@ void VulkanDevice::PrebuildComputePipeline(const ShaderRecompiler::RecompileResu
     const auto pushStages = Graphics::PushConstantStages(shaders);
     if (pushStages != 0 && state->properties.limits.maxPushConstantsSize < Graphics::ComputePushConstantBytes) return;
     if (HasComputePipeline(shader)) return;
-    const CompileBudget::Hold hold(BackgroundCompileBudget(), shader.spirv.size() * sizeof(std::uint32_t));
+    std::optional<CompileBudget::Hold> hold;
+    if (budgeted) hold.emplace(BackgroundCompileBudget(), shader.spirv.size() * sizeof(std::uint32_t));
     if (HasComputePipeline(shader)) return;
     const auto layouts = Graphics::DescribeSetLayouts(context, shaders);
     static_cast<void>(computePipeline(context, shader, layouts.layouts.main, layouts.mainKey, pushStages, programAddress));

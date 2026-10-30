@@ -85,7 +85,7 @@ void QueueNativeCompareCounterpart(const ShaderRecompiler::PreparedShaderInvocat
         if (!queued.emplace(compiled.variantId, images, dimensions).second) return;
     }
     WriteLogLine(stderr, "[compare-ahead] queued program 0x%llx variant %llx images 0x%llx dimensions 0x%llx\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(compiled.variantId), static_cast<unsigned long long>(images), static_cast<unsigned long long>(dimensions));
-    SubmitLibraryPrebuild([invocation, capture, device, address, images, dimensions, demand = std::make_shared<Graphics::DemandPipelineCreations::Scope>()] {
+    SubmitComputePrebuild([invocation, capture, device, address, images, dimensions, demand = std::make_shared<Graphics::DemandPipelineCreations::Scope>()] {
         try {
             const auto counterpart = invocation.MaterializeCounterpart(*capture, images, dimensions);
             if (counterpart == nullptr || device->HasComputePipeline(*counterpart)) return;

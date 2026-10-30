@@ -1696,7 +1696,7 @@ RegistrationPrebuildQueue& RegisteredComputeQueue() {
     static auto* queue = [] {
         auto settings = RegistrationPrebuildQueue::SettingsFromEnvironment();
         settings.budgetBytes = Graphics::PipelineCreationGate::Shared().Totals().budgetBytes;
-        auto* created = new RegistrationPrebuildQueue(settings, [](std::function<void()> task) { SubmitLibraryPrebuild(std::move(task)); }, [](std::size_t queued, const char* reason) {
+        auto* created = new RegistrationPrebuildQueue(settings, [](std::function<void()> task) { SubmitComputePrebuild(std::move(task)); }, [](std::size_t queued, const char* reason) {
             std::fprintf(stderr, "[regcompute] released %zu queued at t=%.0f reason=%s\n", queued, AgcDriver::ComputeTimeline::NowMs(), reason);
         }, RegistrationPrebuildQueue::Hooks{[] { return Graphics::DemandPipelineCreations::Active() != 0; }, [] { return Graphics::PipelineCreationGate::Shared().Totals().inFlightBytes; }, [](std::size_t queued, std::uint64_t demand, std::uint64_t memory) {
             std::fprintf(stderr, "[regcompute] deferred starts: queued=%zu demand=%llu memory=%llu t=%.0f\n", queued, static_cast<unsigned long long>(demand), static_cast<unsigned long long>(memory), AgcDriver::ComputeTimeline::NowMs());
