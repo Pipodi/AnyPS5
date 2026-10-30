@@ -13,9 +13,11 @@
 #include <iostream>
 #include <latch>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <semaphore>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -465,6 +467,53 @@ void PreparationPriority(bool beforeSubmit) {
     Require(demandedDone.get() == 0u && backgroundDone.get() == 1u && order.load() == 2u, "demanded preparation waited behind background work or ran twice");
 }
 
+void UrgentPreparationOrder() {
+    const auto workers = std::max(2u, std::thread::hardware_concurrency() / 2u);
+    std::barrier started(static_cast<std::ptrdiff_t>(workers + 1u));
+    std::counting_semaphore<> release(0);
+    std::latch finished(static_cast<std::ptrdiff_t>(workers));
+    for (unsigned index = 0; index < workers; ++index) {
+        SubmitRegistrationPreparation([&] {
+            started.arrive_and_wait();
+            release.acquire();
+            finished.count_down();
+        });
+    }
+    started.arrive_and_wait();
+    std::mutex mutex;
+    std::vector<int> order;
+    std::latch ran(5);
+    const auto record = [&](int id) {
+        {
+            std::lock_guard lock(mutex);
+            order.push_back(id);
+        }
+        ran.count_down();
+    };
+    for (int id = 0; id < 3; ++id) SubmitRegistrationPreparation([&, id] { record(id); });
+    SubmitRegistrationPreparation([&] { record(10); }, nullptr, true);
+    SubmitRegistrationPreparation([&] { record(11); }, nullptr, true);
+    release.release(1);
+    for (int spin = 0; spin < 5000; ++spin) {
+        {
+            std::lock_guard lock(mutex);
+            if (!order.empty()) break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::vector<int> firstTwo;
+    {
+        std::lock_guard lock(mutex);
+        firstTwo = order;
+    }
+    release.release(static_cast<std::ptrdiff_t>(workers - 1u));
+    ran.wait();
+    finished.wait();
+    Require(!firstTwo.empty() && firstTwo.front() == 10, "an urgent preparation waited behind queued normal work");
+    Require(order.size() == 5u && order[0] == 10 && order[1] == 11 && order[2] == 0 && order[3] == 1 && order[4] == 2, "urgent preparations did not run first in submission order");
+}
+
 }
 
 int main() {
@@ -478,6 +527,7 @@ int main() {
         CommittedLinks();
         PreparationPriority(false);
         PreparationPriority(true);
+        UrgentPreparationOrder();
         auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
         Registration(*device);

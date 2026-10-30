@@ -2001,13 +2001,17 @@ private:
 
 public:
 
-    void Submit(std::function<void()> task, const PreparedShaders* prepared = nullptr, std::uint64_t cost = 0, bool budgeted = false, bool low = false) {
+    void Submit(std::function<void()> task, const PreparedShaders* prepared = nullptr, std::uint64_t cost = 0, bool budgeted = false, bool low = false, bool urgent = false) {
         {
             std::unique_lock lock(mutex);
             if (threads != 0 && !closed) {
                 const auto sequence = ++submitted;
-                if (prepared != nullptr && prepared->demanded.load()) tasks.push_front({std::move(task), prepared, sequence, cost, budgeted, low});
-                else tasks.push_back({std::move(task), prepared, sequence, cost, budgeted, low});
+                Task queued{std::move(task), prepared, sequence, cost, budgeted, low, urgent};
+                if (urgent) {
+                    const auto position = std::ranges::find_if(tasks, [](const Task& existing) { return !existing.urgent && !(existing.prepared != nullptr && existing.prepared->demanded.load()); });
+                    tasks.insert(position, std::move(queued));
+                } else if (prepared != nullptr && prepared->demanded.load()) tasks.push_front(std::move(queued));
+                else tasks.push_back(std::move(queued));
                 unfinished.insert(sequence);
                 if (prepared != nullptr) owned.emplace(prepared, sequence);
                 lock.unlock();
@@ -2208,6 +2212,7 @@ private:
         std::uint64_t cost = 0;
         bool budgeted = false;
         bool low = false;
+        bool urgent = false;
     };
 
     class LowPriorityScope {
@@ -2323,8 +2328,8 @@ void PrepareRegisteredInBackground(std::shared_ptr<const ShaderSnapshot> snapsho
 
 }
 
-void SubmitRegistrationPreparation(std::function<void()> task, const PreparedShaders* prepared) {
-    RegistrationPreparePool::Instance().Submit(std::move(task), prepared);
+void SubmitRegistrationPreparation(std::function<void()> task, const PreparedShaders* prepared, bool urgent) {
+    RegistrationPreparePool::Instance().Submit(std::move(task), prepared, 0, false, false, urgent);
 }
 
 void PrioritizeRegistrationPreparation(PreparedShaders& prepared) {
