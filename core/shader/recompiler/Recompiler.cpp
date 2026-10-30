@@ -652,6 +652,23 @@ std::uint32_t ComputeRegistrationMinWords() {
     return words;
 }
 
+std::uint32_t ComputeRegistrationLowMinWords() {
+    static const std::uint32_t words = [] {
+        const char* value = std::getenv("APS5_COMPUTE_REGISTRATION_LOW_MIN_WORDS");
+        if (value == nullptr || *value == 0) return 0u;
+        char* end = nullptr;
+        const auto parsed = std::strtoul(value, &end, 10);
+        return *end == 0 ? static_cast<std::uint32_t>(parsed) : 0u;
+    }();
+    return words;
+}
+
+std::uint32_t ComputeRegistrationFormMinWords() {
+    const auto low = ComputeRegistrationLowMinWords();
+    const auto normal = ComputeRegistrationMinWords();
+    return low != 0u ? std::min(low, normal) : normal;
+}
+
 CompiledVariant emitVariant(const RecompileRequest& request, IrProgram& program) {
     const auto inputInfo = RequestInputInfo(request);
     constexpr BindingAllocator bindingAllocator;
@@ -736,7 +753,7 @@ CompiledVariant emitVariant(const RecompileRequest& request, IrProgram& program)
         return value != nullptr ? static_cast<std::uint32_t>(std::strtoul(value, nullptr, 10)) : 0u;
     }();
     const auto wordLimit = heapWordLimit != 0u && request.target.bindlessImages && ResourceMaterializer::UsesBindlessImages(program.Info(), program.Resources().stage) ? std::max(heapWordLimit, request.target.registrationWordLimit) : request.target.registrationWordLimit;
-    if (registration && (request.shader.stage == ShaderStage::Compute ? result.spirv.size() < ComputeRegistrationMinWords() : result.spirv.size() > wordLimit)) {
+    if (registration && (request.shader.stage == ShaderStage::Compute ? result.spirv.size() < ComputeRegistrationFormMinWords() : result.spirv.size() > wordLimit)) {
         registration = false;
         program.Metadata().bindingLayoutComplete = false;
         bindings = bindingAllocator.Allocate(program, request.layout, false, stencilReplay);
@@ -2422,6 +2439,10 @@ bool ComputeRegistrationPrebuildable(const RecompileResult& result, std::uint32_
 
 std::uint32_t ComputeRegistrationMinWordsLimit() {
     return ComputeRegistrationMinWords();
+}
+
+std::uint32_t ComputeRegistrationLowMinWordsLimit() {
+    return ComputeRegistrationLowMinWords();
 }
 
 bool ComputeRegistrationPrebuildable(const RecompileResult& result) {

@@ -73,6 +73,7 @@ struct Fixture {
 int main(int argc, char** argv) {
     try {
         const bool belowThreshold = argc > 1 && std::string_view(argv[1]) == "below";
+        const bool lowLane = argc > 1 && std::string_view(argv[1]) == "low";
         Fixture buffers(BufferOnly);
         const auto handle = PrepareShader(buffers.request);
         const auto registered = RegistrationResult(buffers.request, *handle);
@@ -80,7 +81,13 @@ int main(int argc, char** argv) {
         runtime.userData = buffers.userData;
         const auto capture = CaptureResources(buffers.request, runtime, *handle);
         const auto dispatched = MaterializeShader(buffers.request, *capture, *handle);
-        if (belowThreshold) {
+        if (lowLane) {
+            Check(registered != nullptr && registered->registrationModule, "a program between the low and normal word thresholds has no registration module");
+            Check(dispatched->registrationModule, "a program between the low and normal word thresholds was not materialized in registration form");
+            Check(!ComputeRegistrationPrebuildable(*registered), "a program between the low and normal word thresholds is prebuilt on the normal lane");
+            Check(ComputeRegistrationLowMinWordsLimit() == 1u, "the low word threshold is not read from the environment");
+            Check(ComputeRegistrationPrebuildable(*registered, ComputeRegistrationLowMinWordsLimit()), "a program at the low word threshold is not prebuildable on the low lane");
+        } else if (belowThreshold) {
             Check(registered == nullptr, "a buffer-only program below the word threshold got a registration module");
             Check(!dispatched->registrationModule, "a buffer-only program below the word threshold was materialized in registration form");
         } else {

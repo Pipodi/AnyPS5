@@ -1692,19 +1692,40 @@ std::atomic<RegistrationPrebuildQueue*>& RegisteredComputeQueueSlot() {
     return slot;
 }
 
+std::atomic<RegistrationPrebuildQueue*>& LowRegisteredComputeQueueSlot() {
+    static std::atomic<RegistrationPrebuildQueue*> slot{nullptr};
+    return slot;
+}
+
+RegistrationPrebuildQueue* CreateRegisteredComputeQueue(std::function<void(std::function<void()>)> submit) {
+    auto settings = RegistrationPrebuildQueue::SettingsFromEnvironment();
+    settings.budgetBytes = Graphics::PipelineCreationGate::Shared().Totals().budgetBytes;
+    return new RegistrationPrebuildQueue(settings, std::move(submit), [](std::size_t queued, const char* reason) {
+        std::fprintf(stderr, "[regcompute] released %zu queued at t=%.0f reason=%s\n", queued, AgcDriver::ComputeTimeline::NowMs(), reason);
+    }, RegistrationPrebuildQueue::Hooks{[] { return Graphics::DemandPipelineCreations::Active() != 0; }, [] { return Graphics::PipelineCreationGate::Shared().Totals().inFlightBytes; }, [](std::size_t queued, std::uint64_t demand, std::uint64_t memory) {
+        std::fprintf(stderr, "[regcompute] deferred starts: queued=%zu demand=%llu memory=%llu t=%.0f\n", queued, static_cast<unsigned long long>(demand), static_cast<unsigned long long>(memory), AgcDriver::ComputeTimeline::NowMs());
+    }});
+}
+
+void PokeRegisteredComputeQueues() {
+    if (auto* queue = RegisteredComputeQueueSlot().load()) queue->Poke();
+    if (auto* queue = LowRegisteredComputeQueueSlot().load()) queue->Poke();
+}
+
 RegistrationPrebuildQueue& RegisteredComputeQueue() {
     static auto* queue = [] {
-        auto settings = RegistrationPrebuildQueue::SettingsFromEnvironment();
-        settings.budgetBytes = Graphics::PipelineCreationGate::Shared().Totals().budgetBytes;
-        auto* created = new RegistrationPrebuildQueue(settings, [](std::function<void()> task) { SubmitComputePrebuild(std::move(task)); }, [](std::size_t queued, const char* reason) {
-            std::fprintf(stderr, "[regcompute] released %zu queued at t=%.0f reason=%s\n", queued, AgcDriver::ComputeTimeline::NowMs(), reason);
-        }, RegistrationPrebuildQueue::Hooks{[] { return Graphics::DemandPipelineCreations::Active() != 0; }, [] { return Graphics::PipelineCreationGate::Shared().Totals().inFlightBytes; }, [](std::size_t queued, std::uint64_t demand, std::uint64_t memory) {
-            std::fprintf(stderr, "[regcompute] deferred starts: queued=%zu demand=%llu memory=%llu t=%.0f\n", queued, static_cast<unsigned long long>(demand), static_cast<unsigned long long>(memory), AgcDriver::ComputeTimeline::NowMs());
-        }});
+        auto* created = CreateRegisteredComputeQueue([](std::function<void()> task) { SubmitComputePrebuild(std::move(task)); });
         RegisteredComputeQueueSlot().store(created);
-        Graphics::DemandPipelineCreations::SetIdleListener([] {
-            if (auto* queue = RegisteredComputeQueueSlot().load()) queue->Poke();
-        });
+        Graphics::DemandPipelineCreations::SetIdleListener([] { PokeRegisteredComputeQueues(); });
+        return created;
+    }();
+    return *queue;
+}
+
+RegistrationPrebuildQueue& LowRegisteredComputeQueue() {
+    static auto* queue = [] {
+        auto* created = CreateRegisteredComputeQueue([](std::function<void()> task) { SubmitLowComputePrebuild(std::move(task)); });
+        LowRegisteredComputeQueueSlot().store(created);
         return created;
     }();
     return *queue;
@@ -1733,18 +1754,25 @@ void PrebuildRegisteredCompute(const std::shared_ptr<VulkanDevice>& device, cons
         LogRegisteredComputeGate(address, guestWords, via, "registration-result-null");
         return;
     }
+    bool low = false;
     if (!ShaderRecompiler::ComputeRegistrationPrebuildable(*result)) {
-        if (!result->registrationModule) LogRegisteredComputeGate(address, guestWords, via, "not-registration-module", "spirv_words " + std::to_string(result->spirv.size()));
-        else LogRegisteredComputeGate(address, guestWords, via, "below-min-words", std::to_string(result->spirv.size()) + " " + std::to_string(ShaderRecompiler::ComputeRegistrationMinWordsLimit()));
-        return;
+        const auto lowMin = ShaderRecompiler::ComputeRegistrationLowMinWordsLimit();
+        low = result->registrationModule && lowMin != 0u && ShaderRecompiler::ComputeRegistrationPrebuildable(*result, lowMin);
+        if (!low) {
+            if (!result->registrationModule) LogRegisteredComputeGate(address, guestWords, via, "not-registration-module", "spirv_words " + std::to_string(result->spirv.size()));
+            else LogRegisteredComputeGate(address, guestWords, via, "below-min-words", std::to_string(result->spirv.size()) + " " + std::to_string(ShaderRecompiler::ComputeRegistrationMinWordsLimit()));
+            return;
+        }
+        LogRegisteredComputeGate(address, guestWords, via, "low-lane", std::to_string(result->spirv.size()) + " " + std::to_string(ShaderRecompiler::ComputeRegistrationMinWordsLimit()));
+    } else {
+        LogRegisteredComputeGate(address, guestWords, via, "queued", std::to_string(result->spirv.size()));
     }
-    LogRegisteredComputeGate(address, guestWords, via, "queued", std::to_string(result->spirv.size()));
     const auto cost = Graphics::PipelineCreationGate::Shared().EstimateBytes(result->spirv.size());
-    RegisteredComputeQueue().Enqueue(address, cost, [device, result = std::move(result), address] {
+    (low ? LowRegisteredComputeQueue() : RegisteredComputeQueue()).Enqueue(address, cost, [device, result = std::move(result), address, low] {
         const Graphics::DemandPipelineCreations::SpeculativeThread speculative;
         const auto thread = AgcDriver::ComputeTimeline::OnPrebuildThread() ? "prebuild" : "other";
         const auto start = std::chrono::steady_clock::now();
-        std::fprintf(stderr, "[regcompute] start reason=idle program 0x%llx words %zu thread=%s tid=%u t=%.0f\n", static_cast<unsigned long long>(address), result->spirv.size(), thread, AgcDriver::ComputeTimeline::ThreadId(), AgcDriver::ComputeTimeline::NowMs());
+        std::fprintf(stderr, "[regcompute] start reason=idle lane=%s program 0x%llx words %zu thread=%s tid=%u t=%.0f\n", low ? "low" : "normal", static_cast<unsigned long long>(address), result->spirv.size(), thread, AgcDriver::ComputeTimeline::ThreadId(), AgcDriver::ComputeTimeline::NowMs());
         const auto cpuStart = AgcDriver::ComputeTimeline::ThreadCpuMs();
         AgcDriver::ComputeTimeline::ResetCreateStats();
         const bool existing = device->HasComputePipeline(*result);
@@ -1962,13 +1990,13 @@ private:
 
 public:
 
-    void Submit(std::function<void()> task, const PreparedShaders* prepared = nullptr, std::uint64_t cost = 0, bool budgeted = false) {
+    void Submit(std::function<void()> task, const PreparedShaders* prepared = nullptr, std::uint64_t cost = 0, bool budgeted = false, bool low = false) {
         {
             std::unique_lock lock(mutex);
             if (threads != 0 && !closed) {
                 const auto sequence = ++submitted;
-                if (prepared != nullptr && prepared->demanded.load()) tasks.push_front({std::move(task), prepared, sequence, cost, budgeted});
-                else tasks.push_back({std::move(task), prepared, sequence, cost, budgeted});
+                if (prepared != nullptr && prepared->demanded.load()) tasks.push_front({std::move(task), prepared, sequence, cost, budgeted, low});
+                else tasks.push_back({std::move(task), prepared, sequence, cost, budgeted, low});
                 unfinished.insert(sequence);
                 if (prepared != nullptr) owned.emplace(prepared, sequence);
                 lock.unlock();
@@ -2120,23 +2148,29 @@ private:
                 pool.tasks.erase(next);
                 ++pool.running;
                 if (task.budgeted) ++pool.budgetedRunning;
+                if (task.low) ++pool.lowRunning;
             }
             const auto sequence = task.sequence;
             const auto* const prepared = task.prepared;
             const bool budgeted = task.budgeted;
-            task.function();
+            const bool low = task.low;
+            {
+                const LowPriorityScope lowered(low);
+                task.function();
+            }
             task = {};
             bool drained = false;
             {
                 std::lock_guard lock(pool.mutex);
                 --pool.running;
                 if (budgeted) --pool.budgetedRunning;
+                if (low) --pool.lowRunning;
                 pool.unfinished.erase(sequence);
                 pool.disown(prepared, sequence);
                 drained = pool.tasks.empty() && pool.running == 0;
                 pool.idle.notify_all();
             }
-            if (budgeted) pool.ready.notify_all();
+            if (budgeted || low) pool.ready.notify_all();
 #ifdef __GLIBC__
             if (drained) trimFreedMemory();
 #endif
@@ -2150,7 +2184,48 @@ private:
         std::uint64_t sequence = 0;
         std::uint64_t cost = 0;
         bool budgeted = false;
+        bool low = false;
     };
+
+    class LowPriorityScope {
+    public:
+        explicit LowPriorityScope(bool enabled) {
+#ifdef _WIN32
+            if (!enabled) return;
+            const auto current = GetThreadPriority(GetCurrentThread());
+            if (current == THREAD_PRIORITY_ERROR_RETURN || current <= THREAD_PRIORITY_BELOW_NORMAL) return;
+            if (SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL)) {
+                previous = current;
+                lowered = true;
+            }
+#else
+            static_cast<void>(enabled);
+#endif
+        }
+
+        ~LowPriorityScope() {
+#ifdef _WIN32
+            if (lowered) SetThreadPriority(GetCurrentThread(), previous);
+#endif
+        }
+
+        LowPriorityScope(const LowPriorityScope&) = delete;
+        LowPriorityScope& operator=(const LowPriorityScope&) = delete;
+
+    private:
+#ifdef _WIN32
+        int previous = 0;
+        bool lowered = false;
+#endif
+    };
+
+    static unsigned LowLimit() {
+        static const unsigned limit = [] {
+            const char* text = std::getenv("APS5_COMPUTE_REGISTRATION_LOW_THREADS");
+            return text != nullptr && *text != 0 ? std::max(1u, static_cast<unsigned>(std::strtoul(text, nullptr, 10))) : 2u;
+        }();
+        return limit;
+    }
 
     static bool LargestFirst() {
         static const bool enabled = [] {
@@ -2161,16 +2236,18 @@ private:
     }
 
     bool startable(const Task& queued) const {
+        if (queued.low && lowRunning >= LowLimit()) return false;
         return !queued.budgeted || budgetedRunning < budgetedLimit;
     }
 
     std::deque<Task>::iterator nextTask() {
-        const auto first = std::ranges::find_if(tasks, [&](const Task& queued) { return startable(queued); });
-        if (first == tasks.end() || !prebuild || !LargestFirst()) return first;
+        const auto first = std::ranges::find_if(tasks, [&](const Task& queued) { return !queued.low && startable(queued); });
+        if (first == tasks.end()) return std::ranges::find_if(tasks, [&](const Task& queued) { return queued.low && startable(queued); });
+        if (!prebuild || !LargestFirst()) return first;
         if (first->prepared != nullptr && first->prepared->demanded.load()) return first;
         auto best = first;
         for (auto it = std::next(first); it != tasks.end(); ++it) {
-            if (startable(*it) && it->cost > best->cost) best = it;
+            if (!it->low && startable(*it) && it->cost > best->cost) best = it;
         }
         return best;
     }
@@ -2185,6 +2262,7 @@ private:
     unsigned running = 0;
     unsigned budgetedRunning = 0;
     unsigned budgetedLimit = 1;
+    unsigned lowRunning = 0;
     std::uint64_t submitted = 0;
     std::set<std::uint64_t> unfinished;
     std::unordered_multimap<const PreparedShaders*, std::uint64_t> owned;
@@ -2264,23 +2342,34 @@ void SubmitComputePrebuild(std::function<void()> task, std::uint64_t cost) {
     RegistrationPreparePool::Prebuild().Submit(std::move(task), nullptr, cost, true);
 }
 
+void SubmitLowComputePrebuild(std::function<void()> task) {
+    RegistrationPreparePool::Prebuild().Submit(std::move(task), nullptr, 0, true, true);
+}
+
 void AwaitLibraryPrebuilds() {
     if (auto* pool = RegistrationPreparePool::ExistingPrebuild()) pool->AwaitSubmitted();
 }
 
 void PromoteRegisteredCompute(std::uint64_t address) {
-    auto* queue = RegisteredComputeQueueSlot().load();
-    if (queue == nullptr || address == 0) return;
-    const auto queued = queue->Queued();
-    if (queue->Promote(address)) std::fprintf(stderr, "[regcompute] promoted program 0x%llx to the demand path, %zu still queued t=%.0f\n", static_cast<unsigned long long>(address), queued - 1u, AgcDriver::ComputeTimeline::NowMs());
+    if (address == 0) return;
+    for (auto* queue : {RegisteredComputeQueueSlot().load(), LowRegisteredComputeQueueSlot().load()}) {
+        if (queue == nullptr) continue;
+        const auto queued = queue->Queued();
+        if (queue->Promote(address)) {
+            std::fprintf(stderr, "[regcompute] promoted program 0x%llx to the demand path, %zu still queued t=%.0f\n", static_cast<unsigned long long>(address), queued - 1u, AgcDriver::ComputeTimeline::NowMs());
+            return;
+        }
+    }
 }
 
 void ReleaseRegisteredComputePrebuilds() {
     RegisteredComputeQueue().Open("present");
+    if (ShaderRecompiler::ComputeRegistrationLowMinWordsLimit() != 0u) LowRegisteredComputeQueue().Open("present");
 }
 
 void CloseRegistrationPreparation() {
     if (auto* queue = RegisteredComputeQueueSlot().load()) queue->Stop();
+    if (auto* queue = LowRegisteredComputeQueueSlot().load()) queue->Stop();
     RegistrationPreparePool::CloseAll();
 }
 

@@ -290,6 +290,7 @@ function(add_shader_recompiler target runtimeTarget)
             RegistrationSpirvHashes
             ComputeRegistrationPrebuildable
             ComputeRegistrationMinWordsLimit
+            ComputeRegistrationLowMinWordsLimit
             ResolveSource
             ResourceMaterializer::EvaluateNanoseconds
             ResourceMaterializer::FindBindlessInterface
