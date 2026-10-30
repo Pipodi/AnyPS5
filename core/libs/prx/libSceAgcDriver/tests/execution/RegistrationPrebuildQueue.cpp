@@ -155,12 +155,20 @@ struct Gate {
     std::atomic<int> summaries{0};
     std::atomic<std::uint64_t> summaryDemand{0};
     std::atomic<std::uint64_t> summaryMemory{0};
+    std::atomic<bool> normal{false};
+    std::atomic<int> heldSummaries{0};
+    std::atomic<std::uint64_t> heldNormal{0};
+    std::atomic<std::uint64_t> heldDemand{0};
 
     RegistrationPrebuildQueue::Hooks Hooks() {
         return {[this] { return demand.load(); }, [this] { return used.load(); }, [this](std::size_t, std::uint64_t demandCount, std::uint64_t memoryCount) {
             ++summaries;
             summaryDemand += demandCount;
             summaryMemory += memoryCount;
+        }, [this] { return normal.load(); }, [this](std::size_t, std::uint64_t normalCount, std::uint64_t demandCount, std::uint64_t) {
+            ++heldSummaries;
+            heldNormal += normalCount;
+            heldDemand += demandCount;
         }};
     }
 };
@@ -270,6 +278,77 @@ void EnvironmentUnsetMeansNoCountCap() {
     Require(settings.concurrency == 0, "an unset cap is not memory-only");
 }
 
+RegistrationPrebuildQueue::Settings LowSettings(std::uint64_t budgetBytes = 0) {
+    auto settings = RegistrationPrebuildQueue::LowSettingsFromEnvironment();
+    settings.waitForPresent = false;
+    settings.fallback = std::chrono::hours(1);
+    settings.budgetBytes = budgetBytes;
+    settings.summary = std::chrono::milliseconds(0);
+    return settings;
+}
+
+void LowTaskWaitsForNormalWork() {
+    Workers workers;
+    Counters counters;
+    Gate gate;
+    gate.normal = true;
+    RegistrationPrebuildQueue queue(LowSettings(), [&](std::function<void()> task) { workers.Run(std::move(task)); }, {}, gate.Hooks());
+    queue.Enqueue(1, 0, [&] { counters.Task(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    Require(workers.Submitted() == 0 && counters.done == 0, "a low task started while normal work was running");
+    Require(queue.Queued() == 1, "the held low task was lost");
+    Require(gate.heldSummaries.load() >= 1 && gate.heldNormal.load() >= 1, "the hold for normal work was not summarized");
+    gate.normal = false;
+    queue.Poke();
+    Require(WaitFor(counters.done, 1), "the low task did not start once normal work ended");
+}
+
+void LowTaskWaitsForDemand() {
+    Workers workers;
+    Counters counters;
+    Gate gate;
+    gate.demand = true;
+    RegistrationPrebuildQueue queue(LowSettings(), [&](std::function<void()> task) { workers.Run(std::move(task)); }, {}, gate.Hooks());
+    queue.Enqueue(1, 0, [&] { counters.Task(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    Require(workers.Submitted() == 0 && counters.done == 0, "a low task started during a demand creation");
+    Require(queue.Queued() == 1, "the held low task was lost");
+    Require(gate.heldDemand.load() >= 1, "the hold for demand was not summarized");
+    gate.demand = false;
+    queue.Poke();
+    Require(WaitFor(counters.done, 1), "the low task did not start once demand ended");
+}
+
+void LowTasksStartNewestFirst() {
+    Workers workers;
+    Gate gate;
+    gate.demand = true;
+    std::vector<int> order;
+    auto settings = LowSettings();
+    settings.concurrency = 0;
+    RegistrationPrebuildQueue queue(settings, [&](std::function<void()> task) { task(); }, {}, gate.Hooks());
+    for (int index = 1; index <= 3; ++index) queue.Enqueue(index, 0, [&order, index] { order.push_back(index); });
+    Require(order.empty(), "a low task started during a demand creation");
+    gate.demand = false;
+    queue.Poke();
+    Require(order.size() == 3, "not every low task ran");
+    Require(order[0] == 3 && order[1] == 2 && order[2] == 1, "the low tasks did not start newest first");
+}
+
+void LowTaskWaitsForHalfTheMemoryBudget() {
+    Workers workers;
+    Counters counters;
+    Gate gate;
+    gate.used = 3;
+    RegistrationPrebuildQueue queue(LowSettings(10), [&](std::function<void()> task) { workers.Run(std::move(task)); }, {}, gate.Hooks());
+    queue.Enqueue(1, 4, [&] { counters.Task(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    Require(workers.Submitted() == 0 && counters.done == 0, "a low task started past half the budget");
+    gate.used = 1;
+    queue.Poke();
+    Require(WaitFor(counters.done, 1), "the low task did not start within half the budget");
+}
+
 }
 
 int main() {
@@ -287,6 +366,10 @@ int main() {
         PromoteRemovesQueuedItem();
         SummaryIsRateLimited();
         EnvironmentUnsetMeansNoCountCap();
+        LowTaskWaitsForNormalWork();
+        LowTaskWaitsForDemand();
+        LowTasksStartNewestFirst();
+        LowTaskWaitsForHalfTheMemoryBudget();
         std::cout << "registration prebuild queue tests passed\n";
         return 0;
     } catch (const std::exception& error) {

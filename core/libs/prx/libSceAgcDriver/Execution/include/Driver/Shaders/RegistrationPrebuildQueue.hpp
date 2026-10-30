@@ -26,12 +26,16 @@ public:
         std::chrono::milliseconds fallback{120000};
         std::uint64_t budgetBytes = 0;
         std::chrono::milliseconds summary{10000};
+        bool idleGate = false;
+        bool newestFirst = false;
     };
 
     struct Hooks {
         std::function<bool()> demandActive;
         std::function<std::uint64_t()> usedBytes;
         std::function<void(std::size_t, std::uint64_t, std::uint64_t)> deferred;
+        std::function<bool()> normalBusy;
+        std::function<void(std::size_t, std::uint64_t, std::uint64_t, std::uint64_t)> held;
     };
 
     using Submitter = std::function<void(std::function<void()>)>;
@@ -43,6 +47,21 @@ public:
         if (const char* start = std::getenv("APS5_COMPUTE_REGISTRATION_START")) settings.waitForPresent = std::strcmp(start, "immediate") != 0;
         if (const char* delay = std::getenv("APS5_COMPUTE_REGISTRATION_FALLBACK_MS")) settings.fallback = std::chrono::milliseconds(std::strtoull(delay, nullptr, 10));
         if (const char* limit = std::getenv("APS5_COMPUTE_REGISTRATION_CONCURRENCY")) settings.concurrency = std::max(1u, static_cast<unsigned>(std::strtoul(limit, nullptr, 10)));
+        return settings;
+    }
+
+    static unsigned LowThreads() {
+        const char* text = std::getenv("APS5_COMPUTE_REGISTRATION_LOW_THREADS");
+        return text != nullptr && *text != 0 ? std::max(1u, static_cast<unsigned>(std::strtoul(text, nullptr, 10))) : 2u;
+    }
+
+    static Settings LowSettingsFromEnvironment() {
+        Settings settings = SettingsFromEnvironment();
+        const char* gate = std::getenv("APS5_COMPUTE_REGISTRATION_LOW_GATE");
+        if (gate != nullptr && std::strcmp(gate, "free") == 0) return settings;
+        settings.idleGate = true;
+        settings.newestFirst = true;
+        settings.concurrency = LowThreads();
         return settings;
     }
 
@@ -89,6 +108,11 @@ public:
         Pump();
     }
 
+    bool Busy() const {
+        std::lock_guard lock(mutex);
+        return !pending.empty() || running != 0;
+    }
+
     bool Opened() const {
         return opened.load();
     }
@@ -133,6 +157,7 @@ private:
         std::size_t queued = 0;
         std::uint64_t demand = 0;
         std::uint64_t memory = 0;
+        std::uint64_t normal = 0;
     };
 
     void Pump() {
@@ -145,12 +170,22 @@ private:
                 std::lock_guard lock(mutex);
                 if (stopped || pending.empty() || (settings.concurrency != 0 && running >= settings.concurrency)) return;
                 bool blocked = false;
-                if (hooks.demandActive && hooks.demandActive()) {
+                const auto& candidate = settings.newestFirst ? pending.back() : pending.front();
+                if (settings.idleGate && hooks.normalBusy && hooks.normalBusy()) {
+                    ++deferredForNormal;
+                    blocked = true;
+                } else if (hooks.demandActive && hooks.demandActive()) {
                     ++deferredForDemand;
                     blocked = true;
+                } else if (settings.idleGate && settings.budgetBytes != 0) {
+                    const auto used = std::max(runningBytes, hooks.usedBytes ? hooks.usedBytes() : std::uint64_t{0});
+                    if (used != 0 && used + candidate.cost > settings.budgetBytes / 2u) {
+                        ++deferredForMemory;
+                        blocked = true;
+                    }
                 } else if (running != 0 && settings.budgetBytes != 0) {
                     const auto used = std::max(runningBytes, hooks.usedBytes ? hooks.usedBytes() : std::uint64_t{0});
-                    if (used + pending.front().cost > settings.budgetBytes) {
+                    if (used + candidate.cost > settings.budgetBytes) {
                         ++deferredForMemory;
                         blocked = true;
                     }
@@ -159,14 +194,20 @@ private:
                     const auto now = std::chrono::steady_clock::now();
                     if (!summaryAt) summaryAt = now;
                     if (now - *summaryAt >= settings.summary) {
-                        summary = Summary{pending.size(), deferredForDemand, deferredForMemory};
+                        summary = Summary{pending.size(), deferredForDemand, deferredForMemory, deferredForNormal};
+                        deferredForNormal = 0;
                         deferredForDemand = 0;
                         deferredForMemory = 0;
                         summaryAt = now;
                     }
                 } else {
-                    item = std::move(pending.front());
-                    pending.pop_front();
+                    if (settings.newestFirst) {
+                        item = std::move(pending.back());
+                        pending.pop_back();
+                    } else {
+                        item = std::move(pending.front());
+                        pending.pop_front();
+                    }
                     ++running;
                     runningBytes += item.cost;
                     unsigned now = running;
@@ -175,7 +216,8 @@ private:
                     started = true;
                 }
             }
-            if (summary && hooks.deferred) hooks.deferred(summary->queued, summary->demand, summary->memory);
+            if (summary && settings.idleGate && hooks.held) hooks.held(summary->queued, summary->normal, summary->demand, summary->memory);
+            else if (summary && hooks.deferred) hooks.deferred(summary->queued, summary->demand, summary->memory);
             if (!started) return;
             submit([this, cost = item.cost, task = std::move(item.task)] {
                 task();
@@ -203,6 +245,7 @@ private:
     std::uint64_t runningBytes = 0;
     std::uint64_t deferredForDemand = 0;
     std::uint64_t deferredForMemory = 0;
+    std::uint64_t deferredForNormal = 0;
     std::optional<std::chrono::steady_clock::time_point> summaryAt;
     bool stopped = false;
 };

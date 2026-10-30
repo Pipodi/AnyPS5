@@ -1697,14 +1697,24 @@ std::atomic<RegistrationPrebuildQueue*>& LowRegisteredComputeQueueSlot() {
     return slot;
 }
 
-RegistrationPrebuildQueue* CreateRegisteredComputeQueue(std::function<void(std::function<void()>)> submit) {
-    auto settings = RegistrationPrebuildQueue::SettingsFromEnvironment();
+RegistrationPrebuildQueue* CreateRegisteredComputeQueue(std::function<void(std::function<void()>)> submit, bool low = false) {
+    auto settings = low ? RegistrationPrebuildQueue::LowSettingsFromEnvironment() : RegistrationPrebuildQueue::SettingsFromEnvironment();
     settings.budgetBytes = Graphics::PipelineCreationGate::Shared().Totals().budgetBytes;
+    RegistrationPrebuildQueue::Hooks hooks{[] { return Graphics::DemandPipelineCreations::Active() != 0; }, [] { return Graphics::PipelineCreationGate::Shared().Totals().inFlightBytes; }, [](std::size_t queued, std::uint64_t demand, std::uint64_t memory) {
+        std::fprintf(stderr, "[regcompute] deferred starts: queued=%zu demand=%llu memory=%llu t=%.0f\n", queued, static_cast<unsigned long long>(demand), static_cast<unsigned long long>(memory), AgcDriver::ComputeTimeline::NowMs());
+    }};
+    if (low) {
+        hooks.normalBusy = [] {
+            const auto* normal = RegisteredComputeQueueSlot().load();
+            return (normal != nullptr && normal->Busy()) || PrebuildNormalBusy();
+        };
+        hooks.held = [](std::size_t queued, std::uint64_t normal, std::uint64_t demand, std::uint64_t memory) {
+            std::fprintf(stderr, "[regcompute] low lane held: queued=%zu normal=%llu demand=%llu memory=%llu t=%.0f\n", queued, static_cast<unsigned long long>(normal), static_cast<unsigned long long>(demand), static_cast<unsigned long long>(memory), AgcDriver::ComputeTimeline::NowMs());
+        };
+    }
     return new RegistrationPrebuildQueue(settings, std::move(submit), [](std::size_t queued, const char* reason) {
         std::fprintf(stderr, "[regcompute] released %zu queued at t=%.0f reason=%s\n", queued, AgcDriver::ComputeTimeline::NowMs(), reason);
-    }, RegistrationPrebuildQueue::Hooks{[] { return Graphics::DemandPipelineCreations::Active() != 0; }, [] { return Graphics::PipelineCreationGate::Shared().Totals().inFlightBytes; }, [](std::size_t queued, std::uint64_t demand, std::uint64_t memory) {
-        std::fprintf(stderr, "[regcompute] deferred starts: queued=%zu demand=%llu memory=%llu t=%.0f\n", queued, static_cast<unsigned long long>(demand), static_cast<unsigned long long>(memory), AgcDriver::ComputeTimeline::NowMs());
-    }});
+    }, std::move(hooks));
 }
 
 void PokeRegisteredComputeQueues() {
@@ -1724,8 +1734,9 @@ RegistrationPrebuildQueue& RegisteredComputeQueue() {
 
 RegistrationPrebuildQueue& LowRegisteredComputeQueue() {
     static auto* queue = [] {
-        auto* created = CreateRegisteredComputeQueue([](std::function<void()> task) { SubmitLowComputePrebuild(std::move(task)); });
+        auto* created = CreateRegisteredComputeQueue([](std::function<void()> task) { SubmitLowComputePrebuild(std::move(task)); }, true);
         LowRegisteredComputeQueueSlot().store(created);
+        SetPrebuildNormalIdleListener([] { PokeRegisteredComputeQueues(); });
         return created;
     }();
     return *queue;
@@ -2007,6 +2018,13 @@ public:
         task();
     }
 
+    bool NormalBusy() {
+        std::lock_guard lock(mutex);
+        return running > lowRunning || std::ranges::any_of(tasks, [](const Task& queued) { return !queued.low; });
+    }
+
+    inline static std::atomic<void (*)()> normalIdleListener{nullptr};
+
     std::pair<std::size_t, unsigned> Load() {
         std::lock_guard lock(mutex);
         return {tasks.size(), running};
@@ -2160,6 +2178,7 @@ private:
             }
             task = {};
             bool drained = false;
+            bool normalIdle = false;
             {
                 std::lock_guard lock(pool.mutex);
                 --pool.running;
@@ -2168,9 +2187,13 @@ private:
                 pool.unfinished.erase(sequence);
                 pool.disown(prepared, sequence);
                 drained = pool.tasks.empty() && pool.running == 0;
+                normalIdle = !low && pool.prebuild && pool.running == pool.lowRunning && std::ranges::none_of(pool.tasks, [](const Task& queued) { return !queued.low; });
                 pool.idle.notify_all();
             }
             if (budgeted || low) pool.ready.notify_all();
+            if (normalIdle) {
+                if (auto* listener = normalIdleListener.load()) listener();
+            }
 #ifdef __GLIBC__
             if (drained) trimFreedMemory();
 #endif
@@ -2220,10 +2243,7 @@ private:
     };
 
     static unsigned LowLimit() {
-        static const unsigned limit = [] {
-            const char* text = std::getenv("APS5_COMPUTE_REGISTRATION_LOW_THREADS");
-            return text != nullptr && *text != 0 ? std::max(1u, static_cast<unsigned>(std::strtoul(text, nullptr, 10))) : 2u;
-        }();
+        static const unsigned limit = RegistrationPrebuildQueue::LowThreads();
         return limit;
     }
 
@@ -2344,6 +2364,15 @@ void SubmitComputePrebuild(std::function<void()> task, std::uint64_t cost) {
 
 void SubmitLowComputePrebuild(std::function<void()> task) {
     RegistrationPreparePool::Prebuild().Submit(std::move(task), nullptr, 0, true, true);
+}
+
+bool PrebuildNormalBusy() {
+    auto* pool = RegistrationPreparePool::ExistingPrebuild();
+    return pool != nullptr && pool->NormalBusy();
+}
+
+void SetPrebuildNormalIdleListener(void (*listener)()) {
+    RegistrationPreparePool::normalIdleListener.store(listener);
 }
 
 void AwaitLibraryPrebuilds() {
