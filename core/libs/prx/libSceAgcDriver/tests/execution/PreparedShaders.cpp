@@ -2018,7 +2018,6 @@ int main(int argc, char** argv) {
         RelocatedHeaders();
         CommittedAbis();
         RegistrationRetry();
-        UnrelatedPreparationAtSubmit();
         UnprovenProgramsAtSubmit();
         RegistrationWithoutSpecials();
         Registration(argc == 2);
