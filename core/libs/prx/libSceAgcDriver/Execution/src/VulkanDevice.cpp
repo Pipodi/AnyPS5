@@ -4594,7 +4594,7 @@ void VulkanDevice::BindlessPresentWait() {
     }
     if (presentEpoch) GuestMemory::EndCollectEpoch();
     timing.Mark("after_present_wait");
-    if (Graphics::BindlessStatsRequested()) std::fprintf(stderr, "%s\n", state->textureService->TakeFrameLine(Graphics::BindlessOldPathNanoseconds()).c_str());
+    if (Graphics::BindlessStatsRequested()) AgcDriver::ProfilePrint_nid_no_patch("%s\n", state->textureService->TakeFrameLine(Graphics::BindlessOldPathNanoseconds()).c_str());
     timing.Mark("frame_line");
 }
 
