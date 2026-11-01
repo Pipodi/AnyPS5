@@ -164,33 +164,6 @@ inline std::uint64_t Pin(void* handle, std::uint64_t mask) {
 #endif
 }
 
-inline std::uint64_t Swap(std::uint64_t mask) {
-#ifdef _WIN32
-    const auto& layout = Get();
-    if (layout.process != 0) mask &= layout.process;
-    if (mask == 0) return 0;
-    return static_cast<std::uint64_t>(SetThreadAffinityMask(GetCurrentThread(), static_cast<DWORD_PTR>(mask)));
-#elif defined(__linux__)
-    const auto& layout = Get();
-    if (layout.process != 0) mask &= layout.process;
-    if (mask == 0) return 0;
-    cpu_set_t current;
-    CPU_ZERO(&current);
-    if (pthread_getaffinity_np(pthread_self(), sizeof(current), &current) != 0) return 0;
-    std::uint64_t previous = 0;
-    for (unsigned cpu = 0; cpu < 64; ++cpu)
-        if (CPU_ISSET(cpu, &current)) previous |= std::uint64_t{1} << cpu;
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    for (unsigned cpu = 0; cpu < 64; ++cpu)
-        if ((mask >> cpu) & 1u) CPU_SET(cpu, &set);
-    return pthread_setaffinity_np(pthread_self(), sizeof(set), &set) == 0 ? previous : 0;
-#else
-    (void)mask;
-    return 0;
-#endif
-}
-
 // Pin plus the APS5_TRACE_AFFINITY=1 line naming the thread.
 inline std::uint64_t PinTraced(const char* role, void* handle, std::uint64_t mask) {
     const auto applied = Pin(handle, mask);
