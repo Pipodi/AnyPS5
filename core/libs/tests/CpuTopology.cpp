@@ -68,5 +68,11 @@ int main() {
     Require(CpuTopology::Pin(nullptr, ~layout.process) == 0, "mask outside the process is not applied");
     int dummy = 0;
     Require(CpuTopology::Pin(&dummy, first) == 0, "other threads are not pinned by handle");
+    Require(CpuTopology::Swap(layout.process) == first, "swap returns the mask it replaced");
+    CPU_ZERO(&set);
+    Require(pthread_getaffinity_np(pthread_self(), sizeof(set), &set) == 0, "read thread affinity after swap");
+    Require(CPU_COUNT(&set) == __builtin_popcountll(layout.process), "swap applies the new mask");
+    Require(CpuTopology::Swap(first) == layout.process, "swap back returns the widened mask");
+    Require(CpuTopology::Swap(~layout.process) == 0, "swap outside the process is not applied");
     return 0;
 }

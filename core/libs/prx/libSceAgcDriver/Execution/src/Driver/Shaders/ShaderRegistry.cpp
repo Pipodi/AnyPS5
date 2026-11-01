@@ -1,4 +1,5 @@
 #include "prx/libc/include/general/LogMacros.hpp"
+#include "prx/libc/include/CpuTopology.hpp"
 #include "ControlFlow/GraphBuilder.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ComputeTimeline.hpp"
@@ -1742,6 +1743,31 @@ RegistrationPrebuildQueue& LowRegisteredComputeQueue() {
     return *queue;
 }
 
+bool SpeculativeCompilesOnEfficientCores() {
+    static const bool enabled = [] {
+        const char* text = std::getenv("APS5_SPECULATIVE_COMPILE_CORES");
+        return text != nullptr && std::strcmp(text, "efficient") == 0 && CpuTopology::Get().hybrid;
+    }();
+    return enabled;
+}
+
+class SpeculativeCoresScope {
+public:
+    SpeculativeCoresScope() {
+        if (SpeculativeCompilesOnEfficientCores()) previous = CpuTopology::Swap(CpuTopology::Get().efficient);
+    }
+
+    ~SpeculativeCoresScope() {
+        if (previous != 0) CpuTopology::Swap(previous);
+    }
+
+    SpeculativeCoresScope(const SpeculativeCoresScope&) = delete;
+    SpeculativeCoresScope& operator=(const SpeculativeCoresScope&) = delete;
+
+private:
+    std::uint64_t previous = 0;
+};
+
 void PrebuildRegisteredCompute(const std::shared_ptr<VulkanDevice>& device, const ShaderRecompiler::RecompileRequest& request, const ShaderRecompiler::SourceHandle& handle, const char* via) {
     const auto address = request.shader.codeAddress;
     const auto guestWords = request.shader.code.size();
@@ -1781,9 +1807,10 @@ void PrebuildRegisteredCompute(const std::shared_ptr<VulkanDevice>& device, cons
     const auto cost = Graphics::PipelineCreationGate::Shared().EstimateBytes(result->spirv.size());
     (low ? LowRegisteredComputeQueue() : RegisteredComputeQueue()).Enqueue(address, cost, [device, result = std::move(result), address, low] {
         const Graphics::DemandPipelineCreations::SpeculativeThread speculative;
+        const SpeculativeCoresScope cores;
         const auto thread = AgcDriver::ComputeTimeline::OnPrebuildThread() ? "prebuild" : "other";
         const auto start = std::chrono::steady_clock::now();
-        std::fprintf(stderr, "[regcompute] start reason=idle lane=%s program 0x%llx words %zu thread=%s tid=%u t=%.0f\n", low ? "low" : "normal", static_cast<unsigned long long>(address), result->spirv.size(), thread, AgcDriver::ComputeTimeline::ThreadId(), AgcDriver::ComputeTimeline::NowMs());
+        std::fprintf(stderr, "[regcompute] start reason=idle lane=%s program 0x%llx words %zu thread=%s tid=%u cores=%s t=%.0f\n", low ? "low" : "normal", static_cast<unsigned long long>(address), result->spirv.size(), thread, AgcDriver::ComputeTimeline::ThreadId(), SpeculativeCompilesOnEfficientCores() ? "efficient" : "any", AgcDriver::ComputeTimeline::NowMs());
         const auto cpuStart = AgcDriver::ComputeTimeline::ThreadCpuMs();
         AgcDriver::ComputeTimeline::ResetCreateStats();
         const bool existing = device->HasComputePipeline(*result);
