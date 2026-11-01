@@ -2399,6 +2399,7 @@ void PromoteRegisteredCompute(std::uint64_t address) {
 
 void ReleaseRegisteredComputePrebuilds() {
     RegisteredComputeQueue().Open("present");
+    if (RegisteredComputeQueue().Presented()) std::fprintf(stderr, "[regcompute] quiet hold lifted after a frame stall, %zu queued t=%.0f\n", RegisteredComputeQueue().Queued(), AgcDriver::ComputeTimeline::NowMs());
     if (ShaderRecompiler::ComputeRegistrationLowMinWordsLimit() != 0u) LowRegisteredComputeQueue().Open("present");
 }
 

@@ -369,11 +369,37 @@ void DemandQuietDelaysStartsUntilThePeriodEnds() {
     workers.Join();
 }
 
+void LongFrameStallLiftsTheQuietHold() {
+    Workers workers;
+    Counters counters;
+    RegistrationPrebuildQueue::Settings settings;
+    settings.waitForPresent = false;
+    settings.concurrency = 0;
+    settings.demandQuiet = std::chrono::hours(1);
+    settings.stallLift = std::chrono::milliseconds(500);
+    RegistrationPrebuildQueue::Hooks hooks;
+    hooks.demandIdleFor = [] { return std::chrono::milliseconds(0); };
+    RegistrationPrebuildQueue queue(settings, [&](std::function<void()> task) { workers.Run(std::move(task)); }, {}, hooks);
+    queue.Enqueue(1, 0, [&] { counters.Task(); });
+    const auto start = std::chrono::steady_clock::now();
+    Require(!queue.Presented(start), "the first present lifted the hold");
+    Require(!queue.Presented(start + std::chrono::milliseconds(100)), "a short frame lifted the hold");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    Require(workers.Submitted() == 0, "a prebuild started during the quiet hold");
+    Require(queue.Presented(start + std::chrono::milliseconds(700)), "a long frame stall did not lift the hold");
+    Require(!queue.Presented(start + std::chrono::milliseconds(1500)), "the hold was lifted twice");
+    Require(WaitFor(counters.done, 1), "the held prebuild did not start once the hold was lifted");
+    workers.Join();
+}
+
 void EnvironmentSetsDemandQuiet() {
     SetEnvironment("APS5_COMPUTE_REGISTRATION_DEMAND_QUIET_MS", "30000");
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_QUIET_LIFT_STALL_MS", "60000");
     const auto settings = RegistrationPrebuildQueue::SettingsFromEnvironment();
     SetEnvironment("APS5_COMPUTE_REGISTRATION_DEMAND_QUIET_MS", "0");
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_QUIET_LIFT_STALL_MS", "0");
     Require(settings.demandQuiet == std::chrono::milliseconds(30000), "the quiet period was not read from the environment");
+    Require(settings.stallLift == std::chrono::milliseconds(60000), "the stall that lifts the hold was not read from the environment");
 }
 
 }
@@ -398,6 +424,7 @@ int main() {
         LowTasksStartNewestFirst();
         LowTaskWaitsForHalfTheMemoryBudget();
         DemandQuietDelaysStartsUntilThePeriodEnds();
+        LongFrameStallLiftsTheQuietHold();
         EnvironmentSetsDemandQuiet();
         std::cout << "registration prebuild queue tests passed\n";
         return 0;

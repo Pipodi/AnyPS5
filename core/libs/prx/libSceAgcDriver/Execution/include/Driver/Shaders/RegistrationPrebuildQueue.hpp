@@ -29,6 +29,7 @@ public:
         bool idleGate = false;
         bool newestFirst = false;
         std::chrono::milliseconds demandQuiet{0};
+        std::chrono::milliseconds stallLift{0};
     };
 
     struct Hooks {
@@ -50,6 +51,7 @@ public:
         if (const char* delay = std::getenv("APS5_COMPUTE_REGISTRATION_FALLBACK_MS")) settings.fallback = std::chrono::milliseconds(std::strtoull(delay, nullptr, 10));
         if (const char* limit = std::getenv("APS5_COMPUTE_REGISTRATION_CONCURRENCY")) settings.concurrency = std::max(1u, static_cast<unsigned>(std::strtoul(limit, nullptr, 10)));
         if (const char* quiet = std::getenv("APS5_COMPUTE_REGISTRATION_DEMAND_QUIET_MS")) settings.demandQuiet = std::chrono::milliseconds(std::strtoull(quiet, nullptr, 10));
+        if (const char* stall = std::getenv("APS5_COMPUTE_REGISTRATION_QUIET_LIFT_STALL_MS")) settings.stallLift = std::chrono::milliseconds(std::strtoull(stall, nullptr, 10));
         return settings;
     }
 
@@ -109,6 +111,16 @@ public:
 
     void Poke() {
         Pump();
+    }
+
+    bool Presented(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
+        if (settings.stallLift.count() == 0 || quietLifted.load()) return false;
+        const auto ticks = now.time_since_epoch().count();
+        const auto previous = lastPresent.exchange(ticks);
+        if (previous == 0 || std::chrono::steady_clock::duration(ticks - previous) < settings.stallLift) return false;
+        if (quietLifted.exchange(true)) return false;
+        Pump();
+        return true;
     }
 
     bool Busy() const {
@@ -205,7 +217,7 @@ private:
                 } else if (hooks.demandActive && hooks.demandActive()) {
                     ++deferredForDemand;
                     blocked = true;
-                } else if (settings.demandQuiet.count() != 0 && hooks.demandIdleFor && hooks.demandIdleFor() < settings.demandQuiet) {
+                } else if (settings.demandQuiet.count() != 0 && !quietLifted.load() && hooks.demandIdleFor && hooks.demandIdleFor() < settings.demandQuiet) {
                     ++deferredForDemand;
                     blocked = true;
                     ArmRetry(std::chrono::steady_clock::now() + (settings.demandQuiet - hooks.demandIdleFor()));
@@ -271,6 +283,8 @@ private:
     std::condition_variable wake;
     std::deque<Item> pending;
     std::atomic<bool> opened;
+    std::atomic<bool> quietLifted{false};
+    std::atomic<std::chrono::steady_clock::rep> lastPresent{0};
     std::atomic<unsigned> peak{0};
     std::thread timer;
     std::thread retry;
