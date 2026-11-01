@@ -30,6 +30,7 @@ public:
         bool newestFirst = false;
         std::chrono::milliseconds demandQuiet{0};
         std::chrono::milliseconds stallLift{0};
+        std::uint64_t liftOnlyWords = 0;
     };
 
     struct Hooks {
@@ -52,6 +53,7 @@ public:
         if (const char* limit = std::getenv("APS5_COMPUTE_REGISTRATION_CONCURRENCY")) settings.concurrency = std::max(1u, static_cast<unsigned>(std::strtoul(limit, nullptr, 10)));
         if (const char* quiet = std::getenv("APS5_COMPUTE_REGISTRATION_DEMAND_QUIET_MS")) settings.demandQuiet = std::chrono::milliseconds(std::strtoull(quiet, nullptr, 10));
         if (const char* stall = std::getenv("APS5_COMPUTE_REGISTRATION_QUIET_LIFT_STALL_MS")) settings.stallLift = std::chrono::milliseconds(std::strtoull(stall, nullptr, 10));
+        if (const char* words = std::getenv("APS5_COMPUTE_REGISTRATION_LIFT_ONLY_WORDS")) settings.liftOnlyWords = std::strtoull(words, nullptr, 10);
         return settings;
     }
 
@@ -79,11 +81,11 @@ public:
         Stop();
     }
 
-    void Enqueue(std::uint64_t key, std::uint64_t cost, std::function<void()> task) {
+    void Enqueue(std::uint64_t key, std::uint64_t cost, std::function<void()> task, std::uint64_t words = 0) {
         {
             std::lock_guard lock(mutex);
             if (stopped) return;
-            pending.push_back({key, cost, std::move(task)});
+            pending.push_back({key, cost, std::move(task), words});
             if (!opened.load() && !timer.joinable()) timer = std::thread([this] { Fallback(); });
         }
         Pump();
@@ -191,6 +193,7 @@ private:
         std::uint64_t key = 0;
         std::uint64_t cost = 0;
         std::function<void()> task;
+        std::uint64_t words = 0;
     };
 
     struct Summary {
@@ -210,14 +213,27 @@ private:
                 std::lock_guard lock(mutex);
                 if (stopped || pending.empty() || (settings.concurrency != 0 && running >= settings.concurrency)) return;
                 bool blocked = false;
-                const auto& candidate = settings.newestFirst ? pending.back() : pending.front();
+                const bool holding = settings.demandQuiet.count() != 0 && !quietLifted.load();
+                const auto startable = [&](const Item& queued) { return !holding || settings.liftOnlyWords == 0 || queued.words < settings.liftOnlyWords; };
+                auto chosen = settings.newestFirst ? std::prev(pending.end()) : pending.begin();
+                if (settings.newestFirst) {
+                    const auto found = std::find_if(pending.rbegin(), pending.rend(), startable);
+                    if (found != pending.rend()) chosen = std::prev(found.base());
+                } else {
+                    const auto found = std::find_if(pending.begin(), pending.end(), startable);
+                    if (found != pending.end()) chosen = found;
+                }
+                const auto& candidate = *chosen;
                 if (settings.idleGate && hooks.normalBusy && hooks.normalBusy()) {
                     ++deferredForNormal;
                     blocked = true;
                 } else if (hooks.demandActive && hooks.demandActive()) {
                     ++deferredForDemand;
                     blocked = true;
-                } else if (settings.demandQuiet.count() != 0 && !quietLifted.load() && hooks.demandIdleFor && hooks.demandIdleFor() < settings.demandQuiet) {
+                } else if (!startable(candidate)) {
+                    ++deferredForDemand;
+                    blocked = true;
+                } else if (holding && hooks.demandIdleFor && hooks.demandIdleFor() < settings.demandQuiet) {
                     ++deferredForDemand;
                     blocked = true;
                     ArmRetry(std::chrono::steady_clock::now() + (settings.demandQuiet - hooks.demandIdleFor()));
@@ -245,13 +261,8 @@ private:
                         summaryAt = now;
                     }
                 } else {
-                    if (settings.newestFirst) {
-                        item = std::move(pending.back());
-                        pending.pop_back();
-                    } else {
-                        item = std::move(pending.front());
-                        pending.pop_front();
-                    }
+                    item = std::move(*chosen);
+                    pending.erase(chosen);
                     ++running;
                     runningBytes += item.cost;
                     unsigned now = running;

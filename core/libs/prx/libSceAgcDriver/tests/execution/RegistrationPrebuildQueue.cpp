@@ -392,12 +392,40 @@ void LongFrameStallLiftsTheQuietHold() {
     workers.Join();
 }
 
+void LargeItemsWaitForTheLiftWhileSmallOnesStart() {
+    Workers workers;
+    std::atomic<int> small{0};
+    std::atomic<int> large{0};
+    RegistrationPrebuildQueue::Settings settings;
+    settings.waitForPresent = false;
+    settings.concurrency = 0;
+    settings.demandQuiet = std::chrono::milliseconds(50);
+    settings.stallLift = std::chrono::milliseconds(500);
+    settings.liftOnlyWords = 1000;
+    RegistrationPrebuildQueue::Hooks hooks;
+    hooks.demandIdleFor = [] { return std::chrono::hours(1); };
+    RegistrationPrebuildQueue queue(settings, [&](std::function<void()> task) { workers.Run(std::move(task)); }, {}, hooks);
+    queue.Enqueue(1, 0, [&] { ++large; }, 1000);
+    queue.Enqueue(2, 0, [&] { ++small; }, 999);
+    Require(WaitFor(small, 1), "a small prebuild queued behind a large one did not start on the quiet period");
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    Require(large == 0 && queue.Queued() == 1, "a large prebuild started before the stall lift");
+    const auto start = std::chrono::steady_clock::now();
+    queue.Presented(start);
+    Require(queue.Presented(start + std::chrono::milliseconds(700)), "the long frame stall did not lift the hold");
+    Require(WaitFor(large, 1), "the large prebuild did not start after the lift");
+    workers.Join();
+}
+
 void EnvironmentSetsDemandQuiet() {
     SetEnvironment("APS5_COMPUTE_REGISTRATION_DEMAND_QUIET_MS", "30000");
     SetEnvironment("APS5_COMPUTE_REGISTRATION_QUIET_LIFT_STALL_MS", "60000");
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_LIFT_ONLY_WORDS", "1400000");
     const auto settings = RegistrationPrebuildQueue::SettingsFromEnvironment();
     SetEnvironment("APS5_COMPUTE_REGISTRATION_DEMAND_QUIET_MS", "0");
     SetEnvironment("APS5_COMPUTE_REGISTRATION_QUIET_LIFT_STALL_MS", "0");
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_LIFT_ONLY_WORDS", "0");
+    Require(settings.liftOnlyWords == 1400000, "the size held for the lift was not read from the environment");
     Require(settings.demandQuiet == std::chrono::milliseconds(30000), "the quiet period was not read from the environment");
     Require(settings.stallLift == std::chrono::milliseconds(60000), "the stall that lifts the hold was not read from the environment");
 }
@@ -425,6 +453,7 @@ int main() {
         LowTaskWaitsForHalfTheMemoryBudget();
         DemandQuietDelaysStartsUntilThePeriodEnds();
         LongFrameStallLiftsTheQuietHold();
+        LargeItemsWaitForTheLiftWhileSmallOnesStart();
         EnvironmentSetsDemandQuiet();
         std::cout << "registration prebuild queue tests passed\n";
         return 0;
