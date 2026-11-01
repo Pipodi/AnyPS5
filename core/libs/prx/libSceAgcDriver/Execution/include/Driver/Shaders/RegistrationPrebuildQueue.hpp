@@ -28,6 +28,7 @@ public:
         std::chrono::milliseconds summary{10000};
         bool idleGate = false;
         bool newestFirst = false;
+        std::chrono::milliseconds demandQuiet{0};
     };
 
     struct Hooks {
@@ -36,6 +37,7 @@ public:
         std::function<void(std::size_t, std::uint64_t, std::uint64_t)> deferred;
         std::function<bool()> normalBusy;
         std::function<void(std::size_t, std::uint64_t, std::uint64_t, std::uint64_t)> held;
+        std::function<std::chrono::milliseconds()> demandIdleFor;
     };
 
     using Submitter = std::function<void(std::function<void()>)>;
@@ -47,6 +49,7 @@ public:
         if (const char* start = std::getenv("APS5_COMPUTE_REGISTRATION_START")) settings.waitForPresent = std::strcmp(start, "immediate") != 0;
         if (const char* delay = std::getenv("APS5_COMPUTE_REGISTRATION_FALLBACK_MS")) settings.fallback = std::chrono::milliseconds(std::strtoull(delay, nullptr, 10));
         if (const char* limit = std::getenv("APS5_COMPUTE_REGISTRATION_CONCURRENCY")) settings.concurrency = std::max(1u, static_cast<unsigned>(std::strtoul(limit, nullptr, 10)));
+        if (const char* quiet = std::getenv("APS5_COMPUTE_REGISTRATION_DEMAND_QUIET_MS")) settings.demandQuiet = std::chrono::milliseconds(std::strtoull(quiet, nullptr, 10));
         return settings;
     }
 
@@ -118,16 +121,19 @@ public:
     }
 
     void Stop() {
-        std::thread joined;
+        std::thread joined[2];
         {
             std::lock_guard lock(mutex);
             stopped = true;
             pending.clear();
-            joined.swap(timer);
+            joined[0].swap(timer);
+            joined[1].swap(retry);
         }
         wake.notify_all();
-        if (joined.joinable() && joined.get_id() != std::this_thread::get_id()) joined.join();
-        else if (joined.joinable()) joined.detach();
+        for (auto& thread : joined) {
+            if (thread.joinable() && thread.get_id() != std::this_thread::get_id()) thread.join();
+            else if (thread.joinable()) thread.detach();
+        }
     }
 
     std::size_t Queued() const {
@@ -145,6 +151,28 @@ private:
         const bool woken = wake.wait_for(lock, settings.fallback, [&] { return opened.load() || stopped; });
         lock.unlock();
         if (!woken) Open("fallback");
+    }
+
+    void ArmRetry(std::chrono::steady_clock::time_point at) {
+        if (!retryAt || at < *retryAt) retryAt = at;
+        if (!retry.joinable()) retry = std::thread([this] { RetryLoop(); });
+        wake.notify_all();
+    }
+
+    void RetryLoop() {
+        std::unique_lock lock(mutex);
+        while (!stopped) {
+            if (!retryAt) {
+                wake.wait(lock);
+                continue;
+            }
+            const auto at = *retryAt;
+            if (wake.wait_until(lock, at, [&] { return stopped || !retryAt || *retryAt != at; })) continue;
+            retryAt.reset();
+            lock.unlock();
+            Pump();
+            lock.lock();
+        }
     }
 
     struct Item {
@@ -177,6 +205,10 @@ private:
                 } else if (hooks.demandActive && hooks.demandActive()) {
                     ++deferredForDemand;
                     blocked = true;
+                } else if (settings.demandQuiet.count() != 0 && hooks.demandIdleFor && hooks.demandIdleFor() < settings.demandQuiet) {
+                    ++deferredForDemand;
+                    blocked = true;
+                    ArmRetry(std::chrono::steady_clock::now() + (settings.demandQuiet - hooks.demandIdleFor()));
                 } else if (settings.idleGate && settings.budgetBytes != 0) {
                     const auto used = std::max(runningBytes, hooks.usedBytes ? hooks.usedBytes() : std::uint64_t{0});
                     if (used != 0 && used + candidate.cost > settings.budgetBytes / 2u) {
@@ -241,6 +273,8 @@ private:
     std::atomic<bool> opened;
     std::atomic<unsigned> peak{0};
     std::thread timer;
+    std::thread retry;
+    std::optional<std::chrono::steady_clock::time_point> retryAt;
     unsigned running = 0;
     std::uint64_t runningBytes = 0;
     std::uint64_t deferredForDemand = 0;

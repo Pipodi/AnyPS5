@@ -349,6 +349,33 @@ void LowTaskWaitsForHalfTheMemoryBudget() {
     Require(WaitFor(counters.done, 1), "the low task did not start within half the budget");
 }
 
+void DemandQuietDelaysStartsUntilThePeriodEnds() {
+    Workers workers;
+    Counters counters;
+    RegistrationPrebuildQueue::Settings settings;
+    settings.waitForPresent = false;
+    settings.concurrency = 0;
+    settings.demandQuiet = std::chrono::milliseconds(150);
+    RegistrationPrebuildQueue::Hooks hooks;
+    hooks.demandActive = [] { return false; };
+    const auto started = std::chrono::steady_clock::now();
+    hooks.demandIdleFor = [&] { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started); };
+    RegistrationPrebuildQueue queue(settings, [&](std::function<void()> task) { workers.Run(std::move(task)); }, {}, hooks);
+    queue.Enqueue(1, 0, [&] { counters.Task(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    Require(workers.Submitted() == 0 && counters.done == 0, "a prebuild started before demand had been quiet long enough");
+    Require(WaitFor(counters.done, 1), "the prebuild did not start once the quiet period ended");
+    Require(std::chrono::steady_clock::now() - started >= std::chrono::milliseconds(150), "the prebuild started early");
+    workers.Join();
+}
+
+void EnvironmentSetsDemandQuiet() {
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_DEMAND_QUIET_MS", "30000");
+    const auto settings = RegistrationPrebuildQueue::SettingsFromEnvironment();
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_DEMAND_QUIET_MS", "0");
+    Require(settings.demandQuiet == std::chrono::milliseconds(30000), "the quiet period was not read from the environment");
+}
+
 }
 
 int main() {
@@ -370,6 +397,8 @@ int main() {
         LowTaskWaitsForDemand();
         LowTasksStartNewestFirst();
         LowTaskWaitsForHalfTheMemoryBudget();
+        DemandQuietDelaysStartsUntilThePeriodEnds();
+        EnvironmentSetsDemandQuiet();
         std::cout << "registration prebuild queue tests passed\n";
         return 0;
     } catch (const std::exception& error) {

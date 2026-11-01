@@ -1703,6 +1703,7 @@ RegistrationPrebuildQueue* CreateRegisteredComputeQueue(std::function<void(std::
     RegistrationPrebuildQueue::Hooks hooks{[] { return Graphics::DemandPipelineCreations::Active() != 0; }, [] { return Graphics::PipelineCreationGate::Shared().Totals().inFlightBytes; }, [](std::size_t queued, std::uint64_t demand, std::uint64_t memory) {
         std::fprintf(stderr, "[regcompute] deferred starts: queued=%zu demand=%llu memory=%llu t=%.0f\n", queued, static_cast<unsigned long long>(demand), static_cast<unsigned long long>(memory), AgcDriver::ComputeTimeline::NowMs());
     }};
+    hooks.demandIdleFor = [] { return Graphics::DemandPipelineCreations::IdleFor(); };
     if (low) {
         hooks.normalBusy = [] {
             const auto* normal = RegisteredComputeQueueSlot().load();
