@@ -317,6 +317,18 @@ namespace {
 
 thread_local bool prebuilding = false;
 thread_local bool prebuilt = false;
+thread_local BuildThread buildThread = BuildThread::Other;
+std::atomic<std::uint64_t> committerBuilds{0};
+std::atomic<std::uint64_t> committerBuildNs{0};
+
+const char* buildThreadName(BuildThread role) {
+    switch (role) {
+    case BuildThread::Pool: return "pool";
+    case BuildThread::Committer: return "committer";
+    case BuildThread::Preparer: return "preparer";
+    default: return "other";
+    }
+}
 
 VkShaderStageFlags pushStagesOf(const Context& context) {
     return PreRasterizationPushStages(context.meshShader, context.tessellationShader, context.geometryShader);
@@ -1385,6 +1397,14 @@ bool CachedPipelineResident(const Context& context, const State& state, const Ve
     return found != store.index.end() && found->second->key == key && alive(*found->second, context);
 }
 
+void MarkBuildThread(BuildThread role) {
+    buildThread = role;
+}
+
+CommitterBuildTotals TakeCommitterBuilds() {
+    return {committerBuilds.exchange(0, std::memory_order_relaxed), committerBuildNs.exchange(0, std::memory_order_relaxed)};
+}
+
 std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& state, const VertexInputLayout& vertexInput, const ShaderResources& resources, std::span<const CompiledShader> shaders, VkImageLayout attachmentLayout) {
     return CachedPipeline(context, state, vertexInput, resources.SetLayouts(), shaders, attachmentLayout);
 }
@@ -1478,6 +1498,10 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
     auto pipeline = std::make_shared<Pipeline>(context, state, vertexInput, resources, shaders, attachmentLayout);
     const auto buildUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - buildStart).count();
     const bool replaying = PipelineJournalReplaying();
+    if (buildThread == BuildThread::Committer) {
+        committerBuilds.fetch_add(1, std::memory_order_relaxed);
+        committerBuildNs.fetch_add(static_cast<std::uint64_t>(buildUs) * 1000u, std::memory_order_relaxed);
+    }
     {
         std::lock_guard lock(store.mutex);
         if (logBuilds) {
@@ -1485,7 +1509,7 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
             const bool rebuilt = !built.insert(hash).second;
             const auto refusals = pipeline->Libraries() ? std::string("-") : libraryRefusals(context, state, shaders);
             const auto partsAfter = PipelineLibraryCountersOf(context.device);
-            std::fprintf(stderr, "[pipebuild] %.1f ms %s %s stages=%zu replay=%d key=0x%016llx parts=%llu/%llu refused=%s\n", static_cast<double>(buildUs) / 1000.0, rebuilt ? "rebuild" : "first", pipeline->Libraries() ? "libraries" : "whole", shaders.size(), replaying ? 1 : 0, static_cast<unsigned long long>(hash), static_cast<unsigned long long>(partsAfter.built[1] - partsBefore.built[1]), static_cast<unsigned long long>(partsAfter.built[2] - partsBefore.built[2]), refusals.c_str());
+            std::fprintf(stderr, "[pipebuild] %.1f ms %s %s stages=%zu replay=%d key=0x%016llx parts=%llu/%llu on=%s refused=%s\n", static_cast<double>(buildUs) / 1000.0, rebuilt ? "rebuild" : "first", pipeline->Libraries() ? "libraries" : "whole", shaders.size(), replaying ? 1 : 0, static_cast<unsigned long long>(hash), static_cast<unsigned long long>(partsAfter.built[1] - partsBefore.built[1]), static_cast<unsigned long long>(partsAfter.built[2] - partsBefore.built[2]), buildThreadName(buildThread), refusals.c_str());
         }
         bool collision = false;
         if (auto raced = lookup(collision)) return raced;
