@@ -1522,7 +1522,7 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
             std::snprintf(text, sizeof(text), " why=%s recipe=%d lean=%d proxied=%d stencil=%u layout=%d prekey=0x%016llx", why.why, why.recipe ? 1 : 0, why.lean ? 1 : 0, why.proxied ? 1 : 0, why.stencil, static_cast<int>(why.layout), static_cast<unsigned long long>(why.prekey));
             whyText = text;
         }
-        std::fprintf(stderr, "[pipebuild] %.1f ms %s %s stages=%zu replay=%d key=0x%016llx parts=%llu/%llu on=%s refused=%s\n", static_cast<double>(buildUs) / 1000.0, rebuilt ? "rebuild" : "first", pipeline->Libraries() ? "libraries" : "whole", shaders.size(), replaying ? 1 : 0, static_cast<unsigned long long>(hash), static_cast<unsigned long long>(partsAfter.built[1] - partsBefore.built[1]), static_cast<unsigned long long>(partsAfter.built[2] - partsBefore.built[2]), buildThreadName(buildThread), refusals.c_str(), whyText.c_str());
+        std::fprintf(stderr, "[pipebuild] %.1f ms %s %s stages=%zu replay=%d key=0x%016llx parts=%llu/%llu on=%s refused=%s%s\n", static_cast<double>(buildUs) / 1000.0, rebuilt ? "rebuild" : "first", pipeline->Libraries() ? "libraries" : "whole", shaders.size(), replaying ? 1 : 0, static_cast<unsigned long long>(hash), static_cast<unsigned long long>(partsAfter.built[1] - partsBefore.built[1]), static_cast<unsigned long long>(partsAfter.built[2] - partsBefore.built[2]), buildThreadName(buildThread), refusals.c_str(), whyText.c_str());
         }
         bool collision = false;
         if (auto raced = lookup(collision)) return raced;
