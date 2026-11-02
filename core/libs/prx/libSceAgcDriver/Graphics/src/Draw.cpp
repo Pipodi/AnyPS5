@@ -1637,6 +1637,8 @@ struct PreparedDraw {
     std::uint64_t forgetSerial = 0;
     std::uint64_t registryGeneration = 0;
     std::shared_future<void> pipeline;
+    const char* why = "forget";
+    std::uint64_t prekey = 0;
 
     ~PreparedDraw() {
         if (pipeline.valid()) pipeline.wait();
@@ -1653,6 +1655,8 @@ struct SplitCounters {
     std::atomic<std::uint64_t> addressTables{0};
     std::atomic<std::uint64_t> addressStageA{0};
     std::atomic<std::uint64_t> forgetInChange{0};
+    std::atomic<std::uint64_t> commitsNoSlot{0};
+    std::atomic<std::uint64_t> commitsNotBegun{0};
     std::atomic<std::uint64_t> stageA{0};
     std::atomic<std::uint64_t> stageAFailed{0};
     std::atomic<std::uint64_t> stageANs{0};
@@ -1698,10 +1702,12 @@ void reportSplits() {
     const auto keys = take(c.keyReused);
     const auto queuedPipelines = take(c.pipelinesQueued);
     const auto skippedPipelines = take(c.pipelinesSkipped);
+    const auto noSlot = take(c.commitsNoSlot);
+    const auto notBegun = take(c.commitsNotBegun);
     const auto pipelineWaits = take(c.pipelineWaits);
     const auto pipelineWaitMs = static_cast<double>(take(c.pipelineWaitNs)) / 1e6;
     const auto committerBuilds = TakeCommitterBuilds();
-    std::fprintf(stderr, "[split] draws prepared (10 s): %llu (cache entry then %llu, address tables left to the lock %llu, address-based stage A %llu, forget serial in change %llu); stage A built %llu in %.1f ms (%llu refused); at the draw: %llu builds completed from stage A, %llu served by the cache instead, discarded as stale %llu (forget serial %llu, registry %llu, other %llu); %llu builds made under the lock; %llu keys reused; pipelines prebuilt %llu (%llu skipped at a full queue), commits waited for %llu (%.1f ms); committer builds %llu (%.1f ms)\n", prepared, cached, address, addressStageA, inChange, stageA, stageAMs, failed, used, served, forget + registry + other, forget, registry, other, locked, keys, queuedPipelines, skippedPipelines, pipelineWaits, pipelineWaitMs, static_cast<unsigned long long>(committerBuilds.builds), static_cast<double>(committerBuilds.nanoseconds) / 1e6);
+    std::fprintf(stderr, "[split] draws prepared (10 s): %llu (cache entry then %llu, address tables left to the lock %llu, address-based stage A %llu, forget serial in change %llu); stage A built %llu in %.1f ms (%llu refused); at the draw: %llu builds completed from stage A, %llu served by the cache instead, discarded as stale %llu (forget serial %llu, registry %llu, other %llu); %llu builds made under the lock; %llu keys reused; pipelines prebuilt %llu (%llu skipped at a full queue), commits waited for %llu (%.1f ms); committer builds %llu (%.1f ms); noslot %llu; notbegun %llu\n", prepared, cached, address, addressStageA, inChange, stageA, stageAMs, failed, used, served, forget + registry + other, forget, registry, other, locked, keys, queuedPipelines, skippedPipelines, pipelineWaits, pipelineWaitMs, static_cast<unsigned long long>(committerBuilds.builds), static_cast<double>(committerBuilds.nanoseconds) / 1e6, noSlot, notBegun);
     {
         const auto& o = CachedAcquireOutcomes();
         std::fprintf(stderr, "[split] address-based stage A (cumulative): taken %llu, refused: cache off %llu, no space %llu, writable mirrors %llu, heap mirrors %llu, sparse mirrors %llu, stale %llu\n", static_cast<unsigned long long>(o[0].load()), static_cast<unsigned long long>(o[1].load()), static_cast<unsigned long long>(o[2].load()), static_cast<unsigned long long>(o[3].load()), static_cast<unsigned long long>(o[4].load()), static_cast<unsigned long long>(o[5].load()), static_cast<unsigned long long>(o[6].load()));
@@ -1728,8 +1734,11 @@ std::shared_ptr<PreparedDraw> PrepareDraw(const Context& context, const State& s
         return prepared;
     }
     prepared->indexBytes = static_cast<std::uint64_t>(draw.indexCount) * draw.indexSize;
-    if (std::any_of(shaders.begin(), shaders.end(), [](const CompiledShader& shader) { return shader.program == nullptr; })) return prepared;
-    prepared->pipeline = PrebuildDrawPipeline(context, state, shaders);
+    if (std::any_of(shaders.begin(), shaders.end(), [](const CompiledShader& shader) { return shader.program == nullptr; })) {
+        prepared->why = "nullprogram";
+        return prepared;
+    }
+    prepared->pipeline = PrebuildDrawPipeline(context, state, shaders, &prepared->why, &prepared->prekey);
     static const bool noDrawResourceCache = std::getenv("APS5_NO_DRAW_RESOURCE_CACHE") != nullptr;
     static const bool noTextureCache = std::getenv("APS5_NO_TEXTURE_CACHE") != nullptr;
     static const bool trimKey = std::getenv("APS5_NO_DRAW_KEY_TRIM") == nullptr;
@@ -3192,9 +3201,16 @@ void runPrebuilds(PipelinePrebuilds& prebuilds) {
 
 }
 
-std::shared_future<void> PrebuildDrawPipeline(const Context& context, const State& state, std::span<const CompiledShader> shaders) {
+std::shared_future<void> PrebuildDrawPipeline(const Context& context, const State& state, std::span<const CompiledShader> shaders, const char** why, std::uint64_t* keyHash) {
+    const char* ignoredWhy = nullptr;
+    std::uint64_t ignoredKey = 0;
+    if (why == nullptr) why = &ignoredWhy;
+    if (keyHash == nullptr) keyHash = &ignoredKey;
     static const bool disabled = std::getenv("APS5_NO_PREBUILD_DRAW_PIPELINE") != nullptr || std::getenv("APS5_DRAW_TRANSITIONS") != nullptr;
-    if (disabled || context.descriptorCache == nullptr || shaders.empty()) return {};
+    if (disabled || context.descriptorCache == nullptr || shaders.empty()) {
+        *why = "noprebuild:disabled";
+        return {};
+    }
     try {
         bool memoized = false;
         bool hit = false;
@@ -3203,7 +3219,10 @@ std::shared_future<void> PrebuildDrawPipeline(const Context& context, const Stat
         const auto& attributes = shaders.front().program->vertexAttributes;
         auto vertexInput = attributes.empty() ? VertexInputLayout{} : BuildVertexInputLayout(context, attributes);
         auto described = DescribeSetLayouts(context, shaders);
-        if (CachedPipelineResident(context, masked.has_value() ? *masked : state, vertexInput, described.View(), shaders, VK_IMAGE_LAYOUT_GENERAL)) return {};
+        if (CachedPipelineResident(context, masked.has_value() ? *masked : state, vertexInput, described.View(), shaders, VK_IMAGE_LAYOUT_GENERAL, keyHash)) {
+            *why = "noprebuild:resident";
+            return {};
+        }
         std::packaged_task<void()> job([context, pipelineState = masked.has_value() ? std::move(*masked) : state, vertexInput = std::move(vertexInput), described = std::move(described), stages = std::vector<CompiledShader>(shaders.begin(), shaders.end())] {
             try {
                 static_cast<void>(CachedPipeline(context, pipelineState, vertexInput, described.View(), stages, VK_IMAGE_LAYOUT_GENERAL, nullptr));
@@ -3216,6 +3235,7 @@ std::shared_future<void> PrebuildDrawPipeline(const Context& context, const Stat
             std::lock_guard lock(prebuilds.mutex);
             if (prebuilds.jobs.size() >= MaximumQueuedPipelines) {
                 Splits().pipelinesSkipped.fetch_add(1, std::memory_order_relaxed);
+                *why = "noprebuild:skipped";
                 return {};
             }
             while (prebuilds.threads.size() < PrebuildThreads()) prebuilds.threads.emplace_back([&prebuilds] { runPrebuilds(prebuilds); });
@@ -3223,10 +3243,24 @@ std::shared_future<void> PrebuildDrawPipeline(const Context& context, const Stat
         }
         prebuilds.work.notify_one();
         Splits().pipelinesQueued.fetch_add(1, std::memory_order_relaxed);
+        *why = "prebuilt";
         return built;
     } catch (...) {
+        *why = "noprebuild:error";
         return {};
     }
+}
+
+const char* PreparedDrawWhy(const PreparedDraw* prepared) {
+    return prepared != nullptr ? prepared->why : "noprepared";
+}
+
+void NoteCommitWithoutPreparation(bool noSlot) {
+    (noSlot ? Splits().commitsNoSlot : Splits().commitsNotBegun).fetch_add(1, std::memory_order_relaxed);
+}
+
+std::uint64_t PreparedDrawKey(const PreparedDraw* prepared) {
+    return prepared != nullptr ? prepared->prekey : 0;
 }
 
 void WaitForPreparedPipeline(const PreparedDraw* prepared) {
@@ -3663,6 +3697,13 @@ bool prepareDraw(const Context& context, const State& state, const Pm4::DrawPara
         Require(described.layouts.main == built.main && described.layouts.fragment == built.fragment && described.layouts.split == built.split && std::ranges::equal(described.mainKey, built.mainKey) && std::ranges::equal(described.fragmentKey, built.fragmentKey), "set layouts described from the shaders differ from the draw's");
     }
     auto& stencilReplay = preparation.stencilReplay;
+    {
+        auto& why = CommitterWhy();
+        why.lean = lean;
+        why.proxied = std::any_of(targets.begin(), targets.end(), [](const TargetBinding& binding) { return binding.proxied; });
+        why.stencil = static_cast<unsigned>(stencilReferences.size());
+        why.layout = lean ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
     for (const auto reference : stencilReferences) {
         auto selected = pipelineState;
         selected.stencilReplayReference = reference;

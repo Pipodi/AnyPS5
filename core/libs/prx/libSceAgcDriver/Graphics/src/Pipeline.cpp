@@ -1383,7 +1383,7 @@ void reportPipelines(PipelineStore& store) {
 
 }
 
-bool CachedPipelineResident(const Context& context, const State& state, const VertexInputLayout& vertexInput, const PipelineSetLayouts& resources, std::span<const CompiledShader> shaders, VkImageLayout attachmentLayout) {
+bool CachedPipelineResident(const Context& context, const State& state, const VertexInputLayout& vertexInput, const PipelineSetLayouts& resources, std::span<const CompiledShader> shaders, VkImageLayout attachmentLayout, std::uint64_t* keyHash) {
     static const bool disabled = std::getenv("APS5_NO_PIPELINE_CACHE") != nullptr;
     if (disabled) return false;
     auto& store = Pipelines();
@@ -1392,9 +1392,15 @@ bool CachedPipelineResident(const Context& context, const State& state, const Ve
     pipelineKey(key, context, state, vertexInput, resources, shaders, attachmentLayout);
     if (key.empty()) return false;
     const auto hash = hashKey(key);
+    if (keyHash != nullptr) *keyHash = hash;
     std::lock_guard lock(store.mutex);
     const auto found = store.index.find(hash);
     return found != store.index.end() && found->second->key == key && alive(*found->second, context);
+}
+
+CommitterBuildWhy& CommitterWhy() {
+    thread_local CommitterBuildWhy why;
+    return why;
 }
 
 void MarkBuildThread(BuildThread role) {
@@ -1509,7 +1515,14 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
             const bool rebuilt = !built.insert(hash).second;
             const auto refusals = pipeline->Libraries() ? std::string("-") : libraryRefusals(context, state, shaders);
             const auto partsAfter = PipelineLibraryCountersOf(context.device);
-            std::fprintf(stderr, "[pipebuild] %.1f ms %s %s stages=%zu replay=%d key=0x%016llx parts=%llu/%llu on=%s refused=%s\n", static_cast<double>(buildUs) / 1000.0, rebuilt ? "rebuild" : "first", pipeline->Libraries() ? "libraries" : "whole", shaders.size(), replaying ? 1 : 0, static_cast<unsigned long long>(hash), static_cast<unsigned long long>(partsAfter.built[1] - partsBefore.built[1]), static_cast<unsigned long long>(partsAfter.built[2] - partsBefore.built[2]), buildThreadName(buildThread), refusals.c_str());
+            std::string whyText;
+        if (buildThread == BuildThread::Committer) {
+            const auto& why = CommitterWhy();
+            char text[192];
+            std::snprintf(text, sizeof(text), " why=%s recipe=%d lean=%d proxied=%d stencil=%u layout=%d prekey=0x%016llx", why.why, why.recipe ? 1 : 0, why.lean ? 1 : 0, why.proxied ? 1 : 0, why.stencil, static_cast<int>(why.layout), static_cast<unsigned long long>(why.prekey));
+            whyText = text;
+        }
+        std::fprintf(stderr, "[pipebuild] %.1f ms %s %s stages=%zu replay=%d key=0x%016llx parts=%llu/%llu on=%s refused=%s\n", static_cast<double>(buildUs) / 1000.0, rebuilt ? "rebuild" : "first", pipeline->Libraries() ? "libraries" : "whole", shaders.size(), replaying ? 1 : 0, static_cast<unsigned long long>(hash), static_cast<unsigned long long>(partsAfter.built[1] - partsBefore.built[1]), static_cast<unsigned long long>(partsAfter.built[2] - partsBefore.built[2]), buildThreadName(buildThread), refusals.c_str(), whyText.c_str());
         }
         bool collision = false;
         if (auto raced = lookup(collision)) return raced;

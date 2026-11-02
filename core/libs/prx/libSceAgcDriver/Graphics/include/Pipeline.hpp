@@ -124,9 +124,19 @@ private:
 std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& state, const VertexInputLayout& vertexInput, const ShaderResources& resources, std::span<const CompiledShader> shaders, VkImageLayout attachmentLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 // `created` reports whether this call built the pipeline (false: served from the store or private).
 std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& state, const VertexInputLayout& vertexInput, const PipelineSetLayouts& resources, std::span<const CompiledShader> shaders, VkImageLayout attachmentLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, bool* created = nullptr);
-bool CachedPipelineResident(const Context& context, const State& state, const VertexInputLayout& vertexInput, const PipelineSetLayouts& resources, std::span<const CompiledShader> shaders, VkImageLayout attachmentLayout);
+bool CachedPipelineResident(const Context& context, const State& state, const VertexInputLayout& vertexInput, const PipelineSetLayouts& resources, std::span<const CompiledShader> shaders, VkImageLayout attachmentLayout, std::uint64_t* keyHash = nullptr);
 enum class BuildThread { Other, Pool, Committer, Preparer };
 void MarkBuildThread(BuildThread role);
+struct CommitterBuildWhy {
+    const char* why = "none";
+    bool recipe = false;
+    bool lean = false;
+    bool proxied = false;
+    unsigned stencil = 0;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    std::uint64_t prekey = 0;
+};
+CommitterBuildWhy& CommitterWhy();
 struct CommitterBuildTotals {
     std::uint64_t builds = 0;
     std::uint64_t nanoseconds = 0;

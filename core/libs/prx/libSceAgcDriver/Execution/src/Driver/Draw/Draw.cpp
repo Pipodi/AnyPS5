@@ -1244,6 +1244,26 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
                 // The pre-sync again, now that every earlier draw is recorded: still without the
                 // GPU mutex, so the other queues are not held while this commit waits for the GPU.
                 if (htilePresync && decode->state.depth.has_value()) presyncSerial = std::max(presyncSerial, localDevice->PresyncDrawDepth(decode->state));
+                struct WhyScope {
+                    ~WhyScope() { Graphics::CommitterWhy() = {}; }
+                } whyScope;
+                {
+                    auto& why = Graphics::CommitterWhy();
+                    why = {};
+                    why.recipe = recipe != nullptr;
+                    if (slot == nullptr) {
+                        why.why = "noslot";
+                        Graphics::NoteCommitWithoutPreparation(true);
+                    } else if (prepared == nullptr) {
+                        why.why = "notbegun";
+                        Graphics::NoteCommitWithoutPreparation(false);
+                    } else if (prepared->draw == nullptr) {
+                        why.why = "noprepared";
+                    } else {
+                        why.why = Graphics::PreparedDrawWhy(prepared->draw.get());
+                        why.prekey = Graphics::PreparedDrawKey(prepared->draw.get());
+                    }
+                }
                 commitDraw(localDevice, commitQueue, decode->state, drawParameters, stages, snapshots, recipe, recipeStages, drawKey, prepared != nullptr ? prepared->draw.get() : nullptr, presyncSerial, ahead, trace);
             } catch (const std::runtime_error& error) {
                 std::string where = "draw commit (programs";
