@@ -5,6 +5,7 @@
 
 namespace {
 
+using AgcDriver::DriverDetail::MissAheadKnown;
 using AgcDriver::DriverDetail::MissAheadLedger;
 using AgcDriver::DriverDetail::MissAheadPlan;
 using AgcDriver::DriverDetail::MissAheadRange;
@@ -75,6 +76,16 @@ void CheckLedger() {
     Require(!ledger.Used(3), "the retained set is bounded");
 }
 
+void CheckKnown() {
+    MissAheadKnown known;
+    Require(!known.Contains(1), "nothing is known before an insert");
+    known.Insert(1);
+    known.Insert(1);
+    Require(known.Contains(1) && !known.Contains(2), "an inserted key is known and others are not");
+    for (std::uint64_t key = 100; key < 100 + MissAheadKnown::Retained; ++key) known.Insert(key);
+    Require(!known.Contains(1), "the known set is bounded");
+}
+
 }
 
 int main() {
@@ -82,6 +93,7 @@ int main() {
         CheckPlan();
         CheckRange();
         CheckLedger();
+        CheckKnown();
         std::cout << "miss ahead tests passed\n";
         return 0;
     } catch (const std::exception& error) {

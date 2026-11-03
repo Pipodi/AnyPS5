@@ -10,6 +10,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/DispatchCreateContext.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Synchronization/DeferredLabels.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/RuntimeSwitches.hpp"
 #include "prx/libSceAgcDriver/Execution/include/VideoOutput.hpp"
 #include "Optimization/ResourceProgram.hpp"
 #include <algorithm>
@@ -350,6 +351,11 @@ MissAheadLedger& Driver::missAheadLedger() {
     return ledger;
 }
 
+MissAheadKnown& Driver::missAheadKnown() {
+    static MissAheadKnown known;
+    return known;
+}
+
 namespace {
 
 bool MissAheadEnabled() {
@@ -357,7 +363,7 @@ bool MissAheadEnabled() {
         const char* text = std::getenv("APS5_DISPATCH_MISS_AHEAD");
         return text == nullptr || std::strcmp(text, "0") != 0;
     }();
-    return enabled;
+    return enabled && !Graphics::RuntimeSwitches::Set(Graphics::RuntimeSwitch::NoDispatchMissAhead);
 }
 
 std::size_t MissAheadMax() {
@@ -383,9 +389,17 @@ MissAheadRange& ScannedRange() {
 
 }
 
-void Driver::reportMissAhead() {
+bool Driver::missAheadEnabled() {
+    return MissAheadEnabled();
+}
+
+bool Driver::missAheadProfiled() {
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
-    if (!profile) return;
+    return profile;
+}
+
+void Driver::reportMissAhead() {
+    if (!missAheadProfiled()) return;
     static std::mutex mutex;
     static auto reported = std::chrono::steady_clock::now();
     const auto now = std::chrono::steady_clock::now();
@@ -512,7 +526,7 @@ void Driver::missAhead(const Submission& submission, const QueueState& live, std
         cursor += count;
     }
     ScannedRange().Record(submission.serial, submission.queue, cursor);
-    if (missAheadLedger().Active()) {
+    if (missAheadProfiled() && missAheadLedger().Active()) {
         const auto& totals = plan.Totals();
         WriteLogLine(stderr, "[miss-ahead] scan queue %u serial %llu from %zu to %zu of %zu: visited %zu started %zu returned_early %zu skipped cached %zu plan_duplicate %zu unprepared %zu unregistered %zu capture_failed %zu early_listed %zu early_kernel %zu early_failed %zu indirect_cpu_path %zu stop %s t=%.0f\n", submission.queue, static_cast<unsigned long long>(submission.serial), from, cursor, commands.size(),
                      totals.visited, totals.started, totals.visited - totals.reached, totals.cached, totals.duplicate, totals.unprepared, totals.unregistered, totals.captureFailed, totals.listed, totals.kernel, totals.failed, totals.indirect, stop, AgcDriver::ComputeTimeline::NowMs());
@@ -541,6 +555,10 @@ void Driver::prepareMissAhead(const std::shared_ptr<const ShaderSnapshot>& snaps
         plan->Note(MissAheadPlan::Skip::Duplicate);
         return;
     }
+    if (missAheadKnown().Contains(key)) {
+        plan->Note(MissAheadPlan::Skip::Cached);
+        return;
+    }
     auto shaderMemory = std::make_shared<ShaderMemory>(memory, &queryPendingWrite, &observePendingWrite, hookWaitCounter(), &QueryPendingSpan);
     std::shared_ptr<const ShaderRecompiler::ResourceCapture> capture;
     try {
@@ -556,13 +574,18 @@ void Driver::prepareMissAhead(const std::shared_ptr<const ShaderSnapshot>& snaps
         return;
     }
     plan->Started();
-    missAheadLedger().Started(key);
+    missAheadKnown().Insert(key);
+    const bool tracked = missAheadProfiled();
+    if (tracked) missAheadLedger().Started(key);
     AgcDriver::ComputeTimeline::Mark(AgcDriver::ComputeTimeline::Event::Lookahead, address);
-    SubmitRegistrationPreparation([snapshot, codeOffset, localDevice, queue, address, key, shaderMemory, capture, ownedRequest = request, userData = std::vector<std::uint32_t>(request.context.userData.begin(), request.context.userData.end()), ownedMemory = std::vector<ShaderRecompiler::MemoryRegion>(memory.begin(), memory.end())]() mutable {
+    SubmitRegistrationPreparation([snapshot, codeOffset, localDevice, queue, address, key, tracked, shaderMemory, capture, ownedRequest = request, userData = std::vector<std::uint32_t>(request.context.userData.begin(), request.context.userData.end()), ownedMemory = std::vector<ShaderRecompiler::MemoryRegion>(memory.begin(), memory.end())]() mutable {
         struct Finish {
             std::uint64_t key;
-            ~Finish() { missAheadLedger().Finished(key); }
-        } finish{key};
+            bool tracked;
+            ~Finish() {
+                if (tracked) missAheadLedger().Finished(key);
+            }
+        } finish{key, tracked};
         const Graphics::DemandPipelineCreations::Scope demand;
         try {
             ownedRequest.context.userData = userData;

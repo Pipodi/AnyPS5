@@ -7,6 +7,7 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace AgcDriver::DriverDetail {
 
@@ -75,6 +76,26 @@ private:
     std::uint64_t lastSubmission = 0;
     std::uint32_t lastQueue = 0;
     std::size_t lastEnd = 0;
+};
+
+class MissAheadKnown {
+public:
+    void Insert(std::uint64_t key) {
+        std::lock_guard lock(mutex);
+        if (keys.size() >= Retained) keys.clear();
+        keys.insert(key);
+    }
+
+    bool Contains(std::uint64_t key) const {
+        std::lock_guard lock(mutex);
+        return keys.contains(key);
+    }
+
+    static constexpr std::size_t Retained = 16384;
+
+private:
+    mutable std::mutex mutex;
+    std::unordered_set<std::uint64_t> keys;
 };
 
 bool ScannedRangeCovered(std::uint64_t submission, std::uint32_t queue, std::size_t from);

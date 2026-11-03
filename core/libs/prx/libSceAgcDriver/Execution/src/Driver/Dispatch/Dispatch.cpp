@@ -453,7 +453,7 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
         prepareMissAhead(registeredShader, codeOffset, request, memory, key, localDevice, submission.queue, address);
         return;
     }
-    if (!resolving && missAheadLedger().Active()) {
+    if (!resolving && missAheadProfiled() && missAheadLedger().Active()) {
         missAheadLedger().Used(key);
         reportMissAhead();
     }
@@ -702,7 +702,10 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
             CommandMix::NoteMaterialized(*compiledResult, *capture);
             timing.Mark("materialize");
             QueueNativeCompareCounterpart(invocation, capture, *compiledResult, address, localDevice);
-            if (!resolving && !localDevice->HasComputePipeline(*compiledResult)) missAhead(submission, queue, currentPacketOffset());
+            if (!resolving && missAheadEnabled()) {
+                missAheadKnown().Insert(key);
+                if (!localDevice->HasComputePipeline(*compiledResult)) missAhead(submission, queue, currentPacketOffset());
+            }
             if (compiledResult->cacheHit) ++cacheHits;
             const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             static double totalMs = 0;
