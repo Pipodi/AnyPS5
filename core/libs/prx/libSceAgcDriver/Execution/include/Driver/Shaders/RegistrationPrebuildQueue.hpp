@@ -31,6 +31,8 @@ public:
         std::chrono::milliseconds demandQuiet{0};
         std::chrono::milliseconds stallLift{0};
         std::uint64_t liftOnlyWords = 0;
+        bool liftGate = false;
+        std::chrono::milliseconds batch{2000};
     };
 
     struct Hooks {
@@ -40,6 +42,7 @@ public:
         std::function<bool()> normalBusy;
         std::function<void(std::size_t, std::uint64_t, std::uint64_t, std::uint64_t)> held;
         std::function<std::chrono::milliseconds()> demandIdleFor;
+        std::function<bool()> lifted;
     };
 
     using Submitter = std::function<void(std::function<void()>)>;
@@ -62,9 +65,22 @@ public:
         return text != nullptr && *text != 0 ? std::max(1u, static_cast<unsigned>(std::strtoul(text, nullptr, 10))) : 2u;
     }
 
+    static bool LowGateLift() {
+        const char* gate = std::getenv("APS5_COMPUTE_REGISTRATION_LOW_GATE");
+        return gate != nullptr && std::strcmp(gate, "lift") == 0;
+    }
+
     static Settings LowSettingsFromEnvironment() {
         Settings settings = SettingsFromEnvironment();
         const char* gate = std::getenv("APS5_COMPUTE_REGISTRATION_LOW_GATE");
+        if (LowGateLift()) {
+            settings.liftGate = true;
+            settings.newestFirst = true;
+            settings.demandQuiet = std::chrono::milliseconds(0);
+            settings.concurrency = LowThreads();
+            if (const char* batch = std::getenv("APS5_COMPUTE_REGISTRATION_LOW_BATCH_MS")) settings.batch = std::chrono::milliseconds(std::strtoull(batch, nullptr, 10));
+            return settings;
+        }
         if (gate != nullptr && std::strcmp(gate, "free") == 0) return settings;
         settings.idleGate = true;
         settings.newestFirst = true;
@@ -99,7 +115,7 @@ public:
         {
             std::lock_guard lock(mutex);
             if (stopped) return;
-            pending.push_back({key, cost, std::move(task), words});
+            pending.push_back({key, cost, std::move(task), words, std::chrono::steady_clock::now()});
             if (!opened.load() && !timer.joinable()) timer = std::thread([this] { Fallback(); });
         }
         Pump();
@@ -142,6 +158,10 @@ public:
     bool Busy() const {
         std::lock_guard lock(mutex);
         return !pending.empty() || running != 0;
+    }
+
+    bool QuietLifted() const {
+        return quietLifted.load();
     }
 
     bool Opened() const {
@@ -208,6 +228,7 @@ private:
         std::uint64_t cost = 0;
         std::function<void()> task;
         std::uint64_t words = 0;
+        std::chrono::steady_clock::time_point stamp;
     };
 
     struct Summary {
@@ -226,11 +247,19 @@ private:
             {
                 std::lock_guard lock(mutex);
                 if (stopped || pending.empty() || (settings.concurrency != 0 && running >= settings.concurrency)) return;
+                if (settings.liftGate && !(hooks.lifted && hooks.lifted())) return;
                 bool blocked = false;
                 const bool holding = settings.demandQuiet.count() != 0 && !quietLifted.load();
                 const auto startable = [&](const Item& queued) { return !holding || settings.liftOnlyWords == 0 || queued.words < settings.liftOnlyWords; };
                 auto chosen = settings.newestFirst ? std::prev(pending.end()) : pending.begin();
-                if (settings.newestFirst) {
+                if (settings.liftGate) {
+                    auto newest = std::prev(pending.end());
+                    chosen = newest;
+                    for (auto it = newest; ; --it) {
+                        if (it->words > chosen->words) chosen = it;
+                        if (it == pending.begin() || it->stamp - std::prev(it)->stamp > settings.batch) break;
+                    }
+                } else if (settings.newestFirst) {
                     const auto found = std::find_if(pending.rbegin(), pending.rend(), startable);
                     if (found != pending.rend()) chosen = std::prev(found.base());
                 } else {

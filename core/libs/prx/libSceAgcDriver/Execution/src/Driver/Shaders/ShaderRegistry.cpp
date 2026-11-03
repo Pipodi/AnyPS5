@@ -1730,6 +1730,10 @@ RegistrationPrebuildQueue* CreateRegisteredComputeQueue(std::function<void(std::
             const auto* normal = RegisteredComputeQueueSlot().load();
             return (normal != nullptr && normal->Busy()) || PrebuildNormalBusy();
         };
+        hooks.lifted = [] {
+            const auto* normal = RegisteredComputeQueueSlot().load();
+            return normal != nullptr && normal->QuietLifted();
+        };
         hooks.held = [](std::size_t queued, std::uint64_t normal, std::uint64_t demand, std::uint64_t memory) {
             std::fprintf(stderr, "[regcompute] low lane held: queued=%zu normal=%llu demand=%llu memory=%llu t=%.0f\n", queued, static_cast<unsigned long long>(normal), static_cast<unsigned long long>(demand), static_cast<unsigned long long>(memory), AgcDriver::ComputeTimeline::NowMs());
         };
@@ -1806,7 +1810,7 @@ void PrebuildRegisteredCompute(const std::shared_ptr<VulkanDevice>& device, cons
         const Graphics::DemandPipelineCreations::SpeculativeThread speculative;
         const auto thread = AgcDriver::ComputeTimeline::OnPrebuildThread() ? "prebuild" : "other";
         const auto start = std::chrono::steady_clock::now();
-        std::fprintf(stderr, "[regcompute] start reason=idle lane=%s program 0x%llx words %zu thread=%s tid=%u t=%.0f\n", low ? "low" : "normal", static_cast<unsigned long long>(address), result->spirv.size(), thread, AgcDriver::ComputeTimeline::ThreadId(), AgcDriver::ComputeTimeline::NowMs());
+        std::fprintf(stderr, "[regcompute] start reason=%s lane=%s program 0x%llx words %zu thread=%s tid=%u t=%.0f\n", low && RegistrationPrebuildQueue::LowGateLift() ? "lift" : "idle", low ? "low" : "normal", static_cast<unsigned long long>(address), result->spirv.size(), thread, AgcDriver::ComputeTimeline::ThreadId(), AgcDriver::ComputeTimeline::NowMs());
         const auto cpuStart = AgcDriver::ComputeTimeline::ThreadCpuMs();
         AgcDriver::ComputeTimeline::ResetCreateStats();
         const bool existing = device->HasComputePipeline(*result);
@@ -2456,7 +2460,13 @@ void PromoteRegisteredCompute(std::uint64_t address) {
 
 void ReleaseRegisteredComputePrebuilds() {
     RegisteredComputeQueue().Open("present");
-    if (RegisteredComputeQueue().Presented()) std::fprintf(stderr, "[regcompute] quiet hold lifted after a frame stall, %zu queued t=%.0f\n", RegisteredComputeQueue().Queued(), AgcDriver::ComputeTimeline::NowMs());
+    if (RegisteredComputeQueue().Presented()) {
+        std::fprintf(stderr, "[regcompute] quiet hold lifted after a frame stall, %zu queued t=%.0f\n", RegisteredComputeQueue().Queued(), AgcDriver::ComputeTimeline::NowMs());
+        if (auto* low = LowRegisteredComputeQueueSlot().load()) {
+            std::fprintf(stderr, "[regcompute] low lane lifted, %zu queued t=%.0f\n", low->Queued(), AgcDriver::ComputeTimeline::NowMs());
+            low->Poke();
+        }
+    }
     if (ShaderRecompiler::ComputeRegistrationLowMinWordsLimit() != 0u) LowRegisteredComputeQueue().Open("present");
 }
 

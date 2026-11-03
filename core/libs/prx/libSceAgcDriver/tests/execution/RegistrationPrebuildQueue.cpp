@@ -430,6 +430,39 @@ void EnvironmentSetsDemandQuiet() {
     Require(settings.stallLift == std::chrono::milliseconds(60000), "the stall that lifts the hold was not read from the environment");
 }
 
+void LowLiftGateHoldsUntilTheLiftThenNewestBatchLargestFirst() {
+    std::atomic<bool> lifted{false};
+    std::vector<int> order;
+    RegistrationPrebuildQueue::Settings settings;
+    settings.waitForPresent = false;
+    settings.concurrency = 0;
+    settings.liftGate = true;
+    settings.newestFirst = true;
+    settings.batch = std::chrono::milliseconds(40);
+    RegistrationPrebuildQueue::Hooks hooks;
+    hooks.lifted = [&] { return lifted.load(); };
+    RegistrationPrebuildQueue queue(settings, [&](std::function<void()> task) { task(); }, {}, hooks);
+    for (int words : {5, 9}) queue.Enqueue(words, 0, [&order, words] { order.push_back(words); }, words);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    for (int words : {3, 7, 6}) queue.Enqueue(words, 0, [&order, words] { order.push_back(words); }, words);
+    queue.Poke();
+    Require(order.empty() && queue.Queued() == 5, "a low item started before the lift");
+    lifted = true;
+    queue.Poke();
+    Require(order == std::vector<int>({7, 6, 3, 9, 5}), "the lifted low lane did not start the newest batch largest first");
+}
+
+void EnvironmentSetsLowLiftGate() {
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_LOW_GATE", "lift");
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_LOW_BATCH_MS", "750");
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_LOW_THREADS", "3");
+    const auto settings = RegistrationPrebuildQueue::LowSettingsFromEnvironment();
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_LOW_GATE", "");
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_LOW_BATCH_MS", "");
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_LOW_THREADS", "");
+    Require(settings.liftGate && !settings.idleGate && settings.concurrency == 3 && settings.batch == std::chrono::milliseconds(750), "the lift gate was not read from the environment");
+}
+
 }
 
 int main() {
@@ -455,6 +488,8 @@ int main() {
         LongFrameStallLiftsTheQuietHold();
         LargeItemsWaitForTheLiftWhileSmallOnesStart();
         EnvironmentSetsDemandQuiet();
+        LowLiftGateHoldsUntilTheLiftThenNewestBatchLargestFirst();
+        EnvironmentSetsLowLiftGate();
         std::cout << "registration prebuild queue tests passed\n";
         return 0;
     } catch (const std::exception& error) {
