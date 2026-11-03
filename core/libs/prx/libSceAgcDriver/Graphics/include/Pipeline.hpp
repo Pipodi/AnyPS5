@@ -135,6 +135,8 @@ struct CommitterBuildWhy {
     unsigned stencil = 0;
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
     std::uint64_t prekey = 0;
+    unsigned builds = 0;
+    std::uint64_t buildNs = 0;
 };
 CommitterBuildWhy& CommitterWhy();
 struct CommitterBuildTotals {

@@ -289,7 +289,9 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
     if (lockedPrepare) {
 
         GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Draw);
+        const auto producerLockStart = std::chrono::steady_clock::now();
         gpuLock.lock();
+        DrawPipeline::NoteProducerGpuWait(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - producerLockStart).count()));
         timing.Mark("gpu_mutex_wait");
         phaseTiming.Phase(DrawRowLockWait);
         if (device == nullptr) device = std::make_shared<VulkanDevice>();
@@ -957,7 +959,9 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
         if (gpuLock.owns_lock()) return;
         phaseTiming.Phase(DrawRowVectors);
         GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Draw);
+        const auto producerLockStart = std::chrono::steady_clock::now();
         gpuLock.lock();
+        DrawPipeline::NoteProducerGpuWait(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - producerLockStart).count()));
         timing.Mark("gpu_mutex_wait");
         phaseTiming.Phase(DrawRowLockWait);
 
@@ -1245,7 +1249,16 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
                 // GPU mutex, so the other queues are not held while this commit waits for the GPU.
                 if (htilePresync && decode->state.depth.has_value()) presyncSerial = std::max(presyncSerial, localDevice->PresyncDrawDepth(decode->state));
                 struct WhyScope {
-                    ~WhyScope() { Graphics::CommitterWhy() = {}; }
+                    std::uint64_t producerWaits = DrawPipeline::ProducerGpuWaits();
+                    std::uint64_t producerWaitNs = DrawPipeline::ProducerGpuWaitNs();
+                    ~WhyScope() {
+                        const auto& why = Graphics::CommitterWhy();
+                        if (why.builds != 0) {
+                            const auto& take = DrawPipeline::CurrentTake();
+                            std::fprintf(stderr, "[commitbuild] builds=%u %.1f ms why=%s depth_push=%zu depth_take=%zu depth_after=%zu age_us=%.1f after_drain=%s opcode=0x%02x drain_ms=%.1f producer_gpu_waits=%llu producer_gpu_wait_ms=%.1f\n", why.builds, static_cast<double>(why.buildNs) / 1e6, why.why, take.depthAtPush, take.depthAtTake, DrawPipeline::Queue0().Outstanding(), static_cast<double>(take.ageNs) / 1e3, take.afterDrain ? DrawPipeline::DrainName(take.drainReason) : "no", take.drainOpcode, static_cast<double>(take.drainNs) / 1e6, static_cast<unsigned long long>(DrawPipeline::ProducerGpuWaits() - producerWaits), static_cast<double>(DrawPipeline::ProducerGpuWaitNs() - producerWaitNs) / 1e6);
+                        }
+                        Graphics::CommitterWhy() = {};
+                    }
                 } whyScope;
                 {
                     auto& why = Graphics::CommitterWhy();

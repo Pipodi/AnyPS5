@@ -1507,6 +1507,8 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
     if (buildThread == BuildThread::Committer) {
         committerBuilds.fetch_add(1, std::memory_order_relaxed);
         committerBuildNs.fetch_add(static_cast<std::uint64_t>(buildUs) * 1000u, std::memory_order_relaxed);
+        ++CommitterWhy().builds;
+        CommitterWhy().buildNs += static_cast<std::uint64_t>(buildUs) * 1000u;
     }
     {
         std::lock_guard lock(store.mutex);

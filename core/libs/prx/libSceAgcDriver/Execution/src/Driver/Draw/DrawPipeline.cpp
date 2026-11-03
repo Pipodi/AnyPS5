@@ -47,6 +47,9 @@ std::atomic<std::uint64_t> prepareNs{0};
 std::atomic<std::uint64_t> prepareWaits{0};
 std::atomic<std::uint64_t> prepareWaitNs{0};
 std::atomic<std::uint64_t> prepareLost{0};
+thread_local DrawPipeline::CommitTake currentTake;
+std::atomic<std::uint64_t> producerGpuWaits{0};
+std::atomic<std::uint64_t> producerGpuWaitNs{0};
 
 std::atomic<std::uint64_t> heldReadRanges{0};
 std::atomic<std::uint64_t> heldReadQueries{0};
@@ -421,12 +424,21 @@ void DrawPipeline::Enqueue(Commit commit, std::vector<Range> writes, std::uint64
         traceWait("DrawPipeline", "room_wait", start);
         rethrowFailure();
     }
+    const auto depthAtPush = items.size();
     depthSum += items.size();
     ++enqueued;
     heldReadRanges.fetch_add(reads.size(), std::memory_order_relaxed);
     const bool prepared = static_cast<bool>(prepare);
     items.push_back({std::move(commit), std::move(writes), labelAddress, std::move(labelBytes), std::move(reads), nowNs(), std::move(prepare)});
     items.back().draw = draw;
+    items.back().depthAtPush = depthAtPush;
+    if (drainedSinceEnqueue) {
+        items.back().afterDrain = true;
+        items.back().drainReason = lastDrainReason;
+        items.back().drainOpcode = lastDrainOpcode;
+        items.back().drainNs = lastDrainNs;
+        drainedSinceEnqueue = false;
+    }
     addWrites(items.back().writes);
     for (const auto& [begin, limit] : items.back().reads) {
         items.back().readBounds.first = std::min(items.back().readBounds.first, begin);
@@ -544,6 +556,10 @@ void DrawPipeline::run() {
             commit = stopped ? nullptr : &items.front().commit;
             items.front().prepareTaken = true;
             const auto begun = nowNs();
+            {
+                const auto& front = items.front();
+                currentTake = {front.depthAtPush, items.size(), static_cast<std::uint64_t>(std::max<std::int64_t>(0, begun - front.pushedNs)), front.afterDrain, front.drainReason, front.drainOpcode, front.drainNs};
+            }
             if (lastFinishNs != 0 && items.front().pushedNs > lastFinishNs) {
                 ++committerIdles;
                 committerIdleNs += static_cast<std::uint64_t>(begun - lastFinishNs);
@@ -641,6 +657,27 @@ void DrawPipeline::ReleaseRetired() {
     std::swap(done, retired);
 }
 
+const DrawPipeline::CommitTake& DrawPipeline::CurrentTake() {
+    return currentTake;
+}
+
+const char* DrawPipeline::DrainName(DrainReason reason) {
+    return DrainNames[std::min<std::size_t>(static_cast<std::size_t>(reason), DrainNames.size() - 1)];
+}
+
+void DrawPipeline::NoteProducerGpuWait(std::uint64_t ns) {
+    producerGpuWaits.fetch_add(1, std::memory_order_relaxed);
+    producerGpuWaitNs.fetch_add(ns, std::memory_order_relaxed);
+}
+
+std::uint64_t DrawPipeline::ProducerGpuWaits() {
+    return producerGpuWaits.load(std::memory_order_relaxed);
+}
+
+std::uint64_t DrawPipeline::ProducerGpuWaitNs() {
+    return producerGpuWaitNs.load(std::memory_order_relaxed);
+}
+
 void DrawPipeline::Drain(DrainReason reason, std::uint32_t opcode) {
     drainRequests[std::min<std::uint32_t>(opcode, 0x100)].fetch_add(1, std::memory_order_relaxed);
     const bool finisherBusy = DrawFinisher::Busy() && !DrawFinisher::OnFinisherThread();
@@ -656,7 +693,12 @@ void DrawPipeline::Drain(DrainReason reason, std::uint32_t opcode) {
     const auto index = static_cast<std::size_t>(reason);
     ++drains[index];
     ++drainOpcodes[std::min<std::uint32_t>(opcode, 0x100)];
-    drainWaitNs[index] += elapsedNs(start);
+    const auto waited = elapsedNs(start);
+    drainWaitNs[index] += waited;
+    drainedSinceEnqueue = true;
+    lastDrainReason = reason;
+    lastDrainOpcode = opcode;
+    lastDrainNs = waited;
     ++drainWaits;
     drainWakeNs += static_cast<std::uint64_t>(std::max<std::int64_t>(0, nowNs() - lastPopNs));
     traceWait("DrawPipeline.drain", DrainNames[index], start);

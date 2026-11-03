@@ -52,6 +52,20 @@ public:
     };
     enum class DrainReason : std::uint8_t { Packet, Flush, Labels, Capture, Indirect, Submission, Count };
     enum class Event : std::uint8_t { IndirectCommit, IndirectArgsDrain, SatisfiedWaitKept, Count };
+    struct CommitTake {
+        std::size_t depthAtPush = 0;
+        std::size_t depthAtTake = 0;
+        std::uint64_t ageNs = 0;
+        bool afterDrain = false;
+        DrainReason drainReason = DrainReason::Packet;
+        std::uint32_t drainOpcode = 0;
+        std::uint64_t drainNs = 0;
+    };
+    static const CommitTake& CurrentTake();
+    static const char* DrainName(DrainReason reason);
+    static void NoteProducerGpuWait(std::uint64_t ns);
+    static std::uint64_t ProducerGpuWaits();
+    static std::uint64_t ProducerGpuWaitNs();
 
     static DrawPipeline& Queue0();
     static std::size_t Depth();
@@ -114,6 +128,11 @@ private:
         // The span of `reads` (HeldReads skips an item it misses; APS5_NO_HELD_READ_BOUNDS=1 scans every range).
         Range readBounds{~std::uint64_t{0}, 0};
         bool draw = false;
+        std::size_t depthAtPush = 0;
+        bool afterDrain = false;
+        DrainReason drainReason = DrainReason::Packet;
+        std::uint32_t drainOpcode = 0;
+        std::uint64_t drainNs = 0;
     };
     DrawPipeline() = default;
     template<typename TRanges, typename TBounds>
@@ -193,6 +212,10 @@ private:
     std::array<std::uint64_t, static_cast<std::size_t>(DrainReason::Count)> drainWaitNs{};
     std::array<std::uint64_t, 257> drainOpcodes{};
     std::array<std::atomic<std::uint64_t>, 257> drainRequests{};
+    bool drainedSinceEnqueue = false;
+    DrainReason lastDrainReason = DrainReason::Packet;
+    std::uint32_t lastDrainOpcode = 0;
+    std::uint64_t lastDrainNs = 0;
     std::uint64_t depthSum = 0;
     std::int64_t lastPopNs = 0;
     std::int64_t lastFinishNs = 0;
