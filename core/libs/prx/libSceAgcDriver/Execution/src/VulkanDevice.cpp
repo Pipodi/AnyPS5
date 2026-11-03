@@ -4492,6 +4492,7 @@ ShaderRecompiler::SpirvTarget VulkanDevice::buildTarget() const {
     target.depthRangeRemap = !state->depthRangeUnrestricted;
     target.fixedPushSlots = state->graphicsPipelineLibrary;
     target.registrationModules = state->graphicsPipelineLibrary;
+    if (const char* limit = std::getenv("APS5_REGISTRATION_WORD_LIMIT"); limit != nullptr && std::strtoul(limit, nullptr, 10) != 0u) target.registrationWordLimit = static_cast<std::uint32_t>(std::strtoul(limit, nullptr, 10));
     target.robustBufferAccess2 = state->robustBufferAccess2;
     target.waveLdsMemoryBarriers = !state->subgroupControlBarriers;
     target.largePixelFunctionLdsBuffer = state->driverId == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
