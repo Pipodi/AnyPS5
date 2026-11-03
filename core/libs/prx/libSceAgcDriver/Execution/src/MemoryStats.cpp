@@ -277,12 +277,16 @@ void CountPipelines(const VkPipeline* pipelines, std::uint32_t count) {
     Get().pipelineCreates.fetch_add(static_cast<std::uint64_t>(created), std::memory_order_relaxed);
 }
 
+thread_local std::uint64_t threadGraphicsPipelineCreateNs = 0;
+
 VKAPI_ATTR VkResult VKAPI_CALL TrackedCreateGraphicsPipelines(VkDevice device, VkPipelineCache cache, std::uint32_t count, const VkGraphicsPipelineCreateInfo* infos, const VkAllocationCallbacks* allocator, VkPipeline* pipelines) {
     const auto* entry = Find(device);
     for (std::uint32_t i = 0; infos != nullptr && i < count; ++i) {
         for (std::uint32_t s = 0; infos[i].pStages != nullptr && s < infos[i].stageCount; ++s) CountStageSpirv(infos[i].pStages[s]);
     }
+    const auto createStart = std::chrono::steady_clock::now();
     const auto result = entry->createGraphicsPipelines(device, cache, count, infos, allocator, pipelines);
+    threadGraphicsPipelineCreateNs += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - createStart).count());
     if (result == VK_SUCCESS || result == VK_PIPELINE_COMPILE_REQUIRED) CountPipelines(pipelines, count);
     return result;
 }
@@ -961,6 +965,10 @@ PFN_vkGetDeviceProcAddr TrackDevice(VkDevice device, VkPhysicalDevice physical, 
     }
     Start();
     return &TrackedDeviceProc;
+}
+
+std::uint64_t ThreadGraphicsPipelineCreateNs() noexcept {
+    return threadGraphicsPipelineCreateNs;
 }
 
 void Start() {

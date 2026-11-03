@@ -16,6 +16,8 @@
 #include "Optimization/ResourceProgram.hpp"
 #include "prx/libc/include/HostThreadLocal.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Mutex.hpp"
+#include "prx/libSceAgcDriver/Execution/include/MemoryStats.hpp"
+#include "SpirvBackend/SpirvOptimizer.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -1500,9 +1502,15 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
     // parallel when several threads build at once.
     static const bool logBuilds = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
     const auto partsBefore = logBuilds ? PipelineLibraryCountersOf(context.device) : PipelineLibraryCounters{};
+    const auto optimizerBefore = ShaderRecompiler::ThreadOptimizerNs();
+    const auto emitBefore = ShaderRecompiler::ThreadEmitNs();
+    const auto driverBefore = MemoryStats::ThreadGraphicsPipelineCreateNs();
     const auto buildStart = std::chrono::steady_clock::now();
     auto pipeline = std::make_shared<Pipeline>(context, state, vertexInput, resources, shaders, attachmentLayout);
     const auto buildUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - buildStart).count();
+    const auto optimizerMs = static_cast<double>(ShaderRecompiler::ThreadOptimizerNs() - optimizerBefore) / 1e6;
+    const auto emitMs = static_cast<double>(ShaderRecompiler::ThreadEmitNs() - emitBefore) / 1e6;
+    const auto driverMs = static_cast<double>(MemoryStats::ThreadGraphicsPipelineCreateNs() - driverBefore) / 1e6;
     const bool replaying = PipelineJournalReplaying();
     if (buildThread == BuildThread::Committer) {
         committerBuilds.fetch_add(1, std::memory_order_relaxed);
@@ -1524,7 +1532,7 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
             std::snprintf(text, sizeof(text), " why=%s recipe=%d lean=%d proxied=%d stencil=%u layout=%d prekey=0x%016llx", why.why, why.recipe ? 1 : 0, why.lean ? 1 : 0, why.proxied ? 1 : 0, why.stencil, static_cast<int>(why.layout), static_cast<unsigned long long>(why.prekey));
             whyText = text;
         }
-        std::fprintf(stderr, "[pipebuild] %.1f ms %s %s stages=%zu replay=%d key=0x%016llx parts=%llu/%llu on=%s refused=%s%s\n", static_cast<double>(buildUs) / 1000.0, rebuilt ? "rebuild" : "first", pipeline->Libraries() ? "libraries" : "whole", shaders.size(), replaying ? 1 : 0, static_cast<unsigned long long>(hash), static_cast<unsigned long long>(partsAfter.built[1] - partsBefore.built[1]), static_cast<unsigned long long>(partsAfter.built[2] - partsBefore.built[2]), buildThreadName(buildThread), refusals.c_str(), whyText.c_str());
+        std::fprintf(stderr, "[pipebuild] %.1f ms %s %s stages=%zu replay=%d key=0x%016llx parts=%llu/%llu on=%s refused=%s%s opt_ms=%.1f emit_ms=%.1f driver_ms=%.1f\n", static_cast<double>(buildUs) / 1000.0, rebuilt ? "rebuild" : "first", pipeline->Libraries() ? "libraries" : "whole", shaders.size(), replaying ? 1 : 0, static_cast<unsigned long long>(hash), static_cast<unsigned long long>(partsAfter.built[1] - partsBefore.built[1]), static_cast<unsigned long long>(partsAfter.built[2] - partsBefore.built[2]), buildThreadName(buildThread), refusals.c_str(), whyText.c_str(), optimizerMs, emitMs, driverMs);
         }
         bool collision = false;
         if (auto raced = lookup(collision)) return raced;

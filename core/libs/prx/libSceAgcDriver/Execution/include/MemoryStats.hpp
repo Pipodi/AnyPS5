@@ -35,6 +35,8 @@ struct Slot {
     return seconds;
 }
 
+[[nodiscard]] std::uint64_t ThreadGraphicsPipelineCreateNs() noexcept;
+
 [[nodiscard]] inline bool Enabled() noexcept {
     return PeriodSeconds() != 0;
 }

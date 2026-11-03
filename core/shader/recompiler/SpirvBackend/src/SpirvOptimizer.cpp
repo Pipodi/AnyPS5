@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <exception>
 #include <map>
@@ -35,6 +36,12 @@ constexpr std::uint32_t SelectOnVectorsVersion = 0x00010400u;
 
 std::atomic<std::uint64_t> optimizerHostThreads{0};
 std::atomic<std::uint64_t> largeModuleOptimizeFallbacks{0};
+thread_local std::uint64_t threadOptimizerNs = 0;
+
+struct OptimizerTimer {
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    ~OptimizerTimer() { threadOptimizerNs += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count()); }
+};
 
 std::size_t LargeOptimizeMinWords() {
     const char* value = std::getenv("APS5_SPIRV_LARGE_OPT_MIN_WORDS");
@@ -702,6 +709,7 @@ std::vector<std::uint32_t> HoistPureSelections(std::span<const std::uint32_t> sp
 }
 
 std::vector<std::uint32_t> ValidateAndOptimizeSpirv(std::span<const std::uint32_t> spirv, std::uint32_t vulkanVersion, std::uint32_t spirvVersion, bool allowOffsetTextureOperand, bool optimize, bool specialize) {
+    const OptimizerTimer timer;
     if (StackHoldsOptimizer()) return ValidateAndOptimizeSpirvInline(spirv, vulkanVersion, spirvVersion, allowOffsetTextureOperand, optimize, specialize);
     std::vector<std::uint32_t> result;
     std::exception_ptr failure;
@@ -716,6 +724,10 @@ std::vector<std::uint32_t> ValidateAndOptimizeSpirv(std::span<const std::uint32_
     host.join();
     if (failure) std::rethrow_exception(failure);
     return result;
+}
+
+std::uint64_t ThreadOptimizerNs() {
+    return threadOptimizerNs;
 }
 
 std::uint64_t OptimizerHostThreads() {

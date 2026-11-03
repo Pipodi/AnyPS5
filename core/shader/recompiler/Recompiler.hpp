@@ -989,6 +989,7 @@ struct MeshOutputBudget {
 
 [[nodiscard]] RecompileResult Recompile(const RecompileRequest& request);
 [[nodiscard]] std::uint64_t ResultHeapBytes(const RecompileResult& result);
+[[nodiscard]] std::uint64_t ThreadEmitNs();
 
 struct ResourceCapture;
 [[nodiscard]] std::shared_ptr<const RecompileResult> Recompile(const RecompileRequest& request, const ResourceCapture& capture, bool* memoHit = nullptr);

@@ -830,7 +830,13 @@ CompiledVariant emitVariant(const RecompileRequest& request, IrProgram& program)
     return {request.layout, {}, std::move(static_cast<CompiledBindingLayout&>(bindings)), std::move(result)};
 }
 
+thread_local std::uint64_t threadEmitNs = 0;
+
 CompiledVariant compileVariant(const RecompileRequest& request, IrProgram program, std::exception_ptr* emissionFailure = nullptr) {
+    struct EmitTimer {
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        ~EmitTimer() { threadEmitNs += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count()); }
+    } timer;
     return recordEmissionFailure(emissionFailure, [&] {
         prepareInterface(request, program);
         auto variant = emitVariant(request, program);
@@ -2481,6 +2487,10 @@ std::shared_ptr<const ResourceCapture> CaptureResources(const RecompileRequest& 
 
 RecompileResult Recompile(const RecompileRequest& request) {
     return recompileReporting(request, [&] { return RecompileImpl(request); });
+}
+
+std::uint64_t ThreadEmitNs() {
+    return threadEmitNs;
 }
 
 std::uint64_t ResultHeapBytes(const RecompileResult& result) {
