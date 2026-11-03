@@ -52,6 +52,11 @@ std::uint64_t Driver::DispatchesRejectedAhead() const {
     return dispatchesRejectedAhead.load(std::memory_order_relaxed);
 }
 
+std::pair<std::uint64_t, std::uint64_t> Driver::MissAheadTotals() {
+    const auto totals = missAheadLedger().Snapshot();
+    return {totals.started, totals.hit + totals.waited};
+}
+
 void Driver::SetAheadAdoptHook(void (*hook)()) {
     aheadAdoptHook.store(hook, std::memory_order_release);
 }
