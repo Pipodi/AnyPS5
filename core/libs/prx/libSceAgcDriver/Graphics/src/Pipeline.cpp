@@ -841,6 +841,12 @@ Pipeline::Pipeline(const Context& context, const State& state, const VertexInput
         pipelineInfo.renderPass = renderPass;
         if (dynamicRendering) pipelineInfo.pNext = &rendering;
         timing.Mark("modules_and_state");
+        struct FragmentSpirvScope {
+            ~FragmentSpirvScope() { CurrentFragmentSpirv() = {}; }
+        } fragmentSpirvScope;
+        for (const auto& shader : shaders) {
+            if (shader.stage == ShaderRecompiler::ShaderStage::Fragment) CurrentFragmentSpirv() = shader.program->spirv.Words();
+        }
         if (prebuilding && !libraries) {
             for (const auto module : _modules) context.Function<PFN_vkDestroyShaderModule>("vkDestroyShaderModule")(context.device, module, nullptr);
             _modules.clear();

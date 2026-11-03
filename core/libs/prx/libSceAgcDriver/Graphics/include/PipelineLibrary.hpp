@@ -63,6 +63,7 @@ struct PipelineLibraryCounters {
 };
 
 PipelineLibraryCounters PipelineLibraryCountersOf(VkDevice device);
+std::span<const std::uint32_t>& CurrentFragmentSpirv();
 
 std::vector<std::pair<VkFormat, VkFormat>> PipelineLibraryDepthFormats(VkDevice device);
 

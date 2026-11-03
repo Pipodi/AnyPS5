@@ -1,6 +1,9 @@
 #include "prx/libSceAgcDriver/Graphics/include/PipelineLibrary.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/PipelineJournal.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
+#include "SpirvBackend/SpirvOptimizer.hpp"
+#include <chrono>
+#include <fstream>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -65,6 +68,44 @@ struct LibraryStore {
 };
 
 std::atomic<unsigned> runningWorkers{0};
+
+void benchFragmentPart(const Context& context, const VkGraphicsPipelineCreateInfo& create, std::span<const std::uint32_t> words, double realMs) {
+    static std::atomic<std::uint32_t> nonce{static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count())};
+    std::uint64_t hash = 0xcbf29ce484222325ull;
+    for (const auto word : words) hash = (hash ^ word) * 0x100000001b3ull;
+    if (const char* directory = std::getenv("APS5_BENCH_FRAGMENT_DIR")) {
+        char name[64];
+        std::snprintf(name, sizeof name, "/frag-%016llx.spv", static_cast<unsigned long long>(hash));
+        std::ofstream file(std::string(directory) + name, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(words.data()), static_cast<std::streamsize>(words.size_bytes()));
+    }
+    std::fprintf(stderr, "[fragbench] spirv=%016llx words=%zu real_ms=%.1f\n", static_cast<unsigned long long>(hash), words.size(), realMs);
+    const auto createPipelines = context.Function<PFN_vkCreateGraphicsPipelines>("vkCreateGraphicsPipelines");
+    const auto destroyPipeline = context.Function<PFN_vkDestroyPipeline>("vkDestroyPipeline");
+    const auto destroyModule = context.Function<PFN_vkDestroyShaderModule>("vkDestroyShaderModule");
+    constexpr std::array<const char*, 3> names{"asis", "perf", "size"};
+    for (int variant = 0; variant < 3; ++variant) {
+        const auto optimizeStart = std::chrono::steady_clock::now();
+        const auto spirv = ShaderRecompiler::BenchVariantSpirv(words, variant, nonce.fetch_add(1));
+        const double optimizeMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - optimizeStart).count();
+        if (spirv.empty()) {
+            std::fprintf(stderr, "[fragbench] spirv=%016llx variant=%s failed opt_ms=%.1f\n", static_cast<unsigned long long>(hash), names[variant], optimizeMs);
+            continue;
+        }
+        const auto module = CreateShaderModule(context, spirv.data(), spirv.size() * sizeof(std::uint32_t), "vkCreateShaderModule fragment bench");
+        auto stage = create.pStages[0];
+        stage.module = module;
+        auto copy = create;
+        copy.pStages = &stage;
+        VkPipeline handle = VK_NULL_HANDLE;
+        const auto driverStart = std::chrono::steady_clock::now();
+        const auto result = createPipelines(context.device, VK_NULL_HANDLE, 1, &copy, nullptr, &handle);
+        const double driverMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - driverStart).count();
+        std::fprintf(stderr, "[fragbench] spirv=%016llx variant=%s words=%zu opt_ms=%.1f driver_ms=%.1f result=%d\n", static_cast<unsigned long long>(hash), names[variant], spirv.size(), optimizeMs, driverMs, static_cast<int>(result));
+        if (handle != VK_NULL_HANDLE) destroyPipeline(context.device, handle, nullptr);
+        destroyModule(context.device, module, nullptr);
+    }
+}
 
 LibraryStore& Libraries() {
     static auto* store = new LibraryStore();
@@ -246,9 +287,16 @@ VkPipeline LinkPipelineFromLibraries(const Context& context, const VkGraphicsPip
         VkPipeline handle = VK_NULL_HANDLE;
         lock.unlock();
         VkResult created;
+        const auto partStart = std::chrono::steady_clock::now();
         {
             auto pipelineCacheLock = context.LockPipelineCacheForUse();
             created = context.Function<PFN_vkCreateGraphicsPipelines>("vkCreateGraphicsPipelines")(context.device, context.pipelineCache, 1, &create, nullptr, &handle);
+        }
+        static const std::size_t benchMinWords = [] { const char* text = std::getenv("APS5_BENCH_FRAGMENT_MIN_WORDS"); return text ? static_cast<std::size_t>(std::strtoull(text, nullptr, 10)) : 0u; }();
+        static std::atomic<int> benchLeft{[] { const char* text = std::getenv("APS5_BENCH_FRAGMENT_COUNT"); return text ? std::atoi(text) : 4; }()};
+        const auto fragmentWords = CurrentFragmentSpirv();
+        if (created == VK_SUCCESS && benchMinWords != 0u && flags[part] == VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT && fragmentWords.size() >= benchMinWords && benchLeft.fetch_sub(1) > 0) {
+            benchFragmentPart(context, create, fragmentWords, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - partStart).count());
         }
         lock.lock();
         Check(created, "vkCreateGraphicsPipelines library");
@@ -416,6 +464,11 @@ void StopPipelineLibraryWorker() {
 
 unsigned PipelineLibraryWorkers() {
     return runningWorkers.load(std::memory_order_acquire);
+}
+
+std::span<const std::uint32_t>& CurrentFragmentSpirv() {
+    thread_local std::span<const std::uint32_t> words;
+    return words;
 }
 
 PipelineLibraryCounters PipelineLibraryCountersOf(VkDevice device) {

@@ -7,7 +7,9 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <map>
 #include <optional>
@@ -724,6 +726,47 @@ std::vector<std::uint32_t> ValidateAndOptimizeSpirv(std::span<const std::uint32_
     host.join();
     if (failure) std::rethrow_exception(failure);
     return result;
+}
+
+std::vector<std::uint32_t> BenchVariantSpirv(std::span<const std::uint32_t> spirv, int variant, std::uint32_t nonce) {
+    if (spirv.size() < 5) return {};
+    std::vector<std::uint32_t> body(spirv.begin(), spirv.end());
+    if (variant != 0) {
+        const auto version = spirv[1];
+        const spv_target_env environment = version >= 0x00010600u ? SPV_ENV_VULKAN_1_3 : version >= 0x00010500u ? SPV_ENV_VULKAN_1_2 : version >= 0x00010400u ? SPV_ENV_VULKAN_1_1_SPIRV_1_4 : SPV_ENV_VULKAN_1_0;
+        spvtools::Optimizer optimizer(environment);
+        optimizer.SetMessageConsumer([](spv_message_level_t, const char*, const spv_position_t&, const char*) {});
+        if (variant == 1) optimizer.RegisterPerformancePasses(true);
+        else optimizer.RegisterSizePasses(true);
+        spvtools::OptimizerOptions options;
+        options.set_run_validator(false);
+        options.set_preserve_bindings(true);
+        options.set_preserve_spec_constants(true);
+        std::vector<std::uint32_t> result;
+        std::thread host([&] {
+            try {
+                if (!optimizer.Run(body.data(), body.size(), &result, options)) result.clear();
+            } catch (...) {
+                result.clear();
+            }
+        });
+        host.join();
+        if (result.size() < 5) return {};
+        body = std::move(result);
+    }
+    std::size_t cursor = 5;
+    while (cursor < body.size()) {
+        const auto op = body[cursor] & 0xffffu;
+        const auto count = body[cursor] >> 16u;
+        if (count == 0u || (op != 17u && op != 10u && op != 11u && op != 14u && op != 15u && op != 16u && op != 331u)) break;
+        cursor += count;
+    }
+    char text[20]{};
+    std::snprintf(text, sizeof text, "aps5b%08x", nonce);
+    std::array<std::uint32_t, 5> tag{(5u << 16u) | 4u, 0u, 0u, 0u, 0u};
+    std::memcpy(tag.data() + 1, text, 16);
+    body.insert(body.begin() + static_cast<std::ptrdiff_t>(cursor), tag.begin(), tag.end());
+    return body;
 }
 
 std::uint64_t ThreadOptimizerNs() {

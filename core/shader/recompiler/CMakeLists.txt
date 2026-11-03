@@ -324,6 +324,7 @@ function(add_shader_recompiler target runtimeTarget)
             UnresolvableSwappcTarget
             ValidateAndOptimizeSpirv
             ThreadOptimizerNs
+            BenchVariantSpirv
             ThreadEmitNs
             FindUserDataCalls
             UserDataCalleeLength
