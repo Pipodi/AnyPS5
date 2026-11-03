@@ -323,6 +323,8 @@ function(add_shader_recompiler target runtimeTarget)
             ProgramRole
             UnresolvableSwappcTarget
             ValidateAndOptimizeSpirv
+            ThreadOptimizerNs
+            ThreadEmitNs
             FindUserDataCalls
             UserDataCalleeLength
             LinkUserDataCalls
