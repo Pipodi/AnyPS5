@@ -1457,6 +1457,33 @@ const ResourceSnapshot& mergeTargetImage(const CompiledVariant& variant, const R
     return merged;
 }
 
+constexpr std::uint64_t RegistrationPackingShareDivisor = 4u;
+constexpr std::size_t RegistrationPackingVariants = 2u;
+
+struct ObservedExportPackings {
+    std::mutex mutex;
+    std::map<std::array<ColorExportPacking, 8>, std::uint64_t> counts;
+    std::uint64_t total = 0;
+};
+
+ObservedExportPackings& observedExportPackings() {
+    static ObservedExportPackings observed;
+    return observed;
+}
+
+std::array<ColorExportPacking, 8> effectiveExportPacking(const ShaderPixelStageInfo& pixel) {
+    std::array<ColorExportPacking, 8> packing{};
+    for (std::size_t target = 0; target < packing.size(); ++target) packing[target] = pixel.targetBlend[target].enable ? ColorExportPacking::None : pixel.targetExportPacking[target];
+    return packing;
+}
+
+void recordExportPacking(const ShaderPixelStageInfo& pixel) {
+    auto& observed = observedExportPackings();
+    std::lock_guard lock(observed.mutex);
+    ++observed.total;
+    ++observed.counts[effectiveExportPacking(pixel)];
+}
+
 RecompileResult materializeResult(const CompiledVariant& variant, const RecompileRequest& request, const ResourceSnapshot& captured, bool registrationDefaults = false, std::uint64_t nativeCompare = 0u, std::uint64_t instructionDimension = 0u) {
     ResourceSnapshot merged;
     const auto& snapshot = mergeTargetImage(variant, request, captured, registrationDefaults, merged);
@@ -1574,7 +1601,12 @@ RecompileResult materializeResult(const CompiledVariant& variant, const Recompil
         if (entry == nullptr) {
             std::unique_lock lock(plan->mutex);
             const auto found = plan->modules.find(moduleKey);
-            entry = found != plan->modules.end() ? found->second : plan->modules.emplace(moduleKey, std::make_shared<PreparedModuleEntry>()).first->second;
+            if (found != plan->modules.end()) {
+                entry = found->second;
+            } else {
+                entry = plan->modules.emplace(moduleKey, std::make_shared<PreparedModuleEntry>()).first->second;
+                if (!registrationDefaults && request.context.pixel && artifact.registrationModule) recordExportPacking(*request.context.pixel);
+            }
         }
         const auto prepare = [&] {
             auto constants = plan->bindings.specialization;
@@ -2410,6 +2442,28 @@ std::unordered_map<std::uint64_t, std::vector<std::uint64_t>>& registrationSpirv
     return hashes;
 }
 
+}
+
+std::vector<std::shared_ptr<const RecompileResult>> RegistrationPackingResults(const RecompileRequest& request, const SourceHandle& handle) {
+    std::vector<std::shared_ptr<const RecompileResult>> results;
+    if (request.shader.stage != ShaderStage::Fragment || !request.context.pixel) return results;
+    const auto registered = effectiveExportPacking(*request.context.pixel);
+    std::vector<std::pair<std::uint64_t, std::array<ColorExportPacking, 8>>> common;
+    {
+        auto& observed = observedExportPackings();
+        std::lock_guard lock(observed.mutex);
+        for (const auto& [packing, count] : observed.counts) {
+            if (packing != registered && count * RegistrationPackingShareDivisor >= observed.total) common.emplace_back(count, packing);
+        }
+    }
+    std::ranges::sort(common, std::greater{});
+    if (common.size() > RegistrationPackingVariants) common.resize(RegistrationPackingVariants);
+    for (const auto& [count, packing] : common) {
+        auto variant = request;
+        variant.context.pixel->targetExportPacking = packing;
+        if (auto result = RegistrationResult(variant, handle)) results.push_back(std::move(result));
+    }
+    return results;
 }
 
 std::shared_ptr<const RecompileResult> RegistrationResult(const RecompileRequest& request, const SourceHandle& handle) {

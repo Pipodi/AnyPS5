@@ -287,6 +287,7 @@ function(add_shader_recompiler target runtimeTarget)
             ResultMemoTotals
             ResultHeapBytes
             RegistrationResult
+            RegistrationPackingResults
             RegistrationSpirvHashes
             ComputeRegistrationPrebuildable
             ComputeRegistrationMinWordsLimit

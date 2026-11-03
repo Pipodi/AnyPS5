@@ -1815,6 +1815,7 @@ std::vector<PreparedShaders::Entry> PrepareRegistered(RegisteredPreparation& pla
     if (plan.prebuildDevice != nullptr && request.target.registrationModules && request.shader.stage == ShaderRecompiler::ShaderStage::Fragment && !LibraryPrebuildDisabled()) {
         try {
             PrebuildStageLibrary(plan.prebuildDevice, {Graphics::ShaderPath::Vertex, 0u, 32u, request.context.waveSize, {}, {}}, request.shader.stage, ShaderRecompiler::RegistrationResult(request, *entries.front().handle), request.layout.pushConstantOffsetBytes);
+            for (auto& packed : ShaderRecompiler::RegistrationPackingResults(request, *entries.front().handle)) PrebuildStageLibrary(plan.prebuildDevice, {Graphics::ShaderPath::Vertex, 0u, 32u, request.context.waveSize, {}, {}}, request.shader.stage, std::move(packed), request.layout.pushConstantOffsetBytes);
         } catch (const std::exception& error) {
             APS5_LOG_OUT("shader library prebuild skipped: %s", error.what());
         }
@@ -2551,14 +2552,16 @@ std::vector<PreparedGraphicsStage> PrepareGraphicsStages(const DrawDecode& decod
         const auto bytes = handle->artifact->bindings.pushConstantSizeBytes;
         require(bytes <= room, "prepared graphics stages exceed the push constant block");
         std::shared_ptr<const ShaderRecompiler::RecompileResult> registration;
+        std::vector<std::shared_ptr<const ShaderRecompiler::RecompileResult>> packed;
         if (target.registrationModules && !LibraryPrebuildDisabled()) {
             try {
                 registration = ShaderRecompiler::RegistrationResult(request, *handle);
+                if (registration != nullptr) packed = ShaderRecompiler::RegistrationPackingResults(request, *handle);
             } catch (const std::exception& error) {
                 APS5_LOG_OUT("shader library prebuild skipped: %s", error.what());
             }
         }
-        prepared.push_back({program.snapshot, {program.codeOffset, handle}, program.binary.stage, offset, std::move(registration)});
+        prepared.push_back({program.snapshot, {program.codeOffset, handle}, program.binary.stage, offset, std::move(registration), std::move(packed)});
         pushOffset += bytes;
     }
     transaction.Commit();
@@ -2664,6 +2667,7 @@ void Driver::ResolveGraphicsStagesAbi(std::span<const Shader* const> stages, std
     if (decoded.state.stages.path == Graphics::ShaderPath::Vertex) {
         for (const auto& stage : prepared) {
             if (stage.registration != nullptr) PrebuildStageLibrary(localDevice, decoded.state.stages, stage.stage, stage.registration, stage.pushOffset);
+            for (const auto& packed : stage.packed) PrebuildStageLibrary(localDevice, decoded.state.stages, stage.stage, packed, stage.pushOffset);
         }
     }
     PreparedShaderState::GraphicsAbi abi{key, registry, {}};
