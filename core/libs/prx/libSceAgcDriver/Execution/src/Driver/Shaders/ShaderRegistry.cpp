@@ -1654,7 +1654,7 @@ bool LibraryPrebuildDisabled() {
 
 namespace {
 
-RegistrationPrebuildQueue& LowRegisteredComputeQueue();
+RegistrationPrebuildQueue& FragmentPrebuildQueue();
 
 }
 
@@ -1679,13 +1679,13 @@ void PrebuildStageLibrary(const std::shared_ptr<VulkanDevice>& device, const Gra
     const std::uint64_t words = result->spirv.size();
     const auto cost = Graphics::PipelineCreationGate::Shared().EstimateBytes(result->spirv.size());
     const auto key = result->spirv.ContentHash().low;
-    std::fprintf(stderr, "[regfrag] queued-low program 0x%llx words %llu\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(words));
-    LowRegisteredComputeQueue().Enqueue(key, cost, [build, address, words] {
+    std::fprintf(stderr, "[regfrag] queued lane=frag program 0x%llx words %llu\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(words));
+    FragmentPrebuildQueue().Enqueue(key, cost, [build, address, words] {
         const Graphics::DemandPipelineCreations::SpeculativeThread speculative;
         const auto start = std::chrono::steady_clock::now();
-        std::fprintf(stderr, "[regfrag] start program 0x%llx words %llu t=%.0f\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(words), AgcDriver::ComputeTimeline::NowMs());
+        std::fprintf(stderr, "[regfrag] start lane=frag program 0x%llx words %llu t=%.0f\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(words), AgcDriver::ComputeTimeline::NowMs());
         build();
-        std::fprintf(stderr, "[regfrag] done program 0x%llx words %llu ms=%.0f t=%.0f\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(words), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), AgcDriver::ComputeTimeline::NowMs());
+        std::fprintf(stderr, "[regfrag] done lane=frag program 0x%llx words %llu ms=%.0f t=%.0f\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(words), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), AgcDriver::ComputeTimeline::NowMs());
     }, words);
 }
 
@@ -1987,19 +1987,30 @@ public:
         return PrebuildSlot().load();
     }
 
+    static RegistrationPreparePool& Fragment() {
+        static auto* pool = [] {
+            std::lock_guard lifecycle(Lifecycle());
+            auto* created = new RegistrationPreparePool(Closing() ? 0u : RegistrationPrebuildQueue::FragmentThreads(), true);
+            FragmentSlot().store(created);
+            return created;
+        }();
+        return *pool;
+    }
+
     static unsigned LiveWorkers() {
         return liveWorkers.load(std::memory_order_acquire);
     }
 
     static void CloseAll() {
-        std::array<RegistrationPreparePool*, 2> pools{};
+        std::array<RegistrationPreparePool*, 3> pools{};
         {
             std::lock_guard lifecycle(Lifecycle());
             Closing() = true;
-            pools = {Existing(), ExistingPrebuild()};
+            pools = {Existing(), ExistingPrebuild(), FragmentSlot().load()};
         }
         if (pools[0] != nullptr) pools[0]->Close(false);
         if (pools[1] != nullptr) pools[1]->Close(true);
+        if (pools[2] != nullptr) pools[2]->Close(true);
     }
 
 private:
@@ -2019,6 +2030,11 @@ private:
     }
 
     static std::atomic<RegistrationPreparePool*>& PrebuildSlot() {
+        static std::atomic<RegistrationPreparePool*> slot{nullptr};
+        return slot;
+    }
+
+    static std::atomic<RegistrationPreparePool*>& FragmentSlot() {
         static std::atomic<RegistrationPreparePool*> slot{nullptr};
         return slot;
     }
@@ -2387,6 +2403,24 @@ void SubmitLibraryPrebuild(std::function<void()> task, std::uint64_t cost, const
     RegistrationPreparePool::Prebuild().Submit(std::move(task), prepared, cost);
 }
 
+namespace {
+
+std::atomic<RegistrationPrebuildQueue*>& FragmentPrebuildQueueSlot() {
+    static std::atomic<RegistrationPrebuildQueue*> slot{nullptr};
+    return slot;
+}
+
+RegistrationPrebuildQueue& FragmentPrebuildQueue() {
+    static auto* queue = [] {
+        auto* created = new RegistrationPrebuildQueue(RegistrationPrebuildQueue::FragmentSettings(), [](std::function<void()> task) { RegistrationPreparePool::Fragment().Submit(std::move(task)); });
+        FragmentPrebuildQueueSlot().store(created);
+        return created;
+    }();
+    return *queue;
+}
+
+}
+
 void SubmitComputePrebuild(std::function<void()> task, std::uint64_t cost) {
     RegistrationPreparePool::Prebuild().Submit(std::move(task), nullptr, cost, true);
 }
@@ -2429,6 +2463,7 @@ void ReleaseRegisteredComputePrebuilds() {
 void CloseRegistrationPreparation() {
     if (auto* queue = RegisteredComputeQueueSlot().load()) queue->Stop();
     if (auto* queue = LowRegisteredComputeQueueSlot().load()) queue->Stop();
+    if (auto* queue = FragmentPrebuildQueueSlot().load()) queue->Stop();
     RegistrationPreparePool::CloseAll();
 }
 

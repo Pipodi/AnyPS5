@@ -72,6 +72,20 @@ public:
         return settings;
     }
 
+    static unsigned FragmentThreads() {
+        const char* text = std::getenv("APS5_FRAGMENT_PREBUILD_THREADS");
+        return text != nullptr && *text != 0 ? std::max(1u, static_cast<unsigned>(std::strtoul(text, nullptr, 10))) : 2u;
+    }
+
+    static Settings FragmentSettings() {
+        Settings settings;
+        settings.waitForPresent = false;
+        settings.idleGate = false;
+        settings.newestFirst = true;
+        settings.concurrency = FragmentThreads();
+        return settings;
+    }
+
     RegistrationPrebuildQueue(Settings settings, Submitter submit, ReleaseLog log = {}, Hooks hooks = {}) : settings(settings), submit(std::move(submit)), log(std::move(log)), hooks(std::move(hooks)), opened(!settings.waitForPresent) {}
 
     RegistrationPrebuildQueue(const RegistrationPrebuildQueue&) = delete;
