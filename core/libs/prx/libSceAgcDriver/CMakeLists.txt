@@ -1492,7 +1492,7 @@ endif()
 
 add_test_executable(agc_pipeline_library_builds_tests EXCLUDE_FROM_ALL tests/PipelineLibraryBuilds.cpp
     Graphics/src/PipelineLibrary.cpp)
-target_include_directories(agc_pipeline_library_builds_tests PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/core/shader/recompiler ${ANYPS5_VULKAN_HEADERS_INCLUDE_DIR})
+target_include_directories(agc_pipeline_library_builds_tests PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/core/shader/recompiler ${CMAKE_SOURCE_DIR}/core/shader/recompiler/SpirvBackend/include ${ANYPS5_VULKAN_HEADERS_INCLUDE_DIR})
 target_link_libraries(agc_pipeline_library_builds_tests PRIVATE libSceAgcDriver libc)
 set_target_properties(agc_pipeline_library_builds_tests PROPERTIES CXX_EXTENSIONS OFF)
 configure_windows_unwind(agc_pipeline_library_builds_tests)
@@ -1510,7 +1510,7 @@ endif()
 
 add_test_executable(agc_pipeline_queue_failure_tests EXCLUDE_FROM_ALL tests/PipelineQueueFailure.cpp
     Graphics/src/PipelineLibrary.cpp tests/AllocationFailure.cpp)
-target_include_directories(agc_pipeline_queue_failure_tests PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/core/shader/recompiler ${ANYPS5_VULKAN_HEADERS_INCLUDE_DIR})
+target_include_directories(agc_pipeline_queue_failure_tests PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/core/shader/recompiler ${CMAKE_SOURCE_DIR}/core/shader/recompiler/SpirvBackend/include ${ANYPS5_VULKAN_HEADERS_INCLUDE_DIR})
 target_link_libraries(agc_pipeline_queue_failure_tests PRIVATE libSceAgcDriver libc)
 set_target_properties(agc_pipeline_queue_failure_tests PROPERTIES CXX_EXTENSIONS OFF)
 configure_windows_unwind(agc_pipeline_queue_failure_tests)
