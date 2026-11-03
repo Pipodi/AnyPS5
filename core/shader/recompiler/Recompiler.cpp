@@ -2486,10 +2486,6 @@ std::shared_ptr<const RecompileResult> RegistrationResult(const RecompileRequest
         note("formatted-buffer");
         return nullptr;
     }
-    if (std::ranges::any_of(info.samplers, [](const SamplerResource& sampler) { return FoldsTexelOffsets(sampler); })) {
-        note("texel-offset");
-        return nullptr;
-    }
     note("ok");
     ResourceSnapshot snapshot;
     snapshot.buffers.assign(info.buffers.size(), {{}, 4u});
