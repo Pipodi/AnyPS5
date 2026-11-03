@@ -1248,18 +1248,25 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
                 // The pre-sync again, now that every earlier draw is recorded: still without the
                 // GPU mutex, so the other queues are not held while this commit waits for the GPU.
                 if (htilePresync && decode->state.depth.has_value()) presyncSerial = std::max(presyncSerial, localDevice->PresyncDrawDepth(decode->state));
+                std::string programText;
+                for (const auto& shaderProgram : programs) {
+                    char text[24];
+                    std::snprintf(text, sizeof(text), "%s0x%llx", programText.empty() ? "" : ",", static_cast<unsigned long long>(shaderProgram.binary.codeAddress));
+                    programText += text;
+                }
                 struct WhyScope {
-                    std::uint64_t producerWaits = DrawPipeline::ProducerGpuWaits();
-                    std::uint64_t producerWaitNs = DrawPipeline::ProducerGpuWaitNs();
+                    std::uint64_t producerWaits = 0;
+                    std::uint64_t producerWaitNs = 0;
+                    std::string programs;
                     ~WhyScope() {
                         const auto& why = Graphics::CommitterWhy();
                         if (why.builds != 0) {
                             const auto& take = DrawPipeline::CurrentTake();
-                            std::fprintf(stderr, "[commitbuild] builds=%u %.1f ms why=%s depth_push=%zu depth_take=%zu depth_after=%zu age_us=%.1f after_drain=%s opcode=0x%02x drain_ms=%.1f producer_gpu_waits=%llu producer_gpu_wait_ms=%.1f\n", why.builds, static_cast<double>(why.buildNs) / 1e6, why.why, take.depthAtPush, take.depthAtTake, DrawPipeline::Queue0().Outstanding(), static_cast<double>(take.ageNs) / 1e3, take.afterDrain ? DrawPipeline::DrainName(take.drainReason) : "no", take.drainOpcode, static_cast<double>(take.drainNs) / 1e6, static_cast<unsigned long long>(DrawPipeline::ProducerGpuWaits() - producerWaits), static_cast<double>(DrawPipeline::ProducerGpuWaitNs() - producerWaitNs) / 1e6);
+                            std::fprintf(stderr, "[commitbuild] builds=%u %.1f ms why=%s depth_push=%zu depth_take=%zu depth_after=%zu age_us=%.1f after_drain=%s opcode=0x%02x drain_ms=%.1f producer_gpu_waits=%llu producer_gpu_wait_ms=%.1f programs=%s\n", why.builds, static_cast<double>(why.buildNs) / 1e6, why.why, take.depthAtPush, take.depthAtTake, DrawPipeline::Queue0().Outstanding(), static_cast<double>(take.ageNs) / 1e3, take.afterDrain ? DrawPipeline::DrainName(take.drainReason) : "no", take.drainOpcode, static_cast<double>(take.drainNs) / 1e6, static_cast<unsigned long long>(DrawPipeline::ProducerGpuWaits() - producerWaits), static_cast<double>(DrawPipeline::ProducerGpuWaitNs() - producerWaitNs) / 1e6, programs.c_str());
                         }
                         Graphics::CommitterWhy() = {};
                     }
-                } whyScope;
+                } whyScope{DrawPipeline::ProducerGpuWaits(), DrawPipeline::ProducerGpuWaitNs(), std::move(programText)};
                 {
                     auto& why = Graphics::CommitterWhy();
                     why = {};
