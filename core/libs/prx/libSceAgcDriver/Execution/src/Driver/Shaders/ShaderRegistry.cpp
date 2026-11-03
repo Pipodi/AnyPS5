@@ -1652,9 +1652,15 @@ bool LibraryPrebuildDisabled() {
 
 }
 
-void PrebuildStageLibrary(const std::shared_ptr<VulkanDevice>& device, const Graphics::ShaderStages& stages, ShaderRecompiler::ShaderStage stage, std::shared_ptr<const ShaderRecompiler::RecompileResult> result, std::uint32_t pushOffset) {
+namespace {
+
+RegistrationPrebuildQueue& LowRegisteredComputeQueue();
+
+}
+
+void PrebuildStageLibrary(const std::shared_ptr<VulkanDevice>& device, const Graphics::ShaderStages& stages, ShaderRecompiler::ShaderStage stage, std::shared_ptr<const ShaderRecompiler::RecompileResult> result, std::uint32_t pushOffset, std::uint64_t address) {
     if (LibraryPrebuildDisabled() || result == nullptr || (stage != ShaderRecompiler::ShaderStage::Vertex && stage != ShaderRecompiler::ShaderStage::Fragment)) return;
-    SubmitLibraryPrebuild([device, stages, stage, result = std::move(result), pushOffset] {
+    const auto build = [device, stages, stage, result, pushOffset] {
         const std::array<Graphics::CompiledShader, 1> shaders{{{stage, result.get(), result->pushConstants.empty() ? 0u : pushOffset}}};
         static const bool logBuilds = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
         const auto start = std::chrono::steady_clock::now();
@@ -1665,7 +1671,22 @@ void PrebuildStageLibrary(const std::shared_ptr<VulkanDevice>& device, const Gra
             APS5_LOG_OUT("shader library prebuild skipped: %s", error.what());
         }
         if (logBuilds) std::fprintf(stderr, "[libprebuild] %.1f ms %s heap=%d\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), built ? "ok" : "skipped", shaders[0].program->bindlessHeap ? 1 : 0);
-    });
+    };
+    if (result->spirv.size() <= ShaderRecompiler::DefaultRegistrationWordLimit) {
+        SubmitLibraryPrebuild(build);
+        return;
+    }
+    const std::uint64_t words = result->spirv.size();
+    const auto cost = Graphics::PipelineCreationGate::Shared().EstimateBytes(result->spirv.size());
+    const auto key = result->spirv.ContentHash().low;
+    std::fprintf(stderr, "[regfrag] queued-low program 0x%llx words %llu\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(words));
+    LowRegisteredComputeQueue().Enqueue(key, cost, [build, address, words] {
+        const Graphics::DemandPipelineCreations::SpeculativeThread speculative;
+        const auto start = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "[regfrag] start program 0x%llx words %llu t=%.0f\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(words), AgcDriver::ComputeTimeline::NowMs());
+        build();
+        std::fprintf(stderr, "[regfrag] done program 0x%llx words %llu ms=%.0f t=%.0f\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(words), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), AgcDriver::ComputeTimeline::NowMs());
+    }, words);
 }
 
 bool RegisteredComputeGateLogging() {
@@ -1814,8 +1835,8 @@ std::vector<PreparedShaders::Entry> PrepareRegistered(RegisteredPreparation& pla
     append();
     if (plan.prebuildDevice != nullptr && request.target.registrationModules && request.shader.stage == ShaderRecompiler::ShaderStage::Fragment && !LibraryPrebuildDisabled()) {
         try {
-            PrebuildStageLibrary(plan.prebuildDevice, {Graphics::ShaderPath::Vertex, 0u, 32u, request.context.waveSize, {}, {}}, request.shader.stage, ShaderRecompiler::RegistrationResult(request, *entries.front().handle), request.layout.pushConstantOffsetBytes);
-            for (auto& packed : ShaderRecompiler::RegistrationPackingResults(request, *entries.front().handle)) PrebuildStageLibrary(plan.prebuildDevice, {Graphics::ShaderPath::Vertex, 0u, 32u, request.context.waveSize, {}, {}}, request.shader.stage, std::move(packed), request.layout.pushConstantOffsetBytes);
+            PrebuildStageLibrary(plan.prebuildDevice, {Graphics::ShaderPath::Vertex, 0u, 32u, request.context.waveSize, {}, {}}, request.shader.stage, ShaderRecompiler::RegistrationResult(request, *entries.front().handle), request.layout.pushConstantOffsetBytes, request.shader.codeAddress);
+            for (auto& packed : ShaderRecompiler::RegistrationPackingResults(request, *entries.front().handle)) PrebuildStageLibrary(plan.prebuildDevice, {Graphics::ShaderPath::Vertex, 0u, 32u, request.context.waveSize, {}, {}}, request.shader.stage, std::move(packed), request.layout.pushConstantOffsetBytes, request.shader.codeAddress);
         } catch (const std::exception& error) {
             APS5_LOG_OUT("shader library prebuild skipped: %s", error.what());
         }
@@ -2666,8 +2687,8 @@ void Driver::ResolveGraphicsStagesAbi(std::span<const Shader* const> stages, std
     }
     if (decoded.state.stages.path == Graphics::ShaderPath::Vertex) {
         for (const auto& stage : prepared) {
-            if (stage.registration != nullptr) PrebuildStageLibrary(localDevice, decoded.state.stages, stage.stage, stage.registration, stage.pushOffset);
-            for (const auto& packed : stage.packed) PrebuildStageLibrary(localDevice, decoded.state.stages, stage.stage, packed, stage.pushOffset);
+            if (stage.registration != nullptr) PrebuildStageLibrary(localDevice, decoded.state.stages, stage.stage, stage.registration, stage.pushOffset, stage.snapshot->codeAddress);
+            for (const auto& packed : stage.packed) PrebuildStageLibrary(localDevice, decoded.state.stages, stage.stage, packed, stage.pushOffset, stage.snapshot->codeAddress);
         }
     }
     PreparedShaderState::GraphicsAbi abi{key, registry, {}};
