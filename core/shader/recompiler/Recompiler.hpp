@@ -324,6 +324,8 @@ struct TessellationTargetLimits {
     std::uint32_t maxEvaluationOutputComponents;
 };
 
+inline constexpr std::uint32_t DefaultRegistrationWordLimit = 200000u;
+
 struct SpirvTarget {
     std::uint32_t vulkanVersion;
     std::uint32_t spirvVersion;
@@ -343,7 +345,7 @@ struct SpirvTarget {
     bool fixedPushSlots = false;
     bool float64DenormPreserve = false;
     bool registrationModules = false;
-    std::uint32_t registrationWordLimit = 200000u;
+    std::uint32_t registrationWordLimit = DefaultRegistrationWordLimit;
     bool vertexSubgroups = true;
     bool float16DenormPreserve = false;
     bool bindlessImages = false;

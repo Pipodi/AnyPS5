@@ -753,7 +753,8 @@ CompiledVariant emitVariant(const RecompileRequest& request, IrProgram& program)
         const char* value = std::getenv("APS5_REGISTRATION_HEAP_WORD_LIMIT");
         return value != nullptr ? static_cast<std::uint32_t>(std::strtoul(value, nullptr, 10)) : 0u;
     }();
-    const auto wordLimit = heapWordLimit != 0u && request.target.bindlessImages && ResourceMaterializer::UsesBindlessImages(program.Info(), program.Resources().stage) ? std::max(heapWordLimit, request.target.registrationWordLimit) : request.target.registrationWordLimit;
+    auto wordLimit = heapWordLimit != 0u && request.target.bindlessImages && ResourceMaterializer::UsesBindlessImages(program.Info(), program.Resources().stage) ? std::max(heapWordLimit, request.target.registrationWordLimit) : request.target.registrationWordLimit;
+    if (request.shader.stage != ShaderStage::Compute && std::ranges::any_of(program.Info().buffers, [](const BufferResource& buffer) { return buffer.descriptorFormatted; })) wordLimit = std::min(wordLimit, DefaultRegistrationWordLimit);
     if (registration && (request.shader.stage == ShaderStage::Compute ? result.spirv.size() < ComputeRegistrationFormMinWords() : result.spirv.size() > wordLimit)) {
         registration = false;
         program.Metadata().bindingLayoutComplete = false;
