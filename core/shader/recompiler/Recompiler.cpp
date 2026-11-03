@@ -2474,6 +2474,22 @@ std::shared_ptr<const RecompileResult> RegistrationResult(const RecompileRequest
     const auto note = [&](const char* outcome) {
         if (logResults) std::fprintf(stderr, "[regresult] 0x%llx stage=%u words=%zu heap=%d %s\n", static_cast<unsigned long long>(request.shader.codeAddress), static_cast<unsigned>(request.shader.stage), artifact.spirv.size(), artifact.bindlessHeap ? 1 : 0, outcome);
     };
+    if (logResults && request.shader.stage != ShaderStage::Compute && std::ranges::any_of(handle.artifact->info.info.buffers, [](const BufferResource& buffer) { return buffer.descriptorFormatted; })) {
+        static std::mutex reportedMutex;
+        static std::set<std::uint64_t> reported;
+        bool first = false;
+        {
+            std::lock_guard lock(reportedMutex);
+            first = reported.insert(artifact.variantId).second;
+        }
+        if (first) {
+            for (std::size_t index = 0; index < handle.artifact->info.info.buffers.size(); ++index) {
+                const auto& buffer = handle.artifact->info.info.buffers[index];
+                if (!buffer.descriptorFormatted) continue;
+                std::fprintf(stderr, "[fmtbuf] 0x%llx buf=%zu words=%zu formattedReadMask=0x%x typedAlignment=%u maxByteExtent=%u read=%d written=%d atomic=%d scalar=%d formatted=%d source=%u firstUsePc=%u\n", static_cast<unsigned long long>(request.shader.codeAddress), index, artifact.spirv.size(), buffer.formattedReadMask, static_cast<unsigned>(buffer.typedAlignment), buffer.maxByteExtent, buffer.read ? 1 : 0, buffer.written ? 1 : 0, buffer.atomic ? 1 : 0, buffer.scalar ? 1 : 0, buffer.formatted ? 1 : 0, buffer.source, buffer.firstUsePc);
+            }
+        }
+    }
     if (!request.target.registrationModules) {
         note("no-target");
         return nullptr;
