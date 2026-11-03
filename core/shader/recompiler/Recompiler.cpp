@@ -27,6 +27,7 @@
 #include <memory>
 #include <set>
 #include <mutex>
+#include <tuple>
 #include <new>
 #include <shared_mutex>
 #include <unordered_map>
@@ -1623,6 +1624,27 @@ RecompileResult materializeResult(const CompiledVariant& variant, const Recompil
         const auto& module = entry->module;
         result.specializationId = module->specializationId;
         result.spirv = module->spirv;
+        static const bool logModuleKeys = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
+        static std::mutex moduleKeyLogMutex;
+        static std::set<std::tuple<std::uint64_t, bool, std::uint64_t>> moduleKeysLogged;
+        const auto loggedFirst = [&] {
+            std::lock_guard lock(moduleKeyLogMutex);
+            return moduleKeysLogged.emplace(artifact.variantId, registrationDefaults, module->spirv.ContentHash().low).second;
+        };
+        if (logModuleKeys && artifact.registrationModule && request.shader.stage == ShaderStage::Fragment && loggedFirst()) {
+            std::string text;
+            char word[32];
+            for (const auto value : moduleKey) {
+                std::snprintf(word, sizeof word, "%x,", value);
+                text += word;
+            }
+            text += " spec=";
+            for (const auto& constant : plan->bindings.specialization) {
+                std::snprintf(word, sizeof word, "%u:%x,", constant.id, constant.value);
+                text += word;
+            }
+            std::fprintf(stderr, "[modkey] 0x%llx art=%llu reg=%d shared=%d spirv=%016llx key=%s\n", static_cast<unsigned long long>(request.shader.codeAddress), static_cast<unsigned long long>(artifact.variantId), registrationDefaults ? 1 : 0, plan->bindings.specialization.empty() ? 1 : 0, static_cast<unsigned long long>(module->spirv.ContentHash().low), text.c_str());
+        }
         bindingPlan = &entry->bindings;
     } else {
         result.spirv = artifact.spirv;
