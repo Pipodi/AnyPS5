@@ -99,6 +99,7 @@ enum class RuntimeSwitch : std::size_t {
     DispatchCacheLarge,
     ResourceCacheLarge,
     ReadOnlyBdaItems,
+    DeferLabelStore,
     Count,
 };
 
