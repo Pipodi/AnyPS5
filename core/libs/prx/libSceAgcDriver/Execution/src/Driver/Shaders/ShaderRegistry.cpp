@@ -1734,6 +1734,9 @@ RegistrationPrebuildQueue* CreateRegisteredComputeQueue(std::function<void(std::
             const auto* normal = RegisteredComputeQueueSlot().load();
             return normal != nullptr && normal->QuietLifted();
         };
+        hooks.liftSnapshot = [](std::size_t released, std::size_t held) {
+            std::fprintf(stderr, "[regcompute] low lane lifted, %zu released, %zu held t=%.0f\n", released, held, AgcDriver::ComputeTimeline::NowMs());
+        };
         hooks.held = [](std::size_t queued, std::uint64_t normal, std::uint64_t demand, std::uint64_t memory) {
             std::fprintf(stderr, "[regcompute] low lane held: queued=%zu normal=%llu demand=%llu memory=%llu t=%.0f\n", queued, static_cast<unsigned long long>(normal), static_cast<unsigned long long>(demand), static_cast<unsigned long long>(memory), AgcDriver::ComputeTimeline::NowMs());
         };
@@ -2463,7 +2466,7 @@ void ReleaseRegisteredComputePrebuilds() {
     if (RegisteredComputeQueue().Presented()) {
         std::fprintf(stderr, "[regcompute] quiet hold lifted after a frame stall, %zu queued t=%.0f\n", RegisteredComputeQueue().Queued(), AgcDriver::ComputeTimeline::NowMs());
         if (auto* low = LowRegisteredComputeQueueSlot().load()) {
-            std::fprintf(stderr, "[regcompute] low lane lifted, %zu queued t=%.0f\n", low->Queued(), AgcDriver::ComputeTimeline::NowMs());
+            if (RegistrationPrebuildQueue::LowLiftBatches() == 0) std::fprintf(stderr, "[regcompute] low lane lifted, %zu queued t=%.0f\n", low->Queued(), AgcDriver::ComputeTimeline::NowMs());
             low->Poke();
         }
     }

@@ -452,6 +452,34 @@ void LowLiftGateHoldsUntilTheLiftThenNewestBatchLargestFirst() {
     Require(order == std::vector<int>({7, 6, 3, 9, 5}), "the lifted low lane did not start the newest batch largest first");
 }
 
+void LowLiftBatchLimitStartsOnlyTheNewestBatches() {
+    std::atomic<bool> lifted{false};
+    std::vector<int> order;
+    RegistrationPrebuildQueue::Settings settings;
+    settings.waitForPresent = false;
+    settings.concurrency = 0;
+    settings.liftGate = true;
+    settings.newestFirst = true;
+    settings.batch = std::chrono::milliseconds(40);
+    settings.liftBatches = 1;
+    std::size_t releasedCount = 0;
+    std::size_t heldCount = 0;
+    RegistrationPrebuildQueue::Hooks hooks;
+    hooks.lifted = [&] { return lifted.load(); };
+    hooks.liftSnapshot = [&](std::size_t released, std::size_t held) { releasedCount = released; heldCount = held; };
+    RegistrationPrebuildQueue queue(settings, [&](std::function<void()> task) { task(); }, {}, hooks);
+    for (int words : {5, 9}) queue.Enqueue(words, 0, [&order, words] { order.push_back(words); }, words);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    for (int words : {3, 7, 6}) queue.Enqueue(words, 0, [&order, words] { order.push_back(words); }, words);
+    lifted = true;
+    queue.Poke();
+    Require(order == std::vector<int>({7, 6, 3}), "the lift did not start only the newest batch largest first");
+    Require(releasedCount == 3 && heldCount == 2, "the lift snapshot did not report the released and held counts");
+    queue.Enqueue(11, 0, [&order] { order.push_back(11); }, 11);
+    queue.Poke();
+    Require(order.size() == 3 && queue.Queued() == 3, "an item queued after the lift snapshot or an older batch started");
+}
+
 void EnvironmentSetsLowLiftGate() {
     SetEnvironment("APS5_COMPUTE_REGISTRATION_LOW_GATE", "lift");
     SetEnvironment("APS5_COMPUTE_REGISTRATION_LOW_BATCH_MS", "750");
@@ -460,7 +488,13 @@ void EnvironmentSetsLowLiftGate() {
     SetEnvironment("APS5_COMPUTE_REGISTRATION_LOW_GATE", "");
     SetEnvironment("APS5_COMPUTE_REGISTRATION_LOW_BATCH_MS", "");
     SetEnvironment("APS5_COMPUTE_REGISTRATION_LOW_THREADS", "");
-    Require(settings.liftGate && !settings.idleGate && settings.concurrency == 3 && settings.batch == std::chrono::milliseconds(750), "the lift gate was not read from the environment");
+    Require(settings.liftGate && !settings.idleGate && settings.concurrency == 3 && settings.batch == std::chrono::milliseconds(750) && settings.liftBatches == 0, "the lift gate was not read from the environment");
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_LOW_GATE", "lift");
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_LOW_LIFT_BATCHES", "2");
+    const auto limited = RegistrationPrebuildQueue::LowSettingsFromEnvironment();
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_LOW_GATE", "");
+    SetEnvironment("APS5_COMPUTE_REGISTRATION_LOW_LIFT_BATCHES", "");
+    Require(limited.liftBatches == 2, "the lift batch limit was not read from the environment");
 }
 
 }
@@ -489,6 +523,7 @@ int main() {
         LargeItemsWaitForTheLiftWhileSmallOnesStart();
         EnvironmentSetsDemandQuiet();
         LowLiftGateHoldsUntilTheLiftThenNewestBatchLargestFirst();
+        LowLiftBatchLimitStartsOnlyTheNewestBatches();
         EnvironmentSetsLowLiftGate();
         std::cout << "registration prebuild queue tests passed\n";
         return 0;

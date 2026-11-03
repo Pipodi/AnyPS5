@@ -33,6 +33,7 @@ public:
         std::uint64_t liftOnlyWords = 0;
         bool liftGate = false;
         std::chrono::milliseconds batch{2000};
+        unsigned liftBatches = 0;
     };
 
     struct Hooks {
@@ -43,6 +44,7 @@ public:
         std::function<void(std::size_t, std::uint64_t, std::uint64_t, std::uint64_t)> held;
         std::function<std::chrono::milliseconds()> demandIdleFor;
         std::function<bool()> lifted;
+        std::function<void(std::size_t, std::size_t)> liftSnapshot;
     };
 
     using Submitter = std::function<void(std::function<void()>)>;
@@ -70,6 +72,11 @@ public:
         return gate != nullptr && std::strcmp(gate, "lift") == 0;
     }
 
+    static unsigned LowLiftBatches() {
+        const char* text = std::getenv("APS5_COMPUTE_REGISTRATION_LOW_LIFT_BATCHES");
+        return text != nullptr && *text != 0 ? static_cast<unsigned>(std::strtoul(text, nullptr, 10)) : 0u;
+    }
+
     static Settings LowSettingsFromEnvironment() {
         Settings settings = SettingsFromEnvironment();
         const char* gate = std::getenv("APS5_COMPUTE_REGISTRATION_LOW_GATE");
@@ -79,6 +86,7 @@ public:
             settings.demandQuiet = std::chrono::milliseconds(0);
             settings.concurrency = LowThreads();
             if (const char* batch = std::getenv("APS5_COMPUTE_REGISTRATION_LOW_BATCH_MS")) settings.batch = std::chrono::milliseconds(std::strtoull(batch, nullptr, 10));
+            settings.liftBatches = LowLiftBatches();
             return settings;
         }
         if (gate != nullptr && std::strcmp(gate, "free") == 0) return settings;
@@ -115,7 +123,7 @@ public:
         {
             std::lock_guard lock(mutex);
             if (stopped) return;
-            pending.push_back({key, cost, std::move(task), words, std::chrono::steady_clock::now()});
+            pending.push_back({key, cost, std::move(task), words, std::chrono::steady_clock::now(), !snapshotTaken});
             if (!opened.load() && !timer.joinable()) timer = std::thread([this] { Fallback(); });
         }
         Pump();
@@ -229,6 +237,7 @@ private:
         std::function<void()> task;
         std::uint64_t words = 0;
         std::chrono::steady_clock::time_point stamp;
+        bool eligible = true;
     };
 
     struct Summary {
@@ -238,8 +247,30 @@ private:
         std::uint64_t normal = 0;
     };
 
+    void TakeLiftSnapshot() {
+        if (!settings.liftGate || settings.liftBatches == 0 || !hooks.lifted || !hooks.lifted()) return;
+        std::size_t released = 0;
+        std::size_t held = 0;
+        {
+            std::lock_guard lock(mutex);
+            if (stopped || snapshotTaken) return;
+            snapshotTaken = true;
+            unsigned batches = 0;
+            for (std::size_t i = pending.size(); i-- > 0;) {
+                if (i + 1 == pending.size() || pending[i + 1].stamp - pending[i].stamp > settings.batch) ++batches;
+                pending[i].eligible = batches <= settings.liftBatches;
+            }
+            for (const auto& item : pending) {
+                if (item.eligible) ++released;
+                else ++held;
+            }
+        }
+        if (hooks.liftSnapshot) hooks.liftSnapshot(released, held);
+    }
+
     void Pump() {
         if (!opened.load()) return;
+        TakeLiftSnapshot();
         for (;;) {
             Item item;
             std::optional<Summary> summary;
@@ -253,12 +284,19 @@ private:
                 const auto startable = [&](const Item& queued) { return !holding || settings.liftOnlyWords == 0 || queued.words < settings.liftOnlyWords; };
                 auto chosen = settings.newestFirst ? std::prev(pending.end()) : pending.begin();
                 if (settings.liftGate) {
-                    auto newest = std::prev(pending.end());
-                    chosen = newest;
-                    for (auto it = newest; ; --it) {
-                        if (it->words > chosen->words) chosen = it;
-                        if (it == pending.begin() || it->stamp - std::prev(it)->stamp > settings.batch) break;
+                    std::size_t newest = pending.size();
+                    while (newest != 0 && !pending[newest - 1].eligible) --newest;
+                    if (newest == 0) return;
+                    --newest;
+                    std::size_t best = newest;
+                    for (std::size_t i = newest; ; --i) {
+                        if (pending[i].words > pending[best].words) best = i;
+                        std::size_t before = i;
+                        while (before != 0 && !pending[before - 1].eligible) --before;
+                        if (before == 0 || pending[i].stamp - pending[before - 1].stamp > settings.batch) break;
+                        i = before;
                     }
+                    chosen = pending.begin() + static_cast<std::ptrdiff_t>(best);
                 } else if (settings.newestFirst) {
                     const auto found = std::find_if(pending.rbegin(), pending.rend(), startable);
                     if (found != pending.rend()) chosen = std::prev(found.base());
@@ -350,6 +388,7 @@ private:
     std::uint64_t deferredForNormal = 0;
     std::optional<std::chrono::steady_clock::time_point> summaryAt;
     bool stopped = false;
+    bool snapshotTaken = false;
 };
 
 }
