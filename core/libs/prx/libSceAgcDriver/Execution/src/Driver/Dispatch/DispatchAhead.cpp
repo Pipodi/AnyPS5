@@ -544,8 +544,8 @@ void Driver::missAhead(const Submission& submission, const QueueState& live, std
     ScannedRange().Record(submission.serial, submission.queue, cursor);
     if (missAheadProfiled() && missAheadLedger().Active()) {
         const auto& totals = plan.Totals();
-        WriteLogLine(stderr, "[miss-ahead] scan queue %u serial %llu from %zu to %zu of %zu: visited %zu started %zu returned_early %zu skipped cached %zu plan_duplicate %zu unprepared %zu unregistered %zu capture_failed %zu early_listed %zu early_kernel %zu early_failed %zu indirect_cpu_path %zu stop %s t=%.0f\n", submission.queue, static_cast<unsigned long long>(submission.serial), from, cursor, commands.size(),
-                     totals.visited, totals.started, totals.visited - totals.reached, totals.cached, totals.duplicate, totals.unprepared, totals.unregistered, totals.captureFailed, totals.listed, totals.kernel, totals.failed, totals.indirect, stop, AgcDriver::ComputeTimeline::NowMs());
+        WriteLogLine(stderr, "[miss-ahead] scan queue %u serial %llu from %zu to %zu of %zu: visited %zu started %zu returned_early %zu skipped cached %zu plan_duplicate %zu unprepared %zu unregistered %zu capture_failed %zu early_listed %zu early_kernel %zu early_failed %zu indirect_cpu_path %zu cond_exec_skipped %zu stop %s t=%.0f\n", submission.queue, static_cast<unsigned long long>(submission.serial), from, cursor, commands.size(),
+                     totals.visited, totals.started, totals.visited - totals.reached, totals.cached, totals.duplicate, totals.unprepared, totals.unregistered, totals.captureFailed, totals.listed, totals.kernel, totals.failed, totals.indirect, totals.conditional, stop, AgcDriver::ComputeTimeline::NowMs());
     }
     reportMissAhead();
 }
