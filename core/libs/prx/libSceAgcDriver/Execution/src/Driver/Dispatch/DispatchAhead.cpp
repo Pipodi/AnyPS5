@@ -374,6 +374,14 @@ std::size_t MissAheadMax() {
     return cap;
 }
 
+bool MissAheadPastConditional() {
+    static const bool past = [] {
+        const char* text = std::getenv("APS5_DISPATCH_MISS_AHEAD_PAST_COND_EXEC");
+        return text != nullptr && std::strcmp(text, "1") == 0;
+    }();
+    return past;
+}
+
 std::size_t MissAheadVisits() {
     static const std::size_t cap = [] {
         const char* text = std::getenv("APS5_DISPATCH_MISS_AHEAD_VISITS");
@@ -472,6 +480,14 @@ void Driver::missAhead(const Submission& submission, const QueueState& live, std
         if (header == RenderingWaitPacketHeader) {
             stop = "rendering_wait";
             break;
+        }
+        if (opcode == 0x22 && MissAheadPastConditional()) {
+            const auto end = submission.conditionalEnds.find(cursor);
+            if (end != submission.conditionalEnds.end() && end->second > cursor && end->second <= commands.size()) {
+                plan.Note(MissAheadPlan::Skip::Conditional);
+                cursor = end->second;
+                continue;
+            }
         }
         if (opcode == 0x22 || opcode == 0x3f) {
             stop = opcode == 0x22 ? "opcode_0x22" : "opcode_0x3f";
