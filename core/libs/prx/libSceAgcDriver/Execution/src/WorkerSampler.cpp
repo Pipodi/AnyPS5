@@ -1,8 +1,11 @@
 #include "prx/libSceAgcDriver/Execution/include/WorkerSampler.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Mutex.hpp"
+#include "prx/libSceAgcDriver/Execution/include/GpuWindowSampler.hpp"
+#include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #ifdef _WIN32
 #include "prx/libSceAgcDriver/Execution/include/StackWalk.hpp"
 #include <windows.h>
@@ -336,6 +339,7 @@ void StartCommitterSampler() {
 }
 
 void StopWorkerSampler() {
+    GpuWindowSampler::Stop();
     processSamplerThread.request_stop();
     workerSamplerThread.request_stop();
     committerSamplerThread.request_stop();
@@ -349,4 +353,29 @@ void StartCommitterSampler() {}
 void StopWorkerSampler() {}
 #endif
 
+bool GpuWindowSamplerConfigured() {
+    static const bool configured = [] {
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> windows;
+        const char* interval = std::getenv("APS5_SAMPLE_GPU_WORKERS_MS");
+        return interval != nullptr && std::atof(interval) > 0.0 && GpuWindowSampler::ParseWindows(std::getenv("APS5_SAMPLE_GPU_WORKERS_FRAMES"), windows);
+    }();
+    return configured;
+}
+
+void StartGpuWindowSampler() {
+    if (!GpuWindowSamplerConfigured()) return;
+    static std::once_flag started;
+    std::call_once(started, [] {
+        GpuWindowSampler::Options options;
+        options.intervalMs = std::atof(std::getenv("APS5_SAMPLE_GPU_WORKERS_MS"));
+        GpuWindowSampler::ParseWindows(std::getenv("APS5_SAMPLE_GPU_WORKERS_FRAMES"), options.windows);
+        options.sink = [](const std::string& line) { AgcDriver::ProfilePrint_nid_no_patch("%s\n", line.c_str()); };
+        GpuWindowSampler::Start(std::move(options));
+    });
+}
+
+}
+
+extern "C" void AgcDriverNoteDisplayFrame_nid_postfix(std::uint64_t frame) {
+    AgcDriver::GpuWindowSampler::NoteDisplayFrame(frame);
 }

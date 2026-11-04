@@ -607,6 +607,7 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
         bool entryFound = false;
         {
             std::lock_guard cacheLock(dispatchCacheMutex);
+            phaseTiming.Phase(PhaseLookupPipeLock);
             if (const auto found = dispatchCache.find(key); found != dispatchCache.end()) {
                 entryFound = true;
                 for (const auto& variant : found->second->variants) appendEntryRegions(*variant, reads);
@@ -623,6 +624,7 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
             if (!readsClear) NoteItemFallback(ItemFallback::Reads);
         }
         if (!readsClear && DrawPipeline::Queue0().Busy()) DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Packet, 0x15);
+        phaseTiming.Phase(PhaseLookupPipeline);
     }
     if (fromAhead) {
         compiledResult = std::move(ahead.compiledResult);

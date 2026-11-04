@@ -9,6 +9,7 @@ void Driver::lookupDispatch(std::uint64_t address, const Submission& submission,
 
         static const bool validateUnlocked = std::getenv("APS5_NO_UNLOCKED_VALIDATE") == nullptr;
         std::unique_lock cacheLock(dispatchCacheMutex);
+        phaseTiming.Phase(PhaseLookupLock);
         ++entryCounters.lookups;
         const auto found = dispatchCache.find(key);
         std::shared_ptr<DispatchEntry> entry = found != dispatchCache.end() ? found->second : nullptr;
@@ -16,6 +17,7 @@ void Driver::lookupDispatch(std::uint64_t address, const Submission& submission,
             ++entryCounters.absent;
             if (dispatchGhostKeys.contains(key)) ++entryCounters.absentEvicted;
         }
+        phaseTiming.Phase(PhaseLookupProbe);
         if (validateUnlocked) cacheLock.unlock();
         phaseTiming.Phase(PhaseLookup);
         if (entry != nullptr) {

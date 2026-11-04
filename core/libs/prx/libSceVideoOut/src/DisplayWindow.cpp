@@ -112,6 +112,7 @@ void DisplayWindow::UpdateTitle() {
     static double currentFps = 0.0;
     const auto now = std::chrono::steady_clock::now();
     frameNum++;
+    AgcDriverNoteDisplayFrame_nid_postfix(frameNum);
     fpsFrames++;
     const double elapsed = std::chrono::duration<double>(now - fpsStart).count();
     if (elapsed >= 2.0) {

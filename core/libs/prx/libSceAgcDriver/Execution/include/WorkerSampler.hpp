@@ -7,6 +7,8 @@ namespace AgcDriver {
 void StartWorkerSampler();
 void StartCommitterSampler();
 void StopWorkerSampler();
+bool GpuWindowSamplerConfigured();
+void StartGpuWindowSampler();
 
 }
 

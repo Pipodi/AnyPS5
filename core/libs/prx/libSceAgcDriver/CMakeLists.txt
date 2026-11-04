@@ -360,6 +360,7 @@ set(agcDriverSources
         ${CMAKE_CURRENT_SOURCE_DIR}/Execution/src/Driver/Synchronization/WaitMemory.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Execution/src/Driver/Synchronization/WaitStatistics.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Execution/src/WorkerSampler.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Execution/src/GpuWindowSampler.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Execution/src/HostAllocator.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Execution/src/PerformanceTrace.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Execution/src/PerformanceTraceThread.cpp
@@ -598,6 +599,17 @@ if(BUILD_TESTING)
     add_test(NAME agc_write_watch_coverage COMMAND agc_write_watch_coverage_tests)
     if(WIN32)
         set_tests_properties(agc_write_watch_coverage PROPERTIES ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+
+    add_test_executable(agc_gpu_window_sampler_tests tests/GpuWindowSampler.cpp Execution/src/GpuWindowSampler.cpp)
+    target_include_directories(agc_gpu_window_sampler_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(agc_gpu_window_sampler_tests PRIVATE libc)
+    configure_windows_unwind(agc_gpu_window_sampler_tests)
+    add_test(NAME agc_gpu_window_sampler COMMAND agc_gpu_window_sampler_tests)
+    set_tests_properties(agc_gpu_window_sampler PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(agc_gpu_window_sampler PROPERTIES ENVIRONMENT_MODIFICATION
                 "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
 

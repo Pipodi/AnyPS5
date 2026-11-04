@@ -5,6 +5,7 @@
 #include "prx/libSceAgcDriver/Execution/include/HandoffSpin.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/WorkerSampler.hpp"
+#include "prx/libSceAgcDriver/Execution/include/GpuWindowSampler.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Pipeline.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/RuntimeSwitches.hpp"
 #include "prx/libc/include/HostThreadLocal.hpp"
@@ -543,6 +544,8 @@ void DrawPipeline::run() {
     PerformanceTrace::BindThread("draw committer");
     Graphics::MarkBuildThread(Graphics::BuildThread::Committer);
     StartCommitterSampler();
+    StartGpuWindowSampler();
+    const GpuWindowSampler::ThreadScope sampleScope("q0 committer", GpuWindowSamplerConfigured());
     for (;;) {
         Commit* commit = nullptr;
         bool isDraw = false;
