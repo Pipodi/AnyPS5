@@ -9,6 +9,7 @@
 #include "RdnaDecoder/RdnaInstructionDecoder.hpp"
 #include <algorithm>
 #include <cstdlib>
+#include <unordered_map>
 #include <array>
 #include <cstring>
 #include <type_traits>
@@ -116,6 +117,35 @@ void faultIf(SpirvValueEmitContext& context, const IrValue& instruction, std::ui
     StopBdaInvocationIf(state, condition);
 }
 
+bool faultCheckDedup() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("APS5_SPIRV_FAULT_CHECK_DEDUP");
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+bool faultBlockDominates(const SpirvEmitterState& state, const IrBlock* dominator, const IrBlock* block) {
+    while (block != nullptr) {
+        if (block == dominator) return true;
+        const auto found = state.faultDominators.find(block);
+        if (found == state.faultDominators.end() || found->second == block) return false;
+        block = found->second;
+    }
+    return false;
+}
+
+bool faultCheckCovered(SpirvEmitterState& state, std::vector<std::uint32_t> key, std::uint32_t guard) {
+    if (!faultCheckDedup() || state.currentBlock == nullptr || state.module.InHelperFunction()) return false;
+    auto& entries = state.faultChecks[std::move(key)];
+    for (const auto& entry : entries) {
+        if (entry.guard != 0u && entry.guard != guard) continue;
+        if (faultBlockDominates(state, entry.block, state.currentBlock)) return true;
+    }
+    entries.push_back({state.currentBlock, guard});
+    return false;
+}
+
 template<typename TValue, typename TCompute>
 TValue cached(SpirvEmitterState& state, std::vector<std::uint32_t> key, TCompute&& compute) {
     static_assert(std::is_trivially_copyable_v<TValue> && sizeof(TValue) % sizeof(std::uint32_t) == 0u);
@@ -211,8 +241,12 @@ RuntimeDescriptor descriptor(SpirvValueEmitContext& context, const IrValue& inst
     return {decoded.base, decoded.records, decoded.stride, decoded.word3, decoded.swizzle, index, decoded.valid, 0u, 0u, decoded.invalid};
 }
 
-void checkDescriptor(SpirvValueEmitContext& context, const IrValue& instruction, const RuntimeDescriptor& resource) {
-    if (context.Memory(instruction).gpuDescriptor) faultIf(context, instruction, resource.invalid, resource.base, 0u, BdaAbi::FaultReason::InvalidDescriptor);
+void checkDescriptor(SpirvValueEmitContext& context, const IrValue& instruction, const RuntimeDescriptor& resource, std::uint32_t guard) {
+    if (!context.Memory(instruction).gpuDescriptor) return;
+    auto key = descriptorKey(context, instruction);
+    key.front() = 8u;
+    if (faultCheckCovered(context.state, std::move(key), guard)) return;
+    faultIf(context, instruction, resource.invalid, resource.base, 0u, BdaAbi::FaultReason::InvalidDescriptor);
 }
 
 DescriptorShape shape(SpirvEmitterState& state, const RuntimeDescriptor& resource) {
@@ -813,7 +847,9 @@ std::uint32_t formattedDispatch(SpirvValueEmitContext& context, const IrValue& i
             const auto selector = field(state, resource.word3, component * 3u, 3u);
             invalid = Binary(state, spv::OpLogicalOr, TypeBool(state), invalid, Binary(state, spv::OpLogicalOr, TypeBool(state), equal(state, selector, ConstantU32(state, 2u)), equal(state, selector, ConstantU32(state, 3u))));
         }
-        faultIf(context, instruction, invalid, resource.base, 0u, BdaAbi::FaultReason::InvalidDescriptor);
+        auto key = descriptorKey(context, instruction);
+        key.front() = 9u + components;
+        if (!faultCheckCovered(state, std::move(key), context.Arg(instruction, instruction.ArgumentCount() - 1u))) faultIf(context, instruction, invalid, resource.base, 0u, BdaAbi::FaultReason::InvalidDescriptor);
     }
     const auto* word = instruction.Argument(0)->Resolve()->Argument(3)->Resolve();
     if (memory.gpuDescriptor && word->HasImmediate()) {
@@ -1175,6 +1211,58 @@ std::optional<CoherentPair> coherentPair(SpirvValueEmitContext& context, const I
 
 }
 
+void PlanFaultCheckDominators(SpirvEmitterState& state, const IrProgram& program) {
+    state.faultChecks.clear();
+    state.faultDominators.clear();
+    if (!faultCheckDedup()) return;
+    const auto& order = program.BlockOrder();
+    if (order.empty() || !order.front()->Predecessors().empty()) return;
+    std::vector<const IrBlock*> postorder;
+    std::unordered_map<const IrBlock*, std::uint32_t> number;
+    std::vector<std::pair<const IrBlock*, std::size_t>> stack{{order.front(), 0u}};
+    std::unordered_map<const IrBlock*, bool> seen{{order.front(), true}};
+    while (!stack.empty()) {
+        auto& [block, next] = stack.back();
+        const auto& successors = block->Successors();
+        if (next < successors.size()) {
+            const IrBlock* successor = successors[next++];
+            if (!seen[successor]) {
+                seen[successor] = true;
+                stack.push_back({successor, 0u});
+            }
+            continue;
+        }
+        number[block] = static_cast<std::uint32_t>(postorder.size());
+        postorder.push_back(block);
+        stack.pop_back();
+    }
+    auto& idom = state.faultDominators;
+    idom[order.front()] = order.front();
+    const auto intersect = [&](const IrBlock* left, const IrBlock* right) {
+        while (left != right) {
+            while (number.at(left) < number.at(right)) left = idom.at(left);
+            while (number.at(right) < number.at(left)) right = idom.at(right);
+        }
+        return left;
+    };
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (auto at = postorder.rbegin(); at != postorder.rend(); ++at) {
+            const IrBlock* block = *at;
+            if (block == order.front()) continue;
+            const IrBlock* chosen = nullptr;
+            for (const IrBlock* predecessor : block->Predecessors()) {
+                if (!idom.contains(predecessor)) continue;
+                chosen = chosen == nullptr ? predecessor : intersect(predecessor, chosen);
+            }
+            if (chosen != nullptr && (!idom.contains(block) || idom.at(block) != chosen)) {
+                idom[block] = chosen;
+                changed = true;
+            }
+        }
+    }
+}
+
 std::uint32_t EmitRuntimeBufferLoad(SpirvValueEmitContext& context, const IrValue& instruction, std::uint32_t components) {
     auto& state = context.state;
     const auto& memory = context.Memory(instruction);
@@ -1182,7 +1270,7 @@ std::uint32_t EmitRuntimeBufferLoad(SpirvValueEmitContext& context, const IrValu
     const auto zero = components == 1u ? ConstantU32(state, 0u) : ConstantU32CompositeZero(state, components);
     const auto resource = memory.formatted && !inlineFormat(context, instruction) ? descriptor(context, instruction) : bounded(context, instruction);
     return EmitValueOrDefaultIfCondition(state, context.Arg(instruction, instruction.ArgumentCount() - 1u), type, zero, [&] {
-        checkDescriptor(context, instruction, resource);
+        checkDescriptor(context, instruction, resource, context.Arg(instruction, instruction.ArgumentCount() - 1u));
         if (memory.formatted) return EmitValueOrDefaultIfCondition(state, resource.valid, type, zero, [&] { return formattedDispatch(context, instruction, resource, components, false, 0u); });
         if (memory.gpuDescriptor) return gpuLoad(context, instruction, resource, components);
         const auto readComponents = [&] {
@@ -1211,7 +1299,7 @@ void EmitRuntimeBufferStore(SpirvValueEmitContext& context, const IrValue& instr
     const auto& memory = context.Memory(instruction);
     const auto resource = memory.formatted && !inlineFormat(context, instruction) ? descriptor(context, instruction) : bounded(context, instruction);
     EmitIfCondition(state, context.Arg(instruction, instruction.ArgumentCount() - 1u), [&] {
-        checkDescriptor(context, instruction, resource);
+        checkDescriptor(context, instruction, resource, context.Arg(instruction, instruction.ArgumentCount() - 1u));
         if (memory.formatted) {
             EmitIfCondition(state, resource.valid, [&] { static_cast<void>(formattedDispatch(context, instruction, resource, components, true, storeData(context, instruction))); });
             return;
@@ -1283,7 +1371,7 @@ std::uint32_t EmitRuntimeScalarBufferLoad(SpirvValueEmitContext& context, const 
     // instructions are, not inside a guard of its own.
     const bool hoisted = state.runtimeBufferLabel != 0u && state.currentLabel == state.runtimeBufferLabel;
     const auto resource = descriptor(context, instruction);
-    checkDescriptor(context, instruction, resource);
+    checkDescriptor(context, instruction, resource, 0u);
     const auto u64 = TypeScalarU64(state);
     const auto size = Select(state, u64, equal(state, resource.stride, ConstantU32(state, 0u)), Unary(state, spv::OpUConvert, u64, resource.records), Binary(state, spv::OpIMul, u64, Unary(state, spv::OpUConvert, u64, resource.stride), Unary(state, spv::OpUConvert, u64, resource.records)));
     struct DwordBounds {
@@ -1356,7 +1444,7 @@ std::uint32_t EmitRuntimeBufferAtomic(SpirvValueEmitContext& context, const IrVa
     const auto zero = bits == 64u ? ConstantU64(state, 0u) : ConstantU32(state, 0u);
     const auto resource = bounded(context, instruction);
     return EmitValueOrDefaultIfCondition(state, active, type, zero, [&] {
-        checkDescriptor(context, instruction, resource);
+        checkDescriptor(context, instruction, resource, active);
         const auto access = address(context, instruction, resource, 0u, bits / 8u);
         return EmitValueOrDefaultIfCondition(state, access.inBounds, type, zero, [&] {
             if (!context.Memory(instruction).gpuDescriptor) {
