@@ -35,7 +35,7 @@ bool ParseWindows(const char* text, std::vector<std::pair<std::uint64_t, std::ui
         if (end == cursor || from > to) return false;
         windows.emplace_back(from, to);
         cursor = end;
-        if (*cursor == ',') ++cursor;
+        if (*cursor == ',' || *cursor == '+') ++cursor;
         else if (*cursor != '\0') return false;
     }
     return !windows.empty();

@@ -22,6 +22,7 @@ void ParsesWindows() {
     std::vector<std::pair<std::uint64_t, std::uint64_t>> windows;
     Check(AgcDriver::GpuWindowSampler::ParseWindows("1160:1210", windows) && windows.size() == 1 && windows[0].first == 1160 && windows[0].second == 1210, "single window");
     Check(AgcDriver::GpuWindowSampler::ParseWindows("864:1034,1160:1210", windows) && windows.size() == 2 && windows[1].first == 1160, "two windows");
+    Check(AgcDriver::GpuWindowSampler::ParseWindows("864:1034+1160:1210", windows) && windows.size() == 2 && windows[1].second == 1210, "plus separator");
     Check(!AgcDriver::GpuWindowSampler::ParseWindows("1210:1160", windows), "reversed window accepted");
     Check(!AgcDriver::GpuWindowSampler::ParseWindows("12", windows), "window without a colon accepted");
     Check(!AgcDriver::GpuWindowSampler::ParseWindows("1:2;3:4", windows), "stray separator accepted");
