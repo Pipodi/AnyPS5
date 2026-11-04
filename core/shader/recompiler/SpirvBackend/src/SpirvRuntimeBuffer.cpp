@@ -117,12 +117,9 @@ void faultIf(SpirvValueEmitContext& context, const IrValue& instruction, std::ui
     StopBdaInvocationIf(state, condition);
 }
 
-bool faultCheckDedup() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("APS5_SPIRV_FAULT_CHECK_DEDUP");
-        return value != nullptr && std::strcmp(value, "1") == 0;
-    }();
-    return enabled;
+bool faultCheckDedupRequested() {
+    const char* value = std::getenv("APS5_SPIRV_FAULT_CHECK_DEDUP");
+    return value != nullptr && std::strcmp(value, "1") == 0;
 }
 
 bool faultBlockDominates(const SpirvEmitterState& state, const IrBlock* dominator, const IrBlock* block) {
@@ -136,7 +133,7 @@ bool faultBlockDominates(const SpirvEmitterState& state, const IrBlock* dominato
 }
 
 bool faultCheckCovered(SpirvEmitterState& state, std::vector<std::uint32_t> key, std::uint32_t guard) {
-    if (!faultCheckDedup() || state.currentBlock == nullptr || state.module.InHelperFunction()) return false;
+    if (!state.faultCheckDedup || state.currentBlock == nullptr || state.module.InHelperFunction()) return false;
     auto& entries = state.faultChecks[std::move(key)];
     for (const auto& entry : entries) {
         if (entry.guard != 0u && entry.guard != guard) continue;
@@ -1214,7 +1211,8 @@ std::optional<CoherentPair> coherentPair(SpirvValueEmitContext& context, const I
 void PlanFaultCheckDominators(SpirvEmitterState& state, const IrProgram& program) {
     state.faultChecks.clear();
     state.faultDominators.clear();
-    if (!faultCheckDedup()) return;
+    state.faultCheckDedup = faultCheckDedupRequested();
+    if (!state.faultCheckDedup) return;
     const auto& order = program.BlockOrder();
     if (order.empty() || !order.front()->Predecessors().empty()) return;
     std::vector<const IrBlock*> postorder;

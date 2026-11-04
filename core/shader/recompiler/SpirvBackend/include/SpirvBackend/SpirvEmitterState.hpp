@@ -173,6 +173,7 @@ struct SpirvEmitterState {
     };
     std::map<std::vector<std::uint32_t>, std::vector<FaultCheckEntry>> faultChecks;
     std::unordered_map<const IrBlock*, const IrBlock*> faultDominators;
+    bool faultCheckDedup = false;
     struct BufferLengthCacheEntry {
         std::array<const IrValue*, 4> descriptor{};
         std::uint32_t variable = 0;
