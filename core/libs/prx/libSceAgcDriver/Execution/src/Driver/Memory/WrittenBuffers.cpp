@@ -56,8 +56,6 @@ void Driver::noteWrittenBuffers(std::uint64_t program, std::uint32_t queue, cons
 }
 
 std::vector<std::pair<std::uint64_t, std::uint64_t>> DispatchWriteRanges(const ShaderRecompiler::RecompileResult& compiled, bool& bounded) {
-    // APS5_READ_ONLY_BDA_ITEMS: a module that stores through no address only reads guest memory through its
-    // page table, so its writes are the descriptor-bound ones listed below (the fault buffer is the driver's).
     const bool readOnlyBda = compiled.bdaAbiVersion != 0 && Graphics::RuntimeSwitches::Set(Graphics::RuntimeSwitch::ReadOnlyBdaItems) && !Graphics::ShaderStoresThroughAddresses(compiled.spirv);
     bounded = compiled.bdaAbiVersion == 0 || readOnlyBda;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
