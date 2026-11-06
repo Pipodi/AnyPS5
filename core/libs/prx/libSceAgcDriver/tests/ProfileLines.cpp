@@ -223,6 +223,8 @@ void testGpuTimingUnion() {
     check(families.size() == 2 && families[0].name == "cloth" && families[0].programs.size() == 2 && families[0].programs[1] == 0x80001abb00ull, "family list parsed");
     const auto index = U::FamilyIndex(families);
     check(index.at(0x80001c0d00ull) == 0 && index.at(0x8000196500ull) == 1 && !index.contains(0x1), "program to family");
+    check(U::ParseRangeCap(nullptr) == 512 && U::ParseRangeCap("") == 512 && U::ParseRangeCap("0") == 512 && U::ParseRangeCap("abc") == 512, "range cap defaults");
+    check(U::ParseRangeCap("4096") == 4096 && U::ParseRangeCap("99999999") == U::MaxRangeCap, "range cap parsed and clamped");
 }
 
 void testFrameWindows() {

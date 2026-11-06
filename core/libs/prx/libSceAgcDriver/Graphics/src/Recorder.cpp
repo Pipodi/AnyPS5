@@ -2708,7 +2708,10 @@ void Recorder::FlushStores(std::source_location where) {
 
 namespace {
 
-constexpr std::uint32_t MaxTimedRanges = 512;
+std::uint32_t TimedRangeCap() {
+    static const auto cap = GpuTimingUnion::ParseRangeCap(std::getenv("APS5_PROFILE_GPU_RANGES"));
+    return cap;
+}
 constexpr std::size_t CommandClasses = static_cast<std::size_t>(Recorder::CommandClass::Count);
 constexpr const char* CommandClassNames[CommandClasses] = {"dispatch-lead", "dispatch-trail", "indirect-args", "label-run", "fill", "fill-clear", "copy", "staging-in", "staging-out", "draw", "storage-upload", "storage-writeback", "dcc-clear", "dcc-keys", "present-blit", "shadow-publish", "template-refresh"};
 // [barriers] counters by class (relaxed: only reported) and the [gputime] totals, which the
@@ -2948,7 +2951,7 @@ std::uint32_t Recorder::beginTiming(std::uint64_t key) {
     const bool full = GpuTimingEnabled();
     if (!full && !(key == BatchTimingKey && BatchStampsEnabled())) return NoTiming;
     const auto commands = open->commands;
-    const std::uint32_t queryCount = full ? MaxTimedRanges * 2 : 2;
+    const std::uint32_t queryCount = full ? TimedRangeCap() * 2 : 2;
     if (open->queries == VK_NULL_HANDLE) {
         if (!full && !sparePools.empty()) {
             open->queries = sparePools.back();
@@ -3765,8 +3768,13 @@ void printGpuTiming(const char* window) {
     }
     std::sort(hot.begin(), hot.end(), [](const auto& a, const auto& b) { return a.second.ms > b.second.ms; });
     // The first field stays the program sum: the measure scripts match on it.
-    AgcDriver::ProfilePrint_nid_no_patch("[gputime] %.0f ms of GPU time in %llu batches over %s (batch %.0f ms first to last command; classes %.0f ms, all ranges %.0f ms, untimed %.0f ms outside every range; %llu presents; %llu ranges dropped at the %u cap); by program:", timingProgramMs, static_cast<unsigned long long>(timingBatches), window, timingBatchMs, timingClassMs, timingUnionMs, timingBatchMs - timingUnionMs, static_cast<unsigned long long>(presents), static_cast<unsigned long long>(timingDropped.exchange(0, std::memory_order_relaxed)), MaxTimedRanges);
+    AgcDriver::ProfilePrint_nid_no_patch("[gputime] %.0f ms of GPU time in %llu batches over %s (batch %.0f ms first to last command; classes %.0f ms, all ranges %.0f ms, untimed %.0f ms outside every range; %llu presents; %llu ranges dropped at the %u cap, APS5_PROFILE_GPU_RANGES); by program:", timingProgramMs, static_cast<unsigned long long>(timingBatches), window, timingBatchMs, timingClassMs, timingUnionMs, timingBatchMs - timingUnionMs, static_cast<unsigned long long>(presents), static_cast<unsigned long long>(timingDropped.exchange(0, std::memory_order_relaxed)), TimedRangeCap());
     for (std::size_t i = 0; i < hot.size() && i < 12; ++i) AgcDriver::ProfilePrint_nid_no_patch(" 0x%llx x%llu %.0fms", static_cast<unsigned long long>(hot[i].first), static_cast<unsigned long long>(hot[i].second.count), hot[i].second.ms);
+    {
+        std::uint64_t programRanges = 0;
+        for (const auto& entry : hot) programRanges += entry.second.count;
+        AgcDriver::ProfilePrint_nid_no_patch(" (%zu programs, %llu ranges, %.0f ms in all; top 12 listed)", hot.size(), static_cast<unsigned long long>(programRanges), timingProgramMs);
+    }
     AgcDriver::ProfilePrint_nid_no_patch("; by class:%s\n", classes.c_str());
     // Across batches and lanes: what the per-batch "all ranges" union cannot see.
     const auto ms = [](std::uint64_t ticks) { return static_cast<double>(ticks) * timingPeriodNs / 1e6; };

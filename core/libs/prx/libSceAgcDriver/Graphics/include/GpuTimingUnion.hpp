@@ -61,6 +61,17 @@ inline std::vector<Family> ParseFamilies(std::string_view text) {
     return families;
 }
 
+constexpr std::uint32_t DefaultRangeCap = 512;
+constexpr std::uint32_t MaxRangeCap = 16384;
+
+inline std::uint32_t ParseRangeCap(const char* text) {
+    if (text == nullptr || *text == '\0') return DefaultRangeCap;
+    char* parsed = nullptr;
+    const auto value = std::strtoull(text, &parsed, 10);
+    if (parsed == text || *parsed != '\0' || value == 0) return DefaultRangeCap;
+    return static_cast<std::uint32_t>(std::min<unsigned long long>(value, MaxRangeCap));
+}
+
 // Program address -> family index (the first family that lists it).
 inline std::unordered_map<std::uint64_t, std::size_t> FamilyIndex(const std::vector<Family>& families) {
     std::unordered_map<std::uint64_t, std::size_t> index;
