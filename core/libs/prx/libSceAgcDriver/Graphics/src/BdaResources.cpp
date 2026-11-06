@@ -198,6 +198,29 @@ void reportBdaBuildTimes() {
     std::fprintf(stderr, "[bda-build] (10 s): table build parts (ms): hash %.0f, candidate scan %.0f, index %.0f, buffer %.0f, copies %.0f, cache entry %.0f\n", ms(t.hashNs), ms(t.scanNs), ms(t.indexNs), ms(t.bufferNs), ms(t.copyNs), ms(t.entryNs));
 }
 
+struct BdaOverlapCounts {
+    std::atomic<std::uint64_t> tables{0}, overlappingTables{0}, overlappingPairs{0};
+    std::atomic<long long> lastReport{0};
+};
+bool bdaOverlapLogged() {
+    static const bool enabled = std::getenv("APS5_LOG_BDA_OVERLAP") != nullptr;
+    return enabled;
+}
+void noteBdaOverlap(const ShaderRecompiler::BdaAbi::Range* ranges, std::size_t count) {
+    static BdaOverlapCounts counts;
+    std::uint64_t pairs = 0;
+    for (std::size_t i = 1; i < count; ++i) pairs += ranges[i].begin < ranges[i - 1].end ? 1u : 0u;
+    counts.tables.fetch_add(1, std::memory_order_relaxed);
+    if (pairs != 0) {
+        counts.overlappingTables.fetch_add(1, std::memory_order_relaxed);
+        counts.overlappingPairs.fetch_add(pairs, std::memory_order_relaxed);
+    }
+    const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    auto last = counts.lastReport.load();
+    if (nowMs - last < 10000 || !counts.lastReport.compare_exchange_strong(last, nowMs)) return;
+    std::fprintf(stderr, "[bda-overlap] cumulative: %llu tables built, %llu with overlapping adjacent ranges, %llu overlapping pairs\n", static_cast<unsigned long long>(counts.tables.load()), static_cast<unsigned long long>(counts.overlappingTables.load()), static_cast<unsigned long long>(counts.overlappingPairs.load()));
+}
+
 namespace {
 constexpr std::uint32_t CounterWords = 16;
 constexpr std::uint32_t CounterWord = ShaderRecompiler::BdaAbi::SrtGuardWord + 1;
@@ -371,6 +394,7 @@ BdaResources::BdaResources(const Context& context, const GuestBufferMemory& memo
         }
     }
     Require(ShaderRecompiler::BdaAbi::RangesOrdered(ranges.data(), ranges.size()), "BDA table ranges do not ascend by begin");
+    if (bdaOverlapLogged()) noteBdaOverlap(ranges.data(), ranges.size());
     for (const auto& range : ranges) Require((range.permissions & ShaderRecompiler::BdaAbi::Write) == 0 || range.end <= ShaderRecompiler::BdaAbi::WrittenAddressLimit, "a writable BDA range ends past the addresses the written-page record can hold");
     const MemoryStats::OwnerScope memStatsOwner(MemoryStats::Owner::Bda);
     const auto bufferStart = profiled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
