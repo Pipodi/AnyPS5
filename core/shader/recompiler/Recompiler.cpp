@@ -210,6 +210,36 @@ std::uint32_t BdaRangeMemoEntries(const RecompileRequest& request) {
     return config.entries;
 }
 
+std::vector<std::uint32_t> FormattedLoadFastFormats() {
+    const char* value = std::getenv("APS5_FORMATTED_LOAD_FAST");
+    if (value == nullptr || *value == '\0' || std::string_view(value) == "0") return {};
+    const std::string text(value);
+    constexpr std::uint32_t lastFormat = static_cast<std::uint32_t>(IrBufferFormat::Format32_32_32_32Float);
+    std::vector<std::uint32_t> formats;
+    if (text == "all") {
+        for (std::uint32_t format = 1; format <= lastFormat; ++format) formats.push_back(format);
+        return formats;
+    }
+    if (text == "1") return {20u, 22u, 64u, 74u, 77u, 75u, 29u, 71u, 56u, 60u, 11u, 5u};
+    std::size_t at = 0;
+    while (true) {
+        const auto comma = text.find(',', at);
+        const auto item = text.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+        std::size_t used = 0;
+        unsigned long format = 0;
+        try {
+            format = std::stoul(item, &used, 10);
+        } catch (const std::exception&) {
+            used = 0;
+        }
+        if (item.empty() || used != item.size() || format < 1u || format > lastFormat) throw std::runtime_error("APS5_FORMATTED_LOAD_FAST must be 1, all or a list of buffer format numbers 1-" + std::to_string(lastFormat) + ", not " + text);
+        if (std::find(formats.begin(), formats.end(), static_cast<std::uint32_t>(format)) == formats.end()) formats.push_back(static_cast<std::uint32_t>(format));
+        if (comma == std::string::npos) break;
+        at = comma + 1u;
+    }
+    return formats;
+}
+
 std::atomic<std::uint64_t> frontEndBuilds{0};
 
 }
@@ -782,6 +812,7 @@ CompiledVariant emitVariant(const RecompileRequest& request, IrProgram& program)
     targetOptions.waveLdsMemoryBarriers = request.target.waveLdsMemoryBarriers;
     targetOptions.deviceScopeLdsMemoryBarriers = request.target.deviceScopeLdsMemoryBarriers;
     targetOptions.bdaRangeMemoEntries = BdaRangeMemoEntries(request);
+    targetOptions.formattedLoadFastFormats = FormattedLoadFastFormats();
 
     constexpr SpirvEmitter spirvEmitter;
     CompiledShaderArtifact result;

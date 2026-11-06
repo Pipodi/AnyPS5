@@ -125,6 +125,15 @@ Counts Compile(std::size_t loads, bool formattedStores = false, bool gpu = false
     return Count(Recompile(request).spirv.Words());
 }
 
+void SetFastFormats(const char* value) {
+#ifdef _WIN32
+    _putenv_s("APS5_FORMATTED_LOAD_FAST", value);
+#else
+    if (*value == '\0') unsetenv("APS5_FORMATTED_LOAD_FAST");
+    else setenv("APS5_FORMATTED_LOAD_FAST", value, 1);
+#endif
+}
+
 Counts CompileScalarReads(std::size_t loads) {
     std::array<std::uint32_t, 8> userData{};
     RecompileRequest request{};
@@ -187,6 +196,19 @@ int main() {
         Check(gpuThree.switches == gpuOne.switches, "formatted buffer once: two more formatted loads from a GPU-selected descriptor emitted " + std::to_string(gpuThree.switches - gpuOne.switches) + " more format switches");
         Check(gpuThree.words - gpuOne.words < gpuOne.words / 10u, "formatted buffer once: 2 more formatted loads from a GPU-selected descriptor added " + std::to_string(gpuThree.words - gpuOne.words) + " SPIR-V words to a " + std::to_string(gpuOne.words) + "-word module");
         Check(gpuOne.words < 40000u, "formatted buffer once: a formatted load from a GPU-selected descriptor takes " + std::to_string(gpuOne.words) + " SPIR-V words, expected under 40000 since every driver that inlines the shared function copies all of it");
+        SetFastFormats("0");
+        const auto gpuOff = Compile(1, false, true);
+        SetFastFormats("22,77");
+        const auto gpuFastTwo = Compile(1, false, true);
+        SetFastFormats("1");
+        const auto gpuFastDefault = Compile(1, false, true);
+        SetFastFormats("all");
+        const auto gpuFastAll = Compile(1, false, true);
+        SetFastFormats("");
+        Check(gpuOff.words == gpuOne.words && gpuOff.switches == gpuOne.switches, "formatted buffer once: APS5_FORMATTED_LOAD_FAST=0 changed the GPU-selected formatted load");
+        Check(gpuFastTwo.switches == gpuOne.switches + 1u && gpuFastTwo.words > gpuOne.words, "formatted buffer once: APS5_FORMATTED_LOAD_FAST=22,77 added " + std::to_string(gpuFastTwo.switches - gpuOne.switches) + " format switches and " + std::to_string(gpuFastTwo.words - gpuOne.words) + " words to a GPU-selected formatted load (expected 1 switch)");
+        Check(gpuFastTwo.functions == gpuOne.functions && gpuFastTwo.notInlined == gpuOne.notInlined, "formatted buffer once: the format fast path changed the function count");
+        Check(gpuFastDefault.words > gpuFastTwo.words && gpuFastAll.words > gpuFastDefault.words && gpuFastAll.switches == gpuFastTwo.switches, "formatted buffer once: the default and all format lists did not grow the GPU-selected formatted load in order (" + std::to_string(gpuFastTwo.words) + ", " + std::to_string(gpuFastDefault.words) + ", " + std::to_string(gpuFastAll.words) + " words)");
         const auto gpuStoreOne = Compile(1, true, true, false, false, true);
         const auto gpuStoreThree = Compile(3, true, true, false, false, true);
         const auto gpuStoreWave64 = Compile(3, true, true, false, false, true, true);

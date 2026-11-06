@@ -49,6 +49,7 @@ struct SpirvTargetOptions {
     std::uint32_t pixelFunctionStorageDwords = 4096u;
     bool deviceScopeLdsMemoryBarriers = false;
     std::uint32_t bdaRangeMemoEntries = 0;
+    std::vector<std::uint32_t> formattedLoadFastFormats;
 };
 
 struct SpirvEmitInfo {

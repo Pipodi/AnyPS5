@@ -859,6 +859,48 @@ std::uint32_t formattedDispatch(SpirvValueEmitContext& context, const IrValue& i
     return formattedGpuCall(context, instruction, resource, components, store, data);
 }
 
+std::uint32_t fastFormattedLoad(SpirvValueEmitContext& context, const IrValue& instruction, const RuntimeDescriptor& resource, std::uint32_t components, std::uint32_t format, std::uint32_t formats) {
+    auto& state = context.state;
+    std::vector<std::uint32_t> fast;
+    for (const auto candidate : state.formattedLoadFastFormats) {
+        if (candidate < 1u || candidate > formats || GetFormatInfo(static_cast<IrBufferFormat>(candidate)).type == SpirvFormatComponentType::Unknown) continue;
+        if (std::find(fast.begin(), fast.end(), candidate) == fast.end()) fast.push_back(candidate);
+    }
+    if (fast.empty()) return genericFormattedLoad(context, instruction, resource, components, format, formats);
+    const auto merge = state.module.AllocateId();
+    const auto fallback = state.module.AllocateId();
+    std::vector<std::uint32_t> labels;
+    std::vector<std::uint32_t> branch{spv::OpSwitch, format, fallback};
+    for (const auto candidate : fast) {
+        labels.push_back(state.module.AllocateId());
+        branch.insert(branch.end(), {candidate, labels.back()});
+    }
+    const auto type = components == 1u ? TypeU32(state) : TypeU32Composite(state, components);
+    const auto result = state.module.AllocateId();
+    std::vector<std::uint32_t> phi{spv::OpPhi, type, result};
+    state.module.AddFunction(spv::OpSelectionMerge, merge, spv::SelectionControlMaskNone);
+    state.module.AddFunction(branch);
+    for (std::size_t index = 0; index < fast.size(); ++index) {
+        EmitLabel(state, labels[index]);
+        const auto value = formatted(context, instruction, resource, GetFormatInfo(static_cast<IrBufferFormat>(fast[index])), components, false, 0u);
+        const auto exit = state.module.AllocateId();
+        state.module.AddFunction(spv::OpBranch, exit);
+        EmitLabel(state, exit);
+        state.module.AddFunction(spv::OpBranch, merge);
+        phi.insert(phi.end(), {value, exit});
+    }
+    EmitLabel(state, fallback);
+    const auto generic = genericFormattedLoad(context, instruction, resource, components, format, formats);
+    const auto fallbackExit = state.module.AllocateId();
+    state.module.AddFunction(spv::OpBranch, fallbackExit);
+    EmitLabel(state, fallbackExit);
+    state.module.AddFunction(spv::OpBranch, merge);
+    phi.insert(phi.end(), {generic, fallbackExit});
+    EmitLabel(state, merge);
+    state.module.AddFunction(phi);
+    return result;
+}
+
 std::uint32_t formatSwitch(SpirvValueEmitContext& context, const IrValue& instruction, const RuntimeDescriptor& resource, std::uint32_t components, bool store, std::uint32_t data) {
     auto& state = context.state;
     const auto& memory = context.Memory(instruction);
@@ -871,7 +913,7 @@ std::uint32_t formatSwitch(SpirvValueEmitContext& context, const IrValue& instru
         const auto result = EmitValueIfElse(state, unsupported, type, [&] {
             if (memory.gpuDescriptor) RecordBdaFault(state, resource.base, ConstantU32(state, 0u), BdaInstructionPc(state, instruction), BdaAbi::FaultReason::InvalidDescriptor);
             return zero;
-        }, [&] { return genericFormattedLoad(context, instruction, resource, components, format, count); });
+        }, [&] { return memory.gpuDescriptor ? fastFormattedLoad(context, instruction, resource, components, format, count) : genericFormattedLoad(context, instruction, resource, components, format, count); });
         if (memory.gpuDescriptor) StopBdaInvocationIf(state, unsupported);
         return result;
     }
