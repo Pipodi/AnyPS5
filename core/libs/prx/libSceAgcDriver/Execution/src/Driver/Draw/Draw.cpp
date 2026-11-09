@@ -1234,7 +1234,9 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
         // owns and the preparation holds through it.
         auto prepareSnapshots = prepareDraw && splitBuild ? snapshots : std::vector<Graphics::GuestMemorySnapshot>{};
         auto reads = QueuedDrawReadRanges(drawParameters, stages);
-        auto commit = [this, localDevice = std::move(localDevice), decode = std::move(decode), drawParameters, stages = std::move(stages), snapshots = std::move(snapshots), recipe = std::move(recipe), recipeStages = std::move(recipeStages), ahead, drawKey, trace = trace, commitQueue, commitPacket, epoch, programs = std::move(programs), results = std::move(results), memory = std::move(memory), linked = std::move(linked), stageCaptures = std::move(stageCaptures), matched = std::move(matched), matchedRegions = std::move(matchedRegions), fresh = std::move(fresh), decodeReads = std::move(decodeReads), shaderMemory = std::move(shaderMemory), entry = std::move(entry), dataEntry = std::move(dataEntry), compiledStages = std::move(compiledStages), stageData = std::move(stageData), slot, program] {
+        const bool coldSkipEnabled = Graphics::ColdDrawSkipEnabled();
+        auto coldAttempt = coldSkipEnabled ? std::make_shared<Graphics::ColdSkipAttempt>() : nullptr;
+        auto commit = [this, localDevice = std::move(localDevice), decode = std::move(decode), drawParameters, stages = std::move(stages), snapshots = std::move(snapshots), recipe = std::move(recipe), recipeStages = std::move(recipeStages), ahead, drawKey, trace = trace, commitQueue, commitPacket, epoch, programs = std::move(programs), results = std::move(results), memory = std::move(memory), linked = std::move(linked), stageCaptures = std::move(stageCaptures), matched = std::move(matched), matchedRegions = std::move(matchedRegions), fresh = std::move(fresh), decodeReads = std::move(decodeReads), shaderMemory = std::move(shaderMemory), entry = std::move(entry), dataEntry = std::move(dataEntry), compiledStages = std::move(compiledStages), stageData = std::move(stageData), slot, program, coldAttempt, coldSkipEnabled] {
             DrawPipeline::FollowEpoch(epoch);
             GuestMemory::SetCurrentPacket(commitPacket, commitQueue);
             struct OriginScope {
@@ -1244,7 +1246,22 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
             try {
                 std::shared_ptr<PreparedCommit> prepared = slot != nullptr ? std::static_pointer_cast<PreparedCommit>(slot->Take()) : nullptr;
                 std::uint64_t presyncSerial = prepared != nullptr ? prepared->presyncSerial : 0;
-                if (prepared != nullptr) Graphics::WaitForPreparedPipeline(prepared->draw.get());
+                bool coldPending = false;
+                if (prepared != nullptr) {
+                    if (coldSkipEnabled && prepared->draw != nullptr) {
+                        if (!Graphics::WaitForPreparedPipelineCold(prepared->draw.get())) {
+                            const auto refusal = Graphics::PreparedDrawColdRefusal(prepared->draw.get());
+                            if (refusal == Graphics::ColdSkipRefusal::None) {
+                                coldPending = true;
+                            } else {
+                                Graphics::NoteColdRefusal(refusal);
+                                Graphics::WaitForPreparedPipeline(prepared->draw.get());
+                            }
+                        }
+                    } else {
+                        Graphics::WaitForPreparedPipeline(prepared->draw.get());
+                    }
+                }
                 // The pre-sync again, now that every earlier draw is recorded: still without the
                 // GPU mutex, so the other queues are not held while this commit waits for the GPU.
                 if (htilePresync && decode->state.depth.has_value()) presyncSerial = std::max(presyncSerial, localDevice->PresyncDrawDepth(decode->state));
@@ -1283,8 +1300,25 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
                         why.why = Graphics::PreparedDrawWhy(prepared->draw.get());
                         why.prekey = Graphics::PreparedDrawKey(prepared->draw.get());
                     }
+                    if (coldSkipEnabled && (slot == nullptr || prepared == nullptr || prepared->draw == nullptr || std::strcmp(why.why, "noprebuild:skipped") == 0)) Graphics::NoteColdRefusal(Graphics::ColdSkipRefusal::NoPrebuild);
                 }
-                commitDraw(localDevice, commitQueue, decode->state, drawParameters, stages, snapshots, recipe, recipeStages, drawKey, prepared != nullptr ? prepared->draw.get() : nullptr, presyncSerial, ahead, trace);
+                if (coldAttempt != nullptr) {
+                    coldAttempt->requested = coldPending;
+                    if (coldPending) {
+                        coldAttempt->build = Graphics::PreparedDrawPipeline(prepared->draw.get());
+                        coldAttempt->keep = prepared;
+                    }
+                }
+                commitDraw(localDevice, commitQueue, decode->state, drawParameters, stages, snapshots, recipe, recipeStages, drawKey, prepared != nullptr ? prepared->draw.get() : nullptr, presyncSerial, ahead, trace, coldAttempt.get());
+                if (coldAttempt != nullptr) {
+                    const auto coldKey = prepared != nullptr ? Graphics::PreparedDrawKey(prepared->draw.get()) : std::uint64_t{0};
+                    if (coldAttempt->skipped) {
+                        Graphics::NoteColdSkip(coldKey, whyScope.programs.c_str());
+                    } else {
+                        if (coldAttempt->requested) Graphics::NoteColdRefusal(coldAttempt->refusal);
+                        if (coldKey != 0) Graphics::NoteColdDrawn(coldKey);
+                    }
+                }
             } catch (const std::runtime_error& error) {
                 std::string where = "draw commit (programs";
                 for (const auto& program : programs) {
@@ -1313,7 +1347,12 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
             };
         }
         timing.Mark("write_ranges_and_commit");
-        DrawPipeline::Queue0().Enqueue([held] { (*held)(); }, std::move(writes), 0, {}, std::move(reads), std::move(prepare), true);
+        DrawPipeline::Queue0().Enqueue([held, coldAttempt] {
+            (*held)();
+            if (coldAttempt == nullptr) return;
+            if (coldAttempt->skipped) Graphics::ParkColdDraw(std::make_shared<std::pair<std::shared_ptr<void>, std::shared_ptr<void>>>(held, std::move(coldAttempt->keep)), coldAttempt->build);
+            else Graphics::ReapColdDraws();
+        }, std::move(writes), 0, {}, std::move(reads), std::move(prepare), true);
         if (pipelineIndirect) DrawPipeline::Queue0().Note(DrawPipeline::Event::IndirectCommit);
         phaseTiming.Phase(DrawRowLockWait);
         timing.Mark("draw_enqueued");
@@ -1340,7 +1379,7 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
     return drawn();
 }
 
-void Driver::commitDraw(std::shared_ptr<VulkanDevice> localDevice, std::uint32_t queue, const Graphics::State& graphics, const Pm4::DrawParameters& drawParameters, std::span<const Graphics::CompiledShader> stages, std::span<const Graphics::GuestMemorySnapshot> snapshots, const std::shared_ptr<const DrawRecipe>& recipe, const std::vector<std::shared_ptr<DispatchVariant>>& recipeStages, std::uint64_t drawKey, Graphics::PreparedDraw* prepared, std::uint64_t presyncSerial, const Graphics::AheadDraw* ahead, VulkanDevice::DrawTraceContext trace) {
+void Driver::commitDraw(std::shared_ptr<VulkanDevice> localDevice, std::uint32_t queue, const Graphics::State& graphics, const Pm4::DrawParameters& drawParameters, std::span<const Graphics::CompiledShader> stages, std::span<const Graphics::GuestMemorySnapshot> snapshots, const std::shared_ptr<const DrawRecipe>& recipe, const std::vector<std::shared_ptr<DispatchVariant>>& recipeStages, std::uint64_t drawKey, Graphics::PreparedDraw* prepared, std::uint64_t presyncSerial, const Graphics::AheadDraw* ahead, VulkanDevice::DrawTraceContext trace, Graphics::ColdSkipAttempt* coldSkip) {
     const auto* tracePtr = trace.token != 0 ? &trace : nullptr;
     GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Draw);
     std::lock_guard gpuLock(GuestMemory::GpuMutex());
@@ -1359,6 +1398,13 @@ void Driver::commitDraw(std::shared_ptr<VulkanDevice> localDevice, std::uint32_t
         }
     } submitDue{*this, localDevice};
     recordLabelsForPacket(localDevice.get(), queue);
+    if (coldSkip != nullptr && coldSkip->requested && prepared != nullptr) {
+        coldSkip->refusal = Graphics::ColdDrawCommitRefusal();
+        if (coldSkip->refusal == Graphics::ColdSkipRefusal::None) {
+            coldSkip->skipped = true;
+            return;
+        }
+    }
     noteDrawWriters(stages, queue);
     CommandMix::NoteDraw(drawParameters, stages, recipe != nullptr);
     Graphics::ResidentCensus::NoteDrawInputs(drawParameters, stages);

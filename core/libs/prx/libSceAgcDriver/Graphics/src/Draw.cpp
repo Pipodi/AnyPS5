@@ -1,4 +1,5 @@
 #include "prx/libSceAgcDriver/Graphics/include/Draw.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/ColdDrawSkip.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/InflightBuilds.hpp"
 #include "prx/libSceAgcDriver/Graphics/shaders/IndexClamp_spv.h"
 #include "prx/libSceAgcDriver/Graphics/include/RuntimeSwitches.hpp"
@@ -1640,6 +1641,7 @@ struct PreparedDraw {
     std::shared_future<void> pipeline;
     const char* why = "forget";
     std::uint64_t prekey = 0;
+    ColdSkipRefusal coldRefusal = ColdSkipRefusal::NoPrebuild;
 
     ~PreparedDraw() {
         if (pipeline.valid()) pipeline.wait();
@@ -1676,6 +1678,15 @@ struct SplitCounters {
     std::atomic<std::uint64_t> dedupeBuilt{0};
     std::atomic<std::uint64_t> pipelineWaits{0};
     std::atomic<std::uint64_t> pipelineWaitNs{0};
+    std::atomic<std::uint64_t> coldSkipped{0};
+    std::atomic<std::uint64_t> coldSkippedTotal{0};
+    std::atomic<std::uint64_t> coldKeys{0};
+    std::atomic<std::uint64_t> coldBudgetSpent{0};
+    std::atomic<std::uint64_t> coldBudgetNs{0};
+    std::atomic<std::uint64_t> coldSavedNs{0};
+    std::atomic<std::uint64_t> coldRecovered{0};
+    std::atomic<std::uint64_t> coldRecoveredTotal{0};
+    std::array<std::atomic<std::uint64_t>, static_cast<std::size_t>(ColdSkipRefusal::Count)> coldRefusals{};
     std::atomic<std::int64_t> lastReport{0};
 };
 
@@ -1695,6 +1706,62 @@ bool PrebuildDedupe() {
 InflightBuilds& InflightPrebuilds() {
     static auto* builds = new InflightBuilds();
     return *builds;
+}
+
+std::size_t ColdEnvValue(const char* name, std::size_t fallback, std::size_t low, std::size_t high) {
+    const char* text = std::getenv(name);
+    if (text == nullptr || *text == 0) return fallback;
+    return std::clamp(static_cast<std::size_t>(std::strtoull(text, nullptr, 10)), low, high);
+}
+
+struct ColdDrawState {
+    bool enabled = false;
+    std::chrono::nanoseconds wait{};
+    ColdDrawParking parking;
+    ColdSkipKeys keys;
+
+    ColdDrawState(bool on, std::chrono::nanoseconds budget, std::size_t capacity) : enabled(on), wait(budget), parking(capacity) {}
+};
+
+ColdDrawState& ColdDraws() {
+    static auto* state = [] {
+        const char* text = std::getenv("APS5_SKIP_COLD_DRAWS");
+        bool on = text != nullptr && std::strcmp(text, "1") == 0;
+        if (on && !PrebuildDedupe()) {
+            std::fprintf(stderr, "[cold-skip] APS5_SKIP_COLD_DRAWS needs APS5_PREBUILD_DEDUPE=1: staying off\n");
+            on = false;
+        }
+        return new ColdDrawState(on, std::chrono::milliseconds(ColdEnvValue("APS5_SKIP_COLD_DRAWS_WAIT_MS", 4, 0, 1000)), ColdEnvValue("APS5_SKIP_COLD_DRAWS_PARKED", 256, 1, 65536));
+    }();
+    return *state;
+}
+
+ColdDrawTraits ColdTraits(const State& state, const Pm4::DrawParameters& draw, std::span<const CompiledShader> shaders, bool hasBuild) {
+    ColdDrawTraits traits;
+    traits.hasBuild = hasBuild;
+    traits.indirect = draw.indirect.has_value();
+    traits.shadersWriteMemory = ShadersWriteMemory(shaders);
+    traits.colorTargets = !state.colors.empty() ? state.colors.size() : (state.hasColorTarget ? 1u : 0u);
+    const auto writes = [](const VkStencilOpState& face) { return (face.writeMask & 0xffu) != 0 && (face.failOp != VK_STENCIL_OP_KEEP || face.passOp != VK_STENCIL_OP_KEEP || face.depthFailOp != VK_STENCIL_OP_KEEP); };
+    traits.stencilWrites = state.depth.has_value() && state.stencilTest && (writes(state.stencilFront) || writes(state.stencilBack));
+    traits.depthCopySource = state.depthCopySource;
+    traits.stencilReplay = state.stencilReplayReference.has_value();
+    traits.rectOrQuadList = state.rectList || state.quadList;
+    traits.indexed = draw.indexed;
+    traits.indexCount = draw.indexCount;
+    traits.instanceCount = draw.instanceCount;
+    traits.linearTarget = std::any_of(state.colors.begin(), state.colors.end(), [](const ColorTarget& color) { return color.tileMode == ColorTileMode::Linear; }) || (state.colors.empty() && state.hasColorTarget && state.color.tileMode == ColorTileMode::Linear);
+    return traits;
+}
+
+std::mutex& PrebuildGateMutex() {
+    static auto* mutex = new std::mutex();
+    return *mutex;
+}
+
+std::function<void()>& PrebuildGateFunction() {
+    static auto* gate = new std::function<void()>();
+    return *gate;
 }
 
 void reportSplits() {
@@ -1732,6 +1799,21 @@ void reportSplits() {
         const auto dedupeBuilt = take(c.dedupeBuilt);
         std::fprintf(stderr, "[split] prebuild dedupe (10 s): queued %llu, deduped %llu (already in flight), committer attached %llu, committer built %llu\n", dedupeQueued, dedupeHits, dedupeAttached, dedupeBuilt);
     }
+    if (ColdDraws().enabled) {
+        const auto skipped = take(c.coldSkipped);
+        const auto coldKeys = take(c.coldKeys);
+        const auto spent = take(c.coldBudgetSpent);
+        const auto spentMs = static_cast<double>(take(c.coldBudgetNs)) / 1e6;
+        const auto savedMs = static_cast<double>(take(c.coldSavedNs)) / 1e6;
+        const auto recovered = take(c.coldRecovered);
+        std::string refused;
+        for (std::size_t index = 1; index < c.coldRefusals.size(); ++index) {
+            char item[64];
+            std::snprintf(item, sizeof(item), "%s %s %llu", refused.empty() ? "" : ",", ColdSkipRefusalName(static_cast<ColdSkipRefusal>(index)), take(c.coldRefusals[index]));
+            refused += item;
+        }
+        std::fprintf(stderr, "[split] cold draws (10 s): skipped %llu, new keys %llu, budget spent %llu (%.1f ms), est. wait saved %.1f ms, recovered keys %llu; refused:%s; parked %zu (max %zu), tracked keys %zu\n", skipped, coldKeys, spent, spentMs, savedMs, recovered, refused.c_str(), ColdDraws().parking.Size(), ColdDraws().parking.TakePeak(), ColdDraws().keys.Size());
+    }
     std::fprintf(stderr, "[split] draws prepared (10 s): %llu (cache entry then %llu, address tables left to the lock %llu, address-based stage A %llu, forget serial in change %llu); stage A built %llu in %.1f ms (%llu refused); at the draw: %llu builds completed from stage A, %llu served by the cache instead, discarded as stale %llu (forget serial %llu, registry %llu, other %llu); %llu builds made under the lock; %llu keys reused; pipelines prebuilt %llu (%llu skipped at a full queue), commits waited for %llu (%.1f ms); committer builds %llu (%.1f ms); noslot %llu; notbegun %llu\n", prepared, cached, address, addressStageA, inChange, stageA, stageAMs, failed, used, served, forget + registry + other, forget, registry, other, locked, keys, queuedPipelines, skippedPipelines, pipelineWaits, pipelineWaitMs, static_cast<unsigned long long>(committerBuilds.builds), static_cast<double>(committerBuilds.nanoseconds) / 1e6, noSlot, notBegun);
     {
         const auto& o = CachedAcquireOutcomes();
@@ -1764,6 +1846,7 @@ std::shared_ptr<PreparedDraw> PrepareDraw(const Context& context, const State& s
         return prepared;
     }
     prepared->pipeline = PrebuildDrawPipeline(context, state, shaders, &prepared->why, &prepared->prekey);
+    if (ColdDraws().enabled) prepared->coldRefusal = ColdDrawRefusal(ColdTraits(state, draw, shaders, prepared->pipeline.valid()));
     static const bool noDrawResourceCache = std::getenv("APS5_NO_DRAW_RESOURCE_CACHE") != nullptr;
     static const bool noTextureCache = std::getenv("APS5_NO_TEXTURE_CACHE") != nullptr;
     static const bool trimKey = std::getenv("APS5_NO_DRAW_KEY_TRIM") == nullptr;
@@ -3249,8 +3332,14 @@ std::shared_future<void> PrebuildDrawPipeline(const Context& context, const Stat
             return {};
         }
         const std::uint64_t inflightKey = PrebuildDedupe() ? *keyHash : 0;
-        std::packaged_task<void()> job([inflightKey, context, pipelineState = masked.has_value() ? std::move(*masked) : state, vertexInput = std::move(vertexInput), described = std::move(described), stages = std::vector<CompiledShader>(shaders.begin(), shaders.end())] {
+        std::function<void()> gate;
+        {
+            std::lock_guard gateLock(PrebuildGateMutex());
+            gate = PrebuildGateFunction();
+        }
+        std::packaged_task<void()> job([gate = std::move(gate), inflightKey, context, pipelineState = masked.has_value() ? std::move(*masked) : state, vertexInput = std::move(vertexInput), described = std::move(described), stages = std::vector<CompiledShader>(shaders.begin(), shaders.end())] {
             try {
+                if (gate) gate();
                 static_cast<void>(CachedPipeline(context, pipelineState, vertexInput, described.View(), stages, VK_IMAGE_LAYOUT_GENERAL, nullptr));
             } catch (...) {
             }
@@ -3322,6 +3411,84 @@ void NoteCommitWithoutPreparation(bool noSlot) {
 
 std::uint64_t PreparedDrawKey(const PreparedDraw* prepared) {
     return prepared != nullptr ? prepared->prekey : 0;
+}
+
+bool ColdDrawSkipEnabled() {
+    return ColdDraws().enabled;
+}
+
+std::uint64_t ColdDrawSkippedTotal() {
+    return Splits().coldSkippedTotal.load(std::memory_order_relaxed);
+}
+
+std::uint64_t ColdDrawRecoveredTotal() {
+    return Splits().coldRecoveredTotal.load(std::memory_order_relaxed);
+}
+
+void SetPrebuildGate(std::function<void()> gate) {
+    std::lock_guard lock(PrebuildGateMutex());
+    PrebuildGateFunction() = std::move(gate);
+}
+
+bool WaitForPreparedPipelineCold(const PreparedDraw* prepared) {
+    if (prepared == nullptr || !prepared->pipeline.valid()) return true;
+    if (prepared->pipeline.wait_for(std::chrono::seconds(0)) == std::future_status::ready) return true;
+    const auto start = std::chrono::steady_clock::now();
+    const bool ready = BuildReadyWithin(prepared->pipeline, ColdDraws().wait);
+    const auto spent = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
+    auto& counters = Splits();
+    if (ready) {
+        counters.pipelineWaits.fetch_add(1, std::memory_order_relaxed);
+        counters.pipelineWaitNs.fetch_add(spent, std::memory_order_relaxed);
+        return true;
+    }
+    counters.coldBudgetSpent.fetch_add(1, std::memory_order_relaxed);
+    counters.coldBudgetNs.fetch_add(spent, std::memory_order_relaxed);
+    return false;
+}
+
+ColdSkipRefusal PreparedDrawColdRefusal(const PreparedDraw* prepared) {
+    return prepared != nullptr ? prepared->coldRefusal : ColdSkipRefusal::NoPrebuild;
+}
+
+std::shared_future<void> PreparedDrawPipeline(const PreparedDraw* prepared) {
+    return prepared != nullptr ? prepared->pipeline : std::shared_future<void>{};
+}
+
+ColdSkipRefusal ColdDrawCommitRefusal() {
+    const auto* recorder = Recorder::Active();
+    return ColdCommitRefusal(recorder != nullptr && recorder->CountingSamples(), ColdDraws().parking.Full());
+}
+
+void NoteColdRefusal(ColdSkipRefusal refusal) {
+    Splits().coldRefusals[static_cast<std::size_t>(refusal)].fetch_add(1, std::memory_order_relaxed);
+}
+
+void NoteColdSkip(std::uint64_t key, const char* programs) {
+    auto& counters = Splits();
+    counters.coldSkipped.fetch_add(1, std::memory_order_relaxed);
+    counters.coldSkippedTotal.fetch_add(1, std::memory_order_relaxed);
+    if (!ColdDraws().keys.NoteSkip(key, std::chrono::steady_clock::now())) return;
+    counters.coldKeys.fetch_add(1, std::memory_order_relaxed);
+    std::fprintf(stderr, "[cold-skip] pipeline 0x%llx (programs %s) still compiling after %.0f ms: skipping its draws\n", static_cast<unsigned long long>(key), programs, static_cast<double>(ColdDraws().wait.count()) / 1e6);
+}
+
+void NoteColdDrawn(std::uint64_t key) {
+    if (const auto recovery = ColdDraws().keys.NoteDrawn(key, std::chrono::steady_clock::now())) {
+        Splits().coldRecovered.fetch_add(1, std::memory_order_relaxed);
+        Splits().coldRecoveredTotal.fetch_add(1, std::memory_order_relaxed);
+        std::fprintf(stderr, "[cold-skip] pipeline 0x%llx drawn after %llu skipped draws over %.1f ms\n", static_cast<unsigned long long>(key), static_cast<unsigned long long>(recovery->skipped), static_cast<double>(recovery->window.count()) / 1e6);
+    }
+}
+
+void ReapColdDraws() {
+    const auto reaped = ColdDraws().parking.Reap(std::chrono::steady_clock::now());
+    if (reaped.savedNs != 0) Splits().coldSavedNs.fetch_add(reaped.savedNs, std::memory_order_relaxed);
+}
+
+void ParkColdDraw(std::shared_ptr<void> owner, std::shared_future<void> build) {
+    ReapColdDraws();
+    if (!ColdDraws().parking.Park(owner, build, std::chrono::steady_clock::now())) build.wait();
 }
 
 void WaitForPreparedPipeline(const PreparedDraw* prepared) {

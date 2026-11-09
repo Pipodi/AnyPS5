@@ -1,12 +1,16 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawPipeline.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/ColdDrawSkip.hpp"
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <functional>
+#include <future>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <stdexcept>
@@ -107,6 +111,33 @@ void hookReadOverPendingDispatch(DrawPipeline& pipeline, Log& log) {
     check(!DrawPipeline::DrainBeforeRead(0x900ff0, 32), "a read drained on a thread that is not the queue-0 worker");
 }
 
+void skippedCommitParksItsOwnerUntilTheBuildCompletes(DrawPipeline& pipeline, Log& log) {
+    AgcDriver::Graphics::ColdDrawParking parking(4);
+    std::promise<void> build;
+    auto attempt = std::make_shared<AgcDriver::Graphics::ColdSkipAttempt>();
+    attempt->build = build.get_future().share();
+    auto held = std::make_shared<std::function<void()>>([attempt, &log] {
+        log.Add("skipped draw");
+        attempt->skipped = true;
+    });
+    const std::weak_ptr<std::function<void()>> watch = held;
+    pipeline.Enqueue([held, attempt, &parking] {
+        (*held)();
+        if (attempt->skipped) parking.Park(held, attempt->build, std::chrono::steady_clock::now());
+    }, {{0xa00000, 0xa01000}});
+    held.reset();
+    pipeline.Drain(DrawPipeline::DrainReason::Packet);
+    check(!pipeline.Busy(), "the drain returned with the skipped commit pending");
+    check(log.Take() == std::vector<std::string>{"skipped draw"}, "the skipped commit did not complete");
+    check(!watch.expired() && parking.Size() == 1, "the owner was released while its build was pending");
+    check(parking.Reap(std::chrono::steady_clock::now()).released == 0 && !watch.expired(), "a reap released the owner of a pending build");
+    build.set_value();
+    check(parking.Reap(std::chrono::steady_clock::now()).released == 1, "the reap did not release the finished build");
+    const auto start = std::chrono::steady_clock::now();
+    while (!watch.expired() && std::chrono::steady_clock::now() - start < std::chrono::seconds(5)) std::this_thread::yield();
+    check(watch.expired() && parking.Size() == 0, "the owner outlived its parked entry");
+}
+
 }
 
 int main() {
@@ -116,6 +147,7 @@ int main() {
         indirectArgumentsOverPendingDraw(pipeline, log);
         labelBetweenDispatchAndDraws(pipeline, log);
         hookReadOverPendingDispatch(pipeline, log);
+        skippedCommitParksItsOwnerUntilTheBuildCompletes(pipeline, log);
         std::puts("draw pipeline commit tests passed");
         return 0;
     } catch (const std::exception& error) {

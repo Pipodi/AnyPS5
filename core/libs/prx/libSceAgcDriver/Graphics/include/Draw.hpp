@@ -4,11 +4,13 @@
 #ifndef CORE_LIBS_PRX_LIBSCEAGCDRIVER_GRAPHICS_INCLUDE_DRAW_HPP
 #define CORE_LIBS_PRX_LIBSCEAGCDRIVER_GRAPHICS_INCLUDE_DRAW_HPP
 
+#include "prx/libSceAgcDriver/Graphics/include/ColdDrawSkip.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Pipeline.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/VertexInput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Recipe.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -51,6 +53,19 @@ const char* PreparedDrawWhy(const PreparedDraw* prepared);
 void NoteCommitWithoutPreparation(bool noSlot);
 void NoteCommitWithoutPreparation(bool noSlot);
 std::uint64_t PreparedDrawKey(const PreparedDraw* prepared);
+bool ColdDrawSkipEnabled();
+std::uint64_t ColdDrawSkippedTotal();
+std::uint64_t ColdDrawRecoveredTotal();
+void SetPrebuildGate(std::function<void()> gate);
+bool WaitForPreparedPipelineCold(const PreparedDraw* prepared);
+ColdSkipRefusal PreparedDrawColdRefusal(const PreparedDraw* prepared);
+std::shared_future<void> PreparedDrawPipeline(const PreparedDraw* prepared);
+ColdSkipRefusal ColdDrawCommitRefusal();
+void NoteColdRefusal(ColdSkipRefusal refusal);
+void NoteColdSkip(std::uint64_t key, const char* programs);
+void NoteColdDrawn(std::uint64_t key);
+void ReapColdDraws();
+void ParkColdDraw(std::shared_ptr<void> owner, std::shared_future<void> build);
 bool SplitDrawBuild();
 std::shared_ptr<PreparedDraw> PrepareDraw(const Context& context, const State& state, const Pm4::DrawParameters& draw, std::span<const CompiledShader> shaders, std::span<const GuestMemorySnapshot> snapshots = {});
 void Draw(const Context& context, const State& state, const Pm4::DrawParameters& draw, std::span<const CompiledShader> shaders, std::span<const GuestMemorySnapshot> snapshots = {}, std::shared_ptr<const DrawRecipe>* recipe = nullptr, PreparedDraw* prepared = nullptr, const AheadDraw* ahead = nullptr, const DrawTraceContext* trace = nullptr);
