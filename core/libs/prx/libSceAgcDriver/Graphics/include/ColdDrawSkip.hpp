@@ -27,6 +27,8 @@ enum class ColdSkipRefusal : std::uint8_t {
     CountingSamples,
     ParkedFull,
     NoPrebuild,
+    DepthCopy,
+    StencilReplay,
     Count,
 };
 
@@ -42,10 +44,18 @@ inline const char* ColdSkipRefusalName(ColdSkipRefusal refusal) {
     case ColdSkipRefusal::CountingSamples: return "counting-samples";
     case ColdSkipRefusal::ParkedFull: return "parked-full";
     case ColdSkipRefusal::NoPrebuild: return "no-prebuild";
+    case ColdSkipRefusal::DepthCopy: return "depth-copy";
+    case ColdSkipRefusal::StencilReplay: return "stencil-replay";
     case ColdSkipRefusal::Count: break;
     }
     return "unknown";
 }
+
+struct ColdSkipAllow {
+    bool depthOnly = false;
+    bool stencil = false;
+    bool counting = false;
+};
 
 struct ColdDrawTraits {
     bool hasBuild = true;
@@ -66,19 +76,24 @@ inline bool FullscreenLikeDraw(const ColdDrawTraits& traits) {
     return !traits.indexed && traits.indexCount <= 6 && traits.instanceCount == 1;
 }
 
-inline ColdSkipRefusal ColdDrawRefusal(const ColdDrawTraits& traits) {
+inline ColdSkipRefusal ColdDrawRefusal(const ColdDrawTraits& traits, const ColdSkipAllow& allow = {}) {
     if (!traits.hasBuild) return ColdSkipRefusal::NoPrebuild;
     if (traits.indirect) return ColdSkipRefusal::Indirect;
     if (traits.shadersWriteMemory) return ColdSkipRefusal::MemoryWrites;
-    if (traits.colorTargets == 0) return ColdSkipRefusal::DepthOnly;
-    if (traits.stencilWrites || traits.depthCopySource || traits.stencilReplay) return ColdSkipRefusal::Stencil;
+    if (traits.colorTargets == 0 && !allow.depthOnly) return ColdSkipRefusal::DepthOnly;
+    if (allow.stencil) {
+        if (traits.depthCopySource) return ColdSkipRefusal::DepthCopy;
+        if (traits.stencilReplay) return ColdSkipRefusal::StencilReplay;
+    } else if (traits.stencilWrites || traits.depthCopySource || traits.stencilReplay) {
+        return ColdSkipRefusal::Stencil;
+    }
     if (traits.rectOrQuadList || FullscreenLikeDraw(traits)) return ColdSkipRefusal::Fullscreen;
     if (traits.linearTarget) return ColdSkipRefusal::LinearTarget;
     return ColdSkipRefusal::None;
 }
 
-inline ColdSkipRefusal ColdCommitRefusal(bool countingSamples, bool parkedFull) {
-    if (countingSamples) return ColdSkipRefusal::CountingSamples;
+inline ColdSkipRefusal ColdCommitRefusal(bool countingSamples, bool parkedFull, const ColdSkipAllow& allow = {}) {
+    if (countingSamples && !allow.counting) return ColdSkipRefusal::CountingSamples;
     if (parkedFull) return ColdSkipRefusal::ParkedFull;
     return ColdSkipRefusal::None;
 }

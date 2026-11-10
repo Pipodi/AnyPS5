@@ -1717,10 +1717,11 @@ std::size_t ColdEnvValue(const char* name, std::size_t fallback, std::size_t low
 struct ColdDrawState {
     bool enabled = false;
     std::chrono::nanoseconds wait{};
+    ColdSkipAllow allow;
     ColdDrawParking parking;
     ColdSkipKeys keys;
 
-    ColdDrawState(bool on, std::chrono::nanoseconds budget, std::size_t capacity) : enabled(on), wait(budget), parking(capacity) {}
+    ColdDrawState(bool on, std::chrono::nanoseconds budget, std::size_t capacity, ColdSkipAllow allowed) : enabled(on), wait(budget), allow(allowed), parking(capacity) {}
 };
 
 ColdDrawState& ColdDraws() {
@@ -1731,7 +1732,12 @@ ColdDrawState& ColdDraws() {
             std::fprintf(stderr, "[cold-skip] APS5_SKIP_COLD_DRAWS needs APS5_PREBUILD_DEDUPE=1: staying off\n");
             on = false;
         }
-        return new ColdDrawState(on, std::chrono::milliseconds(ColdEnvValue("APS5_SKIP_COLD_DRAWS_WAIT_MS", 4, 0, 1000)), ColdEnvValue("APS5_SKIP_COLD_DRAWS_PARKED", 256, 1, 65536));
+        const auto flag = [](const char* name) {
+            const char* value = std::getenv(name);
+            return value != nullptr && std::strcmp(value, "1") == 0;
+        };
+        const ColdSkipAllow allow{flag("APS5_SKIP_COLD_ALLOW_DEPTH_ONLY"), flag("APS5_SKIP_COLD_ALLOW_STENCIL"), flag("APS5_SKIP_COLD_ALLOW_COUNTING")};
+        return new ColdDrawState(on, std::chrono::milliseconds(ColdEnvValue("APS5_SKIP_COLD_DRAWS_WAIT_MS", 4, 0, 1000)), ColdEnvValue("APS5_SKIP_COLD_DRAWS_PARKED", 256, 1, 65536), allow);
     }();
     return *state;
 }
@@ -1846,7 +1852,7 @@ std::shared_ptr<PreparedDraw> PrepareDraw(const Context& context, const State& s
         return prepared;
     }
     prepared->pipeline = PrebuildDrawPipeline(context, state, shaders, &prepared->why, &prepared->prekey);
-    if (ColdDraws().enabled) prepared->coldRefusal = ColdDrawRefusal(ColdTraits(state, draw, shaders, prepared->pipeline.valid()));
+    if (ColdDraws().enabled) prepared->coldRefusal = ColdDrawRefusal(ColdTraits(state, draw, shaders, prepared->pipeline.valid()), ColdDraws().allow);
     static const bool noDrawResourceCache = std::getenv("APS5_NO_DRAW_RESOURCE_CACHE") != nullptr;
     static const bool noTextureCache = std::getenv("APS5_NO_TEXTURE_CACHE") != nullptr;
     static const bool trimKey = std::getenv("APS5_NO_DRAW_KEY_TRIM") == nullptr;
@@ -3457,7 +3463,7 @@ std::shared_future<void> PreparedDrawPipeline(const PreparedDraw* prepared) {
 
 ColdSkipRefusal ColdDrawCommitRefusal() {
     const auto* recorder = Recorder::Active();
-    return ColdCommitRefusal(recorder != nullptr && recorder->CountingSamples(), ColdDraws().parking.Full());
+    return ColdCommitRefusal(recorder != nullptr && recorder->CountingSamples(), ColdDraws().parking.Full(), ColdDraws().allow);
 }
 
 void NoteColdRefusal(ColdSkipRefusal refusal) {

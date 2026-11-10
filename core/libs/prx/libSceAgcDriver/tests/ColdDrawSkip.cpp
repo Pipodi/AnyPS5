@@ -78,6 +78,38 @@ void eligibilityRefusesEachUnsafeDraw() {
     Require(ColdCommitRefusal(false, false) == ColdSkipRefusal::None, "a free commit is refused");
     Require(ColdCommitRefusal(true, false) == ColdSkipRefusal::CountingSamples, "counting samples is not refused");
     Require(ColdCommitRefusal(false, true) == ColdSkipRefusal::ParkedFull, "a full parking is not refused");
+    ColdSkipAllow allowDepth;
+    allowDepth.depthOnly = true;
+    traits = clean;
+    traits.colorTargets = 0;
+    Require(ColdDrawRefusal(traits, allowDepth) == ColdSkipRefusal::None, "a depth-only draw is refused with the depth-only knob on");
+    Require(ColdDrawRefusal(traits, ColdSkipAllow{}) == ColdSkipRefusal::DepthOnly, "the depth-only knob off does not refuse");
+    traits.stencilWrites = true;
+    Require(ColdDrawRefusal(traits, allowDepth) == ColdSkipRefusal::Stencil, "the depth-only knob allowed a stencil write");
+    ColdSkipAllow allowStencil;
+    allowStencil.stencil = true;
+    traits = clean;
+    traits.stencilWrites = true;
+    Require(ColdDrawRefusal(traits, allowStencil) == ColdSkipRefusal::None, "a stencil write is refused with the stencil knob on");
+    traits.colorTargets = 0;
+    Require(ColdDrawRefusal(traits, allowStencil) == ColdSkipRefusal::DepthOnly, "the stencil knob allowed a depth-only draw");
+    traits = clean;
+    traits.depthCopySource = true;
+    Require(ColdDrawRefusal(traits, allowStencil) == ColdSkipRefusal::DepthCopy, "a depth copy source is not refused as depth-copy");
+    traits = clean;
+    traits.stencilReplay = true;
+    Require(ColdDrawRefusal(traits, allowStencil) == ColdSkipRefusal::StencilReplay, "a stencil replay is not refused as stencil-replay");
+    traits.stencilWrites = true;
+    Require(ColdDrawRefusal(traits, allowStencil) == ColdSkipRefusal::StencilReplay, "a stencil replay with writes is allowed");
+    ColdSkipAllow allowCounting;
+    allowCounting.counting = true;
+    Require(ColdCommitRefusal(true, false, allowCounting) == ColdSkipRefusal::None, "counting samples is refused with the counting knob on");
+    Require(ColdCommitRefusal(true, true, allowCounting) == ColdSkipRefusal::ParkedFull, "the counting knob allowed a full parking");
+    Require(ColdCommitRefusal(true, false, allowDepth) == ColdSkipRefusal::CountingSamples, "the depth-only knob allowed counting samples");
+    traits = clean;
+    traits.colorTargets = 0;
+    Require(ColdDrawRefusal(traits, allowCounting) == ColdSkipRefusal::DepthOnly, "the counting knob allowed a depth-only draw");
+    Require(ColdDrawRefusal(clean, ColdSkipAllow{true, true, true}) == ColdSkipRefusal::None, "all knobs on refuse a plain draw");
 }
 
 void keyLogsFireOncePerKey() {
