@@ -11728,6 +11728,8 @@ void verifyRuntimeImageSwitchDeduplication() {
         target.vulkanVersion = 0x00401000u;
         target.spirvVersion = 0x00010300u;
         target.subgroupSize = 32u;
+        static constexpr std::array<std::uint32_t, 3> storageTableCapabilities{spv::CapabilityStorageImageArrayDynamicIndexing, spv::CapabilityStorageImageWriteWithoutFormat, spv::CapabilityStorageImageArrayNonUniformIndexing};
+        target.supportedCapabilities = storageTableCapabilities;
         const auto words = SpirvEmitter().Emit(program, inputs, bindings, target);
         std::map<std::uint32_t, std::uint32_t> targets;
         for (std::size_t cursor = 5u; cursor < words.size(); cursor += words[cursor] >> 16u) {
