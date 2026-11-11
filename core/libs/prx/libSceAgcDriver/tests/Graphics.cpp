@@ -11803,8 +11803,20 @@ void unorm10_11_11BlendTests() {
     const std::array<std::uint32_t, 2> interlock{spv::CapabilityShader, spv::CapabilityFragmentShaderPixelInterlockEXT};
     auto request = packedExportRequest(queue, state, code);
     request.context.pixel->targetBlend = state.targetBlends;
+    request.context.pixel->targetMerges = AgcDriver::Graphics::ExportTargetMerges(state);
+    Require(request.context.pixel->targetMerges.empty(), "a blended 10_11_11 unorm target was also merged in its pixel shader");
     expectFailure([&] { static_cast<void>(ShaderRecompiler::Recompile(request)); }, "blending into a 10_11_11 unorm target needs the fragmentShaderPixelInterlock feature");
     request.target.supportedCapabilities = interlock;
+    {
+        static constexpr std::array<std::uint32_t, 3> formatless{spv::CapabilityShader, spv::CapabilityFragmentShaderPixelInterlockEXT, spv::CapabilityStorageImageReadWithoutFormat};
+        auto both = request;
+        both.target.supportedCapabilities = formatless;
+        auto& merge = both.context.pixel->targetMerges.emplace_back();
+        merge.target = 0u;
+        merge.mask = 7u;
+        merge.samples = 1u;
+        expectFailure([&] { static_cast<void>(ShaderRecompiler::Recompile(both)); }, "is both blended through its storage image and merged in the pixel shader");
+    }
     const ShaderRecompiler::RequestSerializer serializer;
     Require(serializer.Deserialize(serializer.Serialize(request)).request.context.pixel->targetBlend == request.context.pixel->targetBlend, "the blend of a 10_11_11 unorm target was lost in serialization");
     auto unblended = request;

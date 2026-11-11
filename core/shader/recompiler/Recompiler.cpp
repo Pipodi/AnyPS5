@@ -675,6 +675,7 @@ void validateTargetBlends(const RecompileRequest& request) {
         if (pixel.targetExportPacking[index] != ColorExportPacking::Unorm10_11_11 || !factor(blend.sourceFactor) || !factor(blend.destinationFactor) || (blend.function != 0u && blend.function != 1u && blend.function != 4u) || blend.writeMask > 7u) {
             throw std::runtime_error("export " + std::to_string(index) + " requests a blend into a non-10_11_11 target or with an unsupported factor, function or mask");
         }
+        if (std::ranges::any_of(pixel.targetMerges, [&](const TargetMerge& merge) { return merge.target == index; })) throw std::runtime_error("export " + std::to_string(index) + " is both blended through its storage image and merged in the pixel shader");
     }
     const auto& capabilities = request.target.supportedCapabilities;
     if (std::find(capabilities.begin(), capabilities.end(), static_cast<std::uint32_t>(spv::CapabilityFragmentShaderPixelInterlockEXT)) == capabilities.end()) throw std::runtime_error("blending into a 10_11_11 unorm target needs the fragmentShaderPixelInterlock feature, which the device lacks");

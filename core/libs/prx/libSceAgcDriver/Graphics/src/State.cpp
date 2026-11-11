@@ -2011,6 +2011,7 @@ std::vector<ShaderRecompiler::TargetMerge> ExportTargetMerges(const State& state
     for (const auto& color : state.colors) {
         if (color.partialWriteMask == 0) continue;
         Require(color.exportIndex < 8u && color.samples <= 8u, "a merged color target needs an MRT slot below 8 and at most 8 samples");
+        Require(!state.targetBlends[color.exportIndex].enable, "a color target blended through its storage image cannot also merge in its pixel shader");
         Require(std::ranges::none_of(state.colors, [&](const ColorTarget& other) { return &other != &color && other.partialWriteMask != 0 && other.address < color.address + color.bytes && color.address < other.address + other.bytes; }), "two merged color targets of one draw share memory");
         auto& merge = merges.emplace_back();
         Require(color.samples == 1u || state.perSampleShading, "a merged multisampled color target needs per-sample shading");
