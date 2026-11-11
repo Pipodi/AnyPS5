@@ -4712,7 +4712,7 @@ void stagingDiffTests(const Device& device, Recorder& recorder) {
 // work wrote; an element crossed by a range the import serves in place is not staged.
 void stagingDiffBdaTests(const Device& device, Recorder& recorder) {
     const auto& context = device.GetContext();
-    const bool diff = std::getenv("APS5_STAGING_DIFF") != nullptr && context.bufferDeviceAddress;
+    const bool diff = (std::getenv("APS5_STAGING_DIFF") != nullptr || std::getenv("APS5_NO_CHANGED_COPY_BACK") == nullptr) && context.bufferDeviceAddress;
     if (context.hostImportAlignment == 0 || !context.bufferDeviceAddress || !AddressSpaceCounters().enabled || std::getenv("APS5_NO_BDA_STAGING") != nullptr) {
         std::cout << "host imports, device addresses or the address space cache unavailable: BDA staging not tested\n";
         return;
