@@ -412,10 +412,9 @@ bool Replay(const char* path, std::unique_ptr<AgcDriver::VulkanDevice>& device) 
         std::printf("  native target (--native-target): %s%s\n", difference.empty() ? "the captured target matches" : "replaced the captured target's", difference.c_str());
         request.request.target = native;
     }
-    // Requests do not carry the lane mode: APS5_SPANNED_WAVE selects it here as the driver does from it at device creation.
-    if (std::getenv("APS5_SPANNED_WAVE") != nullptr && !request.request.target.spannedWaves) {
+    if (std::getenv("APS5_NO_SPANNED_WAVE") == nullptr && !request.request.target.spannedWaves) {
         request.request.target.spannedWaves = true;
-        std::printf("  spanned waves (APS5_SPANNED_WAVE): a single-wave wave64 compute program spans two full 32-lane subgroups\n");
+        std::printf("  spanned waves (default, as the driver; APS5_NO_SPANNED_WAVE=1 keeps two lanes per invocation): a single-wave wave64 compute program spans two full 32-lane subgroups\n");
     }
     // Requests captured before the single-workgroup flag (serializer version 32) lack it: APS5_REPLAY_SINGLE_GROUP=
     // <program>[,<program>...] (hex addresses, low 36 bits compared) replays those programs' compute requests as the

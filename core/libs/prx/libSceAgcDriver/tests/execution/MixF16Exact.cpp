@@ -151,7 +151,6 @@ int main(int argc, char** argv) {
             device->ComputeTarget(64),
             {0, 0, 0, 128}
         };
-        if (std::getenv("APS5_SPANNED_WAVE") != nullptr) request.target.spannedWaves = true;
         request.useCache = false;
         const auto shader = ShaderRecompiler::Recompile(request);
         device->Dispatch(shader, Groups, 1, 1, {}, reinterpret_cast<std::uintptr_t>(code.data()));

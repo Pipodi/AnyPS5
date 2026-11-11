@@ -128,7 +128,7 @@ bool Bench(const char* path, int iterations, bool bindless) {
     auto parsed = ShaderRecompiler::RequestSerializer{}.Deserialize(ReadText(path));
     auto& request = parsed.request;
     if (bindless) request.target.bindlessImages = true;
-    if (std::getenv("APS5_SPANNED_WAVE") != nullptr) request.target.spannedWaves = true;
+    if (std::getenv("APS5_NO_SPANNED_WAVE") == nullptr) request.target.spannedWaves = true;
     std::vector<ShaderRecompiler::MemoryRegion> regions(request.context.memory.begin(), request.context.memory.end());
     Mapping mapping;
     if (!MapRegions(regions, mapping)) return false;

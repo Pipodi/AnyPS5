@@ -30,8 +30,7 @@ SpirvTarget Target() {
     };
     SpirvTarget target{0x00401000u, 0x00010300u, 32, BdaAbi::Version, capabilities, extensions, false,
             {1024, 1024, 64}, 1024, 32768, {}, {}};
-    // The spanned ctest variant: the driver sets this from APS5_SPANNED_WAVE, so this target does too.
-    target.spannedWaves = std::getenv("APS5_SPANNED_WAVE") != nullptr;
+    target.spannedWaves = std::getenv("APS5_NO_SPANNED_WAVE") == nullptr;
     return target;
 }
 
