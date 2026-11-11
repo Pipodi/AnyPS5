@@ -1565,13 +1565,6 @@ private:
             return LaneSelector(tuple, **lane, web, position);
         }
         if (phi == tuple.end()) {
-            if (std::ranges::any_of(tuple, [](IrValue* value) { return HoldsControlValue(value); })) {
-                if (StrictDescriptorWebs()) {
-                    return GiveUp(web, "a descriptor dword depends on the program counter, EXEC or a lane mask");
-                }
-                web.foldedControlValue = true;
-                return &m_builder.Constant(DescriptorWeb::foldedArm);
-            }
             const auto select = std::ranges::find_if(tuple, [](const IrValue* value) { return value->Opcode() == IrOpcode::SelectU32; });
             if (web.lifted && select != tuple.end()) {
                 IrBlock* block = (*select)->Parent();
@@ -1605,6 +1598,13 @@ private:
                     selector.AddArgument(branch);
                 }
                 return &selector;
+            }
+            if (!web.lifted && std::ranges::any_of(tuple, [](IrValue* value) { return HoldsControlValue(value); })) {
+                if (StrictDescriptorWebs()) {
+                    return GiveUp(web, "a descriptor dword depends on the program counter, EXEC or a lane mask");
+                }
+                web.foldedControlValue = true;
+                return &m_builder.Constant(DescriptorWeb::foldedArm);
             }
             for (IrValue* value : tuple) {
                 if (Rematerialize(value, position, false, phiSearchDepth) == nullptr) {
