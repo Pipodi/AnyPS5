@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <optional>
 
@@ -504,17 +505,11 @@ std::optional<BufferAllocation> BufferPool::Take(std::size_t bytes, VkBufferUsag
         return std::nullopt;
     }
     auto& slots = found->second;
-    auto chosen = std::prev(slots.end());
-    if (chosen->allocation.bufferBytes != bytes && !RuntimeSwitches::Set(RuntimeSwitch::NoExactSizeReuse)) {
-        std::size_t scanned = 0;
-        for (auto it = chosen; scanned < exactSizeScan; ++scanned) {
-            if (it->allocation.bufferBytes == bytes) {
-                chosen = it;
-                break;
-            }
-            if (it == slots.begin()) break;
-            --it;
-        }
+    const auto newest = std::prev(slots.end());
+    auto chosen = newest;
+    if (newest->allocation.bufferBytes != bytes && !RuntimeSwitches::Set(RuntimeSwitch::NoExactSizeReuse)) {
+        for (std::size_t scanned = 1; chosen->allocation.bufferBytes != bytes && scanned < exactSizeScan && chosen != slots.begin(); ++scanned) --chosen;
+        if (chosen->allocation.bufferBytes != bytes) chosen = newest;
     }
     auto result = chosen->allocation;
     (result.bufferBytes == bytes ? exactSizeHits : resizedHits) += 1;

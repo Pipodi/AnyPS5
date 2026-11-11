@@ -108,7 +108,7 @@ struct SpirvEmitterState {
     SpirvModule module;
     const IrProgram& program;
     ShaderStageInputInfo inputInfo;
-    std::array<std::uint32_t, 10> tessVariables {};
+    std::array<std::uint32_t, 11> tessVariables {};
     std::uint32_t tessInnerVariable = 0;
 
     SpirvRequirements requirements;
@@ -131,6 +131,7 @@ struct SpirvEmitterState {
     // See ShaderComputeStageInfo::singleWorkgroup: glc reads through the plain binding, buffer-ordering s_barrier.
     bool singleWorkgroup = false;
     bool robustBufferAccess2 = false;
+    bool exactRobustLoads = false;
     bool float32FlushToZero = false;
     bool float32DenormPreserve = false;
     bool fusedExactArithmetic = false;
@@ -200,6 +201,7 @@ struct SpirvEmitterState {
     std::uint32_t reciprocalCorrectionFunction = 0;
     std::array<std::uint32_t, 3> reciprocalTables {};
     std::map<std::pair<bool, std::uint32_t>, std::uint32_t> interpolateFunctions;
+    std::map<std::pair<bool, std::uint32_t>, std::uint32_t> fastInterpolateFunctions;
     bool integerInterpolation = false;
     std::array<std::array<std::uint32_t, 2>, 2> bdaDwordReadFunctions {};
     std::array<std::array<std::uint32_t, 2>, 2> bdaSpanReadFunctions {};

@@ -1,3 +1,6 @@
+**English** | [Português (Brasil)](docs/user/README.pt-BR.md) | [Español](docs/user/README.es.md) | [简体中文](docs/user/README.zh-CN.md) | [Русский](docs/user/README.ru.md)
+
+# About
 <h1 align="center">Ghost of Yōtei on AnyPS5</h1>
 
 <p align="center"><b>A test branch of <a href="https://github.com/boykopovar/AnyPS5">AnyPS5</a> that runs Ghost of Yōtei (PPSA26344) into the open world.</b><br>

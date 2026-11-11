@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -161,7 +162,7 @@ const char* Name(RuntimeSwitch id) {
 }
 
 bool Set(RuntimeSwitch id) {
-    return Values().set[static_cast<std::size_t>(id)].load(std::memory_order_relaxed);
+    return Values().set.at(static_cast<std::size_t>(id)).load(std::memory_order_relaxed);
 }
 
 void Assign(RuntimeSwitch id, bool set) {
@@ -226,8 +227,9 @@ AbSchedule::Config AbSchedule::Parse(std::string_view ab, std::string_view start
         } else {
             const std::string copy(start);
             char* end = nullptr;
+            errno = 0;
             const auto value = std::strtoull(copy.c_str(), &end, 10);
-            if (end != copy.c_str() + copy.size() || copy.front() == '-') throw std::invalid_argument("APS5_AB_START: '" + copy + "' is neither a present index nor <n>s");
+            if (end != copy.c_str() + copy.size() || errno == ERANGE || copy.front() < '0' || copy.front() > '9') throw std::invalid_argument("APS5_AB_START: '" + copy + "' is neither a present index nor <n>s");
             config.startPresent = value;
         }
     }

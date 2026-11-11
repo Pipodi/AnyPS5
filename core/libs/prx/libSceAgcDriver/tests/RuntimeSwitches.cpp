@@ -81,7 +81,9 @@ void parse() {
     Require(!Refusal("0.5:APS5_NO_BDA_STAGING").empty(), "a phase under 1 s was not refused");
     Require(!Refusal("x:APS5_NO_BDA_STAGING").empty(), "a bad phase length was not refused");
     Require(!Refusal("10:APS5_NO_BDA_STAGING", "", "10").empty(), "a settle as long as the phase was not refused");
-    Require(!Refusal("10:APS5_NO_BDA_STAGING", "-3").empty() && !Refusal("10:APS5_NO_BDA_STAGING", "abc").empty(), "a bad start was not refused");
+    for (const char* start : {"-3", "abc", "s", "+3", "3x", "99999999999999999999999"}) {
+        Require(Refusal("10:APS5_NO_BDA_STAGING", start).find("APS5_AB_START") != std::string::npos, std::string("the start '") + start + "' was not refused");
+    }
 }
 
 void schedule() {
@@ -174,7 +176,27 @@ void glueArms() {
 
 }
 
+int refused() {
+    SetEnvironment("APS5_AB", "5:APS5_SPANNED_WAVE");
+    try {
+        AgcDriver::Graphics::AbAtPresent(1, 0.0);
+    } catch (const std::invalid_argument& error) {
+        if (std::string(error.what()).find("APS5_SPANNED_WAVE is read once at startup") != std::string::npos) {
+            std::printf("runtime switch refusal test passed
+");
+            return 0;
+        }
+        std::fprintf(stderr, "FAILED: unexpected refusal: %s
+", error.what());
+        return 1;
+    }
+    std::fprintf(stderr, "FAILED: APS5_AB naming a startup-only variable was not refused at the first present
+");
+    return 1;
+}
+
 int main(int argc, char** argv) {
+    if (argc > 1 && std::string(argv[1]) == "refused") return refused();
     if (argc > 1 && std::string(argv[1]) == "--arms") {
         try {
             glueArms();

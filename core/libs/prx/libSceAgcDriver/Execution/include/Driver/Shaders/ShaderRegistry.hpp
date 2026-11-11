@@ -252,6 +252,7 @@ void PromoteRegisteredCompute(std::uint64_t address);
 void PrebuildStageLibrary(const std::shared_ptr<VulkanDevice>& device, const Graphics::ShaderStages& stages, ShaderRecompiler::ShaderStage stage, std::shared_ptr<const ShaderRecompiler::RecompileResult> result, std::uint32_t pushOffset, std::uint64_t address = 0);
 void CloseRegistrationPreparation();
 unsigned RegistrationPreparationThreads();
+std::optional<std::size_t> RegistrationPreparationsPending();
 
 void ResolvePreparedGraphics(const ShaderSnapshot& front, const std::shared_ptr<const ShaderSnapshot>& fragment, std::uint32_t primitiveType, const ShaderRecompiler::SpirvTarget& target, bool deferUnprepared = false);
 

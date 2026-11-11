@@ -1608,6 +1608,9 @@ int overflowLifetimeTests(Context context) {
 void storageMemoryTests(Context context) {
     Block block(context);
     auto held = Sampled(context, block.Surface(0));
+    const auto heap = LargestDeviceLocalHeap(context.memory);
+    Require(heap.has_value(), "the device has no device-local heap");
+    context.memory.memoryHeaps[*heap].size = std::max<VkDeviceSize>(context.memory.memoryHeaps[*heap].size, ReportedBudget);
     for (const auto report : {&ReportBudget, &ReportPressure}) {
         context.memoryProperties2 = report;
         const auto budget = ReadStorageBudget(context);

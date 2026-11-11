@@ -6,7 +6,7 @@ namespace ShaderRecompiler {
 
 namespace {
 
-constexpr std::uint32_t CurrentVersion = 47u;
+constexpr std::uint32_t CurrentVersion = 148u;
 constexpr std::uint32_t DrawParameterBlockTag = 0x31504447u;
 constexpr std::uint32_t LocalFeatures = 22u;
 constexpr char kBase64Alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -352,7 +352,7 @@ void writePixelInfo(Writer& writer, const ShaderPixelStageInfo& info) {
     writer.WriteBool(info.stencilRefExportEnable);
     writer.WriteU8(static_cast<std::uint8_t>(info.rasterPrimitive));
     writer.WriteBool(info.layerExported);
-    writer.WriteBool(info.ditheredAlphaToCoverage);
+    writer.WriteU8(info.ditheredAlphaToCoverage ? (info.ditheredAlphaSamples == 2u ? 2u : 1u) : 0u);
     writer.WriteBool(info.frontFaceAllBits);
     writer.WriteU8(info.quadPixelMask);
     for (const std::uint16_t mask : info.quadSampleMask) writer.WriteU32(mask);
@@ -426,7 +426,12 @@ ShaderPixelStageInfo readPixelInfo(Reader& reader, std::uint32_t version, std::u
     if (version >= 17u) info.stencilRefExportEnable = reader.ReadBool();
     if (version >= 19u) info.rasterPrimitive = readRasterPrimitive(reader);
     if (version >= 23u) info.layerExported = reader.ReadBool();
-    if (version >= 25u) info.ditheredAlphaToCoverage = reader.ReadBool();
+    if (version >= 25u) {
+        const auto dither = reader.ReadU8();
+        if (dither > (version >= 47u ? 2u : 1u)) throw std::runtime_error("RequestSerializer: invalid alpha-to-coverage dither value");
+        info.ditheredAlphaToCoverage = dither != 0u;
+        info.ditheredAlphaSamples = dither == 2u ? 2u : 8u;
+    }
     if (version >= 27u) info.frontFaceAllBits = reader.ReadBool();
     if (version >= 28u) info.quadPixelMask = reader.ReadU8();
     if (version >= 29u) {
@@ -927,7 +932,8 @@ DeserializedRequest deserialize(std::string_view decoded, std::uint32_t version,
         result.request.target.largePixelFunctionLdsBuffer = reader.ReadBool();
         result.request.target.pixelFunctionStorageDwords = reader.ReadU32();
     }
-    if (version >= 47u && result.request.context.compute.has_value()) {
+    if (version >= 48u) result.request.target.fragmentBarycentricBuiltins = reader.ReadBool();
+    if (version >= 148u && result.request.context.compute.has_value()) {
         const bool singleWorkgroup = reader.ReadBool();
         result.request.context.compute->singleWorkgroup = singleWorkgroup;
         if (result.compute.has_value()) result.compute->singleWorkgroup = singleWorkgroup;
@@ -989,6 +995,7 @@ std::string RequestSerializer::Serialize(const RecompileRequest& request) const 
     writer.WriteBool(request.target.fusedExactArithmetic);
     writer.WriteBool(request.target.largePixelFunctionLdsBuffer);
     writer.WriteU32(request.target.pixelFunctionStorageDwords);
+    writer.WriteBool(request.target.fragmentBarycentricBuiltins);
     if (request.context.compute.has_value()) writer.WriteBool(request.context.compute->singleWorkgroup);
     // Optional trailing block (no version bump, so requests without it serialize as before): the
     // GPU-side indirect draw parameter SGPRs of a vertex stage.
