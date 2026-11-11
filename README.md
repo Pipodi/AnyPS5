@@ -84,11 +84,13 @@ It is shahulmubeen-a's 1080p patch for 02.002.000, ported to v1.008 (five sites,
 Then run the game with:
 
 ```
-APS5_SPANNED_WAVE=1 APS5_BINDLESS_IMAGES=1 APS5_BINDLESS_LAZY=1 APS5_NO_RESULT_MEMO=1
+APS5_BINDLESS_IMAGES=1 APS5_BINDLESS_LAZY=1 APS5_NO_RESULT_MEMO=1
 APS5_STAGING_DIFF=1 APS5_PIPELINE_INDIRECT=1 APS5_NO_ADDRESS_DRAW_REUSE=1
 APS5_NO_PIPELINE_JOURNAL=1 APS5_RESOURCE_CACHE_ENTRIES=1024 APS5_ASYNC_LANE=51
 APS5_NO_DRAW_AHEAD=1 APS5_DEFER_REFRESH_FLUSH=1 APS5_PIPELINE_DISPATCH=1
 APS5_DEFER_LABEL_READBACK=1 APS5_RESOURCE_CACHE_LARGE=1
+APS5_NO_RESIDENT_LINEAR=1 APS5_NO_DEFERRED_SETTLES=1 APS5_NO_CLEAR_HAND_OVER=1
+APS5_NO_PRESENT_EPOCH=1 APS5_NO_PENDING_HTILE_FILLS=1
 ```
 
 - The shader-cache version is unchanged since 2026-10-27 (`22c401ea7ca3796f`), so a cache from the previous build stays warm. **From an empty cache the first run compiles cold**: about 54 minutes to the world on our machine (frame 90 at 3,218 s). The second run can still compile a few very large pipelines (about 3 minutes on the last loading screen for us, if the first run was stopped before the driver saved them); after that, runs start warm (frame 90 at about 400 s).
@@ -98,14 +100,16 @@ APS5_DEFER_LABEL_READBACK=1 APS5_RESOURCE_CACHE_LARGE=1
 - `APS5_DEFER_LABEL_READBACK=1` records a label's read-back store behind the GPU work that writes it instead of making the CPU wait for it. `APS5_RESOURCE_CACHE_LARGE=1` raises the resource cache to at least 4,096 entries (it overrides `APS5_RESOURCE_CACHE_ENTRIES=1024`): with the small cache about 340 recipes per 10 s were rebuilt because their template had been evicted, with the large one about 35. Each one alone measured within noise; together they are about +5 %.
 - `APS5_NO_PIPELINE_JOURNAL=1` turns off `main`'s startup pipeline replay. `APS5_RESOURCE_CACHE_ENTRIES=1024` is the resource-cache size all our measurements used.
 - `main`'s paths that broke Yōtei on our tree are off here and can be turned back on:
-  - `APS5_RESIDENT_LINEAR=1`: resident linear color targets. Wrong spawn, T-pose, camera under water or in the sky (#8152).
-  - `APS5_DEFERRED_SETTLES=1`: deferred import settles. GPU write faults.
   - `APS5_HOST_IMPORT_HALF_HEAP_RESERVE=1`: `main`'s halved host-import budget. The world arrived late.
   - `APS5_TABLE_COUNT_NEUTRAL_PIPELINES=1`: broke world rendering.
-  - `APS5_CLEAR_HAND_OVER=1`: `main`'s clear hand-over (#7427). A white glare with coloured sprites over the upper half of the world.
   - `APS5_PLAYGO_SCENARIO_CHUNKS=1`: `main`'s PlayGo chunk listing from a scenario file (#7726). The ATRAC9 crash it used to cause is gone since #6721 (on this base too), but with the listing the boot crawls: on `main` of 10-26 the title sequence reached frame 23 by 370 s, against the title at 324 s with the listing off. Since `main` of 10-26, a chunk ID outside the listing throws (or follows `APS5_PLAYGO_UNLISTED_CHUNKS`); with the listing off, as here, every chunk answers installed.
   - `APS5_IMAGE_POOL=1`: `main`'s image memory pool (#7870), not tested on Yōtei.
   - Where `main` and our tree differ, `APS5_RESULT_MEMO_TABLE=1`, `APS5_RELOCATED_HEADER_COPIES=1` and `APS5_SAMPLED_LATER_USE_REFUSAL=1` select `main`'s version.
+- `main`'s paths that broke Yōtei on our tree are on by default again since the convergence with `main`, as on `main`; Yōtei runs turn them off:
+  - `APS5_NO_RESIDENT_LINEAR=1`: resident linear color targets. Wrong spawn, T-pose, camera under water or in the sky (#8152).
+  - `APS5_NO_DEFERRED_SETTLES=1`: deferred import settles. GPU write faults.
+  - `APS5_NO_CLEAR_HAND_OVER=1`: `main`'s clear hand-over (#7427). A white glare with coloured sprites over the upper half of the world.
+  - `APS5_NO_PRESENT_EPOCH=1` and `APS5_NO_PENDING_HTILE_FILLS=1`: `main`'s present collect-epoch adoption and pending HTILE fill reads, off in our Yōtei runs.
 - Off switches for the newest local changes:
   - `APS5_NO_SMALL_DEVICE_TIER=1`, `APS5_NO_EXACT_SIZE_REUSE=1`, `APS5_NO_HELD_READ_SKIP=1`, `APS5_NO_HELD_READ_BOUNDS=1`: committer fixes.
   - `APS5_NO_OWED_RUN_CLOSE=1`, `APS5_NO_RUN_ATOMIC_GUARD=1`, `APS5_NO_RUN_STAGED_READ_GUARD=1`: overlap fixes.

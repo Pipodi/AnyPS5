@@ -3909,7 +3909,7 @@ bool NoResidentPresent() {
 // packet, so on this thread a memoized answer could miss a CPU write that landed after a worker's
 // walk of the same range.
 bool RefreshPresented(Graphics::StorageTexture& resident, const DisplayBuffer& buffer, std::uint32_t layer) {
-    static const bool adopt = std::getenv("APS5_PRESENT_EPOCH") != nullptr && std::getenv("APS5_NO_PRESENT_EPOCH") == nullptr;
+    static const bool adopt = std::getenv("APS5_NO_PRESENT_EPOCH") == nullptr;
     const auto bytes = DisplayBufferSize(buffer);
     if (adopt) GuestMemory::AdoptLatestCollectEpoch();
     GuestMemory::CollectWritesUncached(buffer.address, bytes);

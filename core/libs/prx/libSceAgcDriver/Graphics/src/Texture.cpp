@@ -6897,7 +6897,7 @@ std::uint64_t StorageTexture::unitBlockGeneration(std::uint32_t unit, std::uint6
 namespace {
 
 std::atomic<bool>& ClearHandOverOn() {
-    static std::atomic<bool> on{std::getenv("APS5_CLEAR_HAND_OVER") != nullptr && std::getenv("APS5_NO_CLEAR_HAND_OVER") == nullptr};
+    static std::atomic<bool> on{std::getenv("APS5_NO_CLEAR_HAND_OVER") == nullptr};
     return on;
 }
 
