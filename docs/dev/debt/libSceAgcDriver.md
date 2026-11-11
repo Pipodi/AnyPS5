@@ -397,6 +397,7 @@
 
 - [Shared BDA fault slots with shader counters](../../../core/libs/prx/libSceAgcDriver/Graphics/src/BdaResources.cpp) (libSceAgcDriver) - local: main's shared fault-slot arena (`APS5_NO_SHARED_FAULT_SLOTS` turns it off) carries the stack's 16 `APS5_SHADER_COUNTERS` words in full-size slots only; report-only slots (32 bytes) have no counter words, so their programs are missing from `[shader-counters]`. The stack's one fault buffer per BdaResources is what `APS5_NO_SHARED_FAULT_SLOTS=1` gives; the arena was not measured on Yotei.
 - [Host import budget reserve](../../../core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp) (libSceAgcDriver) - local: `HostImportBudget` keeps the stack's half-heap reserve (`APS5_HOST_IMPORT_HALF_HEAP_RESERVE`); main's default reserve of min(host heap / 2, 4 GiB) is not in this tree, so a 32 GiB machine imports 8 GiB instead of main's 12 GiB (11815 MiB on a 15911 MiB heap). Main's default is an A/B row after the convergence gates.
+- [Retired draw items on the commit reaper](../../../core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawPipeline.cpp) (libSceAgcDriver) - local: with the commit reaper on (default, `APS5_NO_COMMIT_REAPER` turns it off), retired draw pipeline items are freed on the reaper thread up to 2 ms after they retire, not before `Enqueue` returns as main's `ClearOnExit` does; they never sit in the enqueuing thread's storage. `agc_driver_draw_pipeline_retired_items` runs with the reaper off, so the reaper's free is not covered by a test.
 
 ### Opt-in draw paths
 

@@ -267,3 +267,7 @@ endif()
 if(BUILD_TESTING)
     set_tests_properties(agc_driver_prepared_shaders_inline agc_driver_prepared_shaders_preparation_failure agc_driver_prepared_shaders_inline_preparation_failure PROPERTIES RESOURCE_LOCK shader_failure_capture)
 endif()
+
+if(BUILD_TESTING AND TEST agc_driver_draw_pipeline_retired_items)
+    set_tests_properties(agc_driver_draw_pipeline_retired_items PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_NO_PIPELINE_JOURNAL=1;APS5_NO_COMMIT_REAPER=1")
+endif()
