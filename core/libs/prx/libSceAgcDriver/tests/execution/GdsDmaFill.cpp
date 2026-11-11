@@ -290,6 +290,7 @@ int main() {
             const auto drainsBefore = storesDrained.load();
             const auto gpuStoresBefore = storesOnGpu.load() + storesBehindCompletions.load();
             const auto gpuCopiesBefore = copiesBehindPendingSources.load();
+            const auto gdsFillsBefore = gdsFills.load();
             words.clear();
             AppendDispatch(words, code, output);
             Append(words, FillGds(3000u, CounterOffset, 16));
@@ -310,6 +311,9 @@ int main() {
                 check(storesDrained.load() == drainsBefore, "a fill of the shared GDS behind a dispatch still using it drained the device");
                 check(storesOnGpu.load() + storesBehindCompletions.load() == gpuStoresBefore + 1, "a fill of the shared GDS behind a dispatch still using it was not stored on the GPU");
                 check(copiesBehindPendingSources.load() == gpuCopiesBefore + 1, "the copy out of the shared GDS behind the dispatches using it was not recorded on the GPU");
+            } else if (std::getenv("APS5_NO_GDS_GPU_FILL") == nullptr) {
+                check(storesDrained.load() == drainsBefore, "a fill behind a dispatch still using the GDS drained the device although GDS fills are recorded on the GPU");
+                check(gdsFills.load() == gdsFillsBefore + 1, "a fill behind a dispatch still using the GDS was not recorded as a GDS fill on the GPU");
             } else {
                 check(storesDrained.load() == drainsBefore + 1, "a fill behind a dispatch still using the GDS did not drain the device as main does");
             }
