@@ -198,7 +198,6 @@ bool keepsDrawPipeline(std::span<const std::uint32_t> packet, std::uint32_t head
             const auto destination = Pm4::DmaDestination(packet);
             if (destination == Pm4::DmaDestinationNowhere) return true;
             if (!dmaItems) return false;
-            if (destination == Pm4::DmaSelectGds && !Pm4::GdsImportable()) return true;
             const auto bytes = Pm4::DmaBytes(packet);
             if (bytes == 0) return true;
             const auto source = Pm4::DmaSource(packet);
