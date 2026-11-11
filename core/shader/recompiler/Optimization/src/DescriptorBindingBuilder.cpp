@@ -652,6 +652,7 @@ void DescriptorBindingBuilder::Populate(BindingAllocationResult& allocation, con
                 physical.imageWritten.push_back(selected && storage);
                 physical.imageAtomic.push_back(selected && storage && element.atomic);
                 physical.imageAtomic64.push_back(selected && storage && element.atomic64);
+                if (physical.kind == DescriptorKind::StorageImage) physical.imageUintStorage.push_back(selected && storage && RuntimeAbi::UintStorageImageBinding(static_cast<std::uint32_t>(element.kind)));
                 std::uint32_t samplers = 0;
                 for (std::uint32_t sampler = 0; sampler < entry.tableSamplerMasks.size(); ++sampler) {
                     if ((element.samplers & (1u << sampler)) != 0u) samplers |= entry.tableSamplerMasks[sampler];

@@ -2689,7 +2689,7 @@ std::uint64_t ResultHeapBytes(const RecompileResult& result) {
     bytes += vectorHeapBytes(result.imageTablePoison) + vectorHeapBytes(result.imageTableRanges) + vectorHeapBytes(result.imageTableReadRanges) + vectorHeapBytes(result.bindlessTables);
     for (const auto& binding : result.bindings) {
         bytes += vectorHeapBytes(binding.guestDescriptor) + vectorHeapBytes(binding.samplerDepthCompare) + vectorHeapBytes(binding.imageWritten);
-        bytes += vectorHeapBytes(binding.imageDepthCompare) + vectorHeapBytes(binding.imageAtomic) + vectorHeapBytes(binding.imageAtomic64) + vectorHeapBytes(binding.imageShapes);
+        bytes += vectorHeapBytes(binding.imageDepthCompare) + vectorHeapBytes(binding.imageAtomic) + vectorHeapBytes(binding.imageAtomic64) + vectorHeapBytes(binding.imageUintStorage) + vectorHeapBytes(binding.imageShapes);
         bytes += vectorHeapBytes(binding.bufferAtomic) + vectorHeapBytes(binding.bufferWritten) + vectorHeapBytes(binding.samplerUnnormalized) + vectorHeapBytes(binding.samplerIntegerBorder);
         bytes += vectorHeapBytes(binding.imageUnnormalized) + vectorHeapBytes(binding.imageUnnormalizedBaseLevel) + vectorHeapBytes(binding.imageSamplers) + vectorHeapBytes(binding.bufferRead);
         bytes += vectorHeapBytes(binding.samplerCoordinatesIgnored) + vectorHeapBytes(binding.bufferExtent);
