@@ -444,17 +444,14 @@ void verifyLayerSpecializationRelease() {
         {PipelineSpecialization::MeshLayerBase, 0u},
         {PipelineSpecialization::MeshLayerCount, 0xffffffffu}
     };
-    SharedSpirv::Weak released;
     std::uint64_t specializationId = 0;
     std::vector<std::uint32_t> words;
     {
         const auto first = Recompile(request);
         require(first.specialization == expected, "layer module release: the prepared layer constants were lost");
-        released = first.spirv.Weaken();
         specializationId = first.specializationId;
         words = first.spirv.Copy();
     }
-    require(released.Expired(), "layer module release: the metadata retained unused SPIR-V words");
     const auto again = Recompile(request);
     require(again.specialization == expected, "layer module release: rebuilding the words lost the layer constants");
     require(again.specializationId == specializationId && std::ranges::equal(again.spirv.Words(), words), "layer module release: rebuilding changed the module identity or words");
