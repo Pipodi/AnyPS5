@@ -484,7 +484,7 @@ void LargerClass() {
     Expect(MemoryOf(best.Handle()) != twelve && ClassOf(best.Handle()) == 5 * MiB, "a 4 MiB + 1 request did not take the smallest retained class that fits (5 MiB)");
 }
 
-void ExactSizeReuse() {
+void ExactSizeReuseScan() {
     mock = MockDevice{};
     {
         auto context = mockContext();
@@ -1388,7 +1388,7 @@ int main(int argc, char** argv) {
         KeptUntilFence();
         SmallDeviceRetention();
         SmallDeviceOwnTier();
-        ExactSizeReuse();
+        ExactSizeReuseScan();
         Budget();
         AddressAndHostUnchanged();
         SmallDeviceClasses();

@@ -338,19 +338,23 @@ bool committedWritable(std::uint64_t address, std::uint64_t bytes) {
 #endif
 }
 
-void commit(const FrameMemoryChunk& chunk) {
-    auto* const pointer = reinterpret_cast<void*>(static_cast<std::uintptr_t>(chunk.address));
-    const auto bytes = static_cast<std::size_t>(chunk.bytes);
+void commitRange(std::uint64_t address, std::uint64_t length) {
+    auto* const pointer = reinterpret_cast<void*>(static_cast<std::uintptr_t>(address));
+    const auto bytes = static_cast<std::size_t>(length);
 #ifdef __linux__
     const auto page = static_cast<std::uint64_t>(sysconf(_SC_PAGESIZE));
-    const auto begin = chunk.address & ~(page - 1);
-    const auto end = (chunk.address + chunk.bytes + page - 1) & ~(page - 1);
-    if (begin != chunk.address || end != chunk.address + chunk.bytes) {
+    const auto begin = address & ~(page - 1);
+    const auto end = (address + length + page - 1) & ~(page - 1);
+    if (begin != address || end != address + length) {
         GuestArena::GuestArenaSetProtection_nid_postfix(static_cast<std::uintptr_t>(begin), static_cast<std::size_t>(end - begin), 0x04);
         return;
     }
 #endif
     GuestArena::GuestArenaCommit_nid_postfix(pointer, bytes, 0x04, bytes);
+}
+
+void commit(const FrameMemoryChunk& chunk) {
+    commitRange(chunk.address, chunk.bytes);
 }
 
 std::pair<std::uint64_t, std::uint64_t> progress();
@@ -438,12 +442,12 @@ AliasedPages aliasedPages(const FrameCaptureReader& reader) {
     return result;
 }
 
-void commitWithAliases(const FrameMemoryChunk& chunk, void* pointer, std::size_t bytes, const AliasedPages& aliases, std::map<std::uint64_t, void*>& sections) {
+void commitWithAliases(void* pointer, std::size_t bytes, const AliasedPages& aliases, std::map<std::uint64_t, void*>& sections) {
     const auto begin = reinterpret_cast<std::uintptr_t>(pointer);
     const auto end = begin + bytes;
     auto alias = aliases.groupOf.lower_bound(begin);
     if (alias == aliases.groupOf.end() || alias->first >= end) {
-        commit(chunk);
+        commitRange(begin, bytes);
         return;
     }
 #ifdef _WIN32
@@ -500,7 +504,7 @@ Skipped restoreMemory(const FrameCaptureReader& reader) {
                 skipped.Add(chunk);
                 continue;
             }
-            commitWithAliases(chunk, pointer, bytes, aliases, sections);
+            commitWithAliases(pointer, bytes, aliases, sections);
             mutation.Add(pointer, bytes, (chunk.access & FrameRangeAccess::Readable) != 0, (chunk.access & FrameRangeAccess::Writable) != 0, gpu);
         }
     }

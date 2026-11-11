@@ -4492,7 +4492,7 @@ void drawTessellationGeometry(const Context& context, const State& state, const 
     tessellated.stages.tessellationGeometry.reset();
     tessellated.rasterizerDiscard = true;
     tessellated.tessellationCapture = capture;
-    Draw(context, tessellated, draw, first, snapshots, nullptr, trace);
+    Draw(context, tessellated, draw, first, snapshots, nullptr, nullptr, nullptr, trace);
     auto meshed = state;
     meshed.stages.path = ShaderPath::Geometry;
     meshed.stages.mesh = geometry;
@@ -4501,7 +4501,7 @@ void drawTessellationGeometry(const Context& context, const State& state, const 
     meshed.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     meshed.tessellationCapture = capture;
     const Pm4::DrawParameters captured{0, 3u, 0, 1u, 0, false, 0, 0};
-    Draw(context, meshed, captured, second, snapshots, nullptr, trace);
+    Draw(context, meshed, captured, second, snapshots, nullptr, nullptr, nullptr, trace);
 }
 
 void Draw(const Context& context, const State& state, const Pm4::DrawParameters& draw, std::span<const CompiledShader> shaders, std::span<const GuestMemorySnapshot> snapshots, std::shared_ptr<const DrawRecipe>* recipeOut, PreparedDraw* prepared, const AheadDraw* ahead, const DrawTraceContext* trace) {
