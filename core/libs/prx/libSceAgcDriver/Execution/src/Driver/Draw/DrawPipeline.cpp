@@ -527,7 +527,6 @@ void DrawPipeline::report(std::chrono::steady_clock::time_point now) {
     char reads[96];
     std::snprintf(reads, sizeof(reads), " %llu read ranges, %llu stores held, %llu decode drains", static_cast<unsigned long long>(heldReadRanges.load(std::memory_order_relaxed)), static_cast<unsigned long long>(heldReadHits.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(decodeDrainCount - reportedDecodeDrains));
     reportedDecodeDrains = decodeDrainCount;
-    drainText += reads;
     std::array<std::uint64_t, static_cast<std::size_t>(Event::Count)> counted{};
     for (std::size_t i = 0; i < counted.size(); ++i) {
         const auto total = events[i].load(std::memory_order_relaxed);
