@@ -642,6 +642,7 @@ SurfaceGeometry describeGcnSurface(const GuestTextureResource& descriptor) {
     geometry.mips = ComputeGcnMipLayout(descriptor.tileMode, descriptor.format, descriptor.width, descriptor.height, descriptor.gcnPitch, descriptor.gcnPow2Pad, descriptor.mipCount, descriptor.gcnLinearGeneral, geometry.layers, volume);
     geometry.imageLayers = volume ? 1u : geometry.layers;
     geometry.imageDepth = volume ? geometry.layers : 1u;
+    geometry.imageLevels = std::min(descriptor.mipCount, FullMipChainLevels(descriptor.width, descriptor.height, volume ? geometry.layers : 1u));
     geometry.guestBytes = geometry.mips.back().tiledOffset + geometry.mips.back().tiledSize * GcnLevelSlices(geometry.layers, descriptor.mipCount - 1u, descriptor.gcnPow2Pad, volume);
     geometry.layerBytes = geometry.guestBytes / geometry.layers;
     for (const auto& mip : geometry.mips) geometry.sliceLinearBytes = std::max(geometry.sliceLinearBytes, mip.linearOffset + mip.linearSize);
