@@ -1237,7 +1237,7 @@ void RequireRegisteredRefusal() {
 
 int main(int argc, char** argv) {
     try {
-        Require(argc == 1 || (argc == 2 && std::string(argv[1]) == "--registered-refusal"), "invalid test arguments");
+        Require(argc == 1 || (argc == 2 && (std::string(argv[1]) == "--registered-refusal" || std::string(argv[1]) == "--depth-remap")), "invalid test arguments");
         auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
         const auto target = device->Target();

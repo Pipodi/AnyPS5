@@ -192,7 +192,7 @@ void RunBdaContractTests() {
     auto invalid = encoded;
     invalid[0] = invalid[0] == 'A' ? 'B' : 'A';
     reject([&] { static_cast<void>(serializer.Deserialize(invalid)); }, "request signature");
-    reject([&] { static_cast<void>(serializer.Deserialize("NVNQQWMAAAA=")); }, "serialization version");
+    reject([&] { static_cast<void>(serializer.Deserialize("NVNQQZUAAAA=")); }, "serialization version");
     for (const std::uint32_t bits : {8u, 16u, 32u}) {
         const auto shader = MakeBdaWriteTestShader(0x7fff1235fffdULL, 0xa1b2c3d4u, bits, false);
         const auto lookups = CallSites(shader, "get_bda_write_pointer");
