@@ -14428,6 +14428,21 @@ int pipelineCacheFileTests(const Device& device) {
         PipelineCache reloaded(context, properties);
         Require(holds(reloaded.Handle(), 1), "an invalid cache file was not replaced by the saving object's pipelines");
     }
+    {
+        PipelineCache restoring(context, properties);
+        Require(holds(restoring.Handle(), 1), "the valid cache file lost a pipeline");
+        {
+            std::ofstream corrupt(path, std::ios::binary | std::ios::trunc);
+            corrupt << "corrupted pipeline cache header with 24 bytes";
+        }
+        PipelineCache invalidHeader(context, properties, false);
+        Require(!PipelineCacheTestAccess::HasHeader(invalidHeader), "an invalid cache header was accepted as present");
+        restoring.SaveNow();
+    }
+    {
+        PipelineCache reloaded(context, properties);
+        Require(holds(reloaded.Handle(), 1), "an invalid cache header was not replaced by the unchanged cache object");
+    }
     std::filesystem::remove_all(directory);
     {
         PipelineCache busy(context, properties);
@@ -14446,21 +14461,6 @@ int pipelineCacheFileTests(const Device& device) {
     {
         PipelineCache reloaded(context, properties);
         Require(holds(reloaded.Handle(), 0), "the cache file lost the pipeline of a cache saved after a skipped periodic save");
-    }
-    {
-        PipelineCache restoring(context, properties);
-        Require(holds(restoring.Handle(), 1), "the valid cache file lost a pipeline");
-        {
-            std::ofstream corrupt(path, std::ios::binary | std::ios::trunc);
-            corrupt << "corrupted pipeline cache header with 24 bytes";
-        }
-        PipelineCache invalidHeader(context, properties, false);
-        Require(!PipelineCacheTestAccess::HasHeader(invalidHeader), "an invalid cache header was accepted as present");
-        restoring.SaveNow();
-    }
-    {
-        PipelineCache reloaded(context, properties);
-        Require(holds(reloaded.Handle(), 1), "an invalid cache header was not replaced by the unchanged cache object");
     }
     {
 #ifdef _WIN32
