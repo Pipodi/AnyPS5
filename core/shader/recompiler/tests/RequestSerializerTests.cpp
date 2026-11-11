@@ -564,6 +564,7 @@ int main() {
                     blended[282] = 1u;
                     auto local26 = blended;
                     local26[4] = 26u;
+                    local26.resize(local26.size() - 3u);
                     local26.pop_back();
                     local26.erase(local26.end() - 35, local26.end());
                     if (fixture.tessellation) local26.erase(local26.end() - 36);
@@ -573,6 +574,7 @@ int main() {
                     Require(serializer.Serialize(serializer.Deserialize(EncodeBase64(local26)).request) == EncodeBase64(blended));
                     auto local30 = blended;
                     local30[4] = 30u;
+                    local30.resize(local30.size() - 3u);
                     local30.pop_back();
                     local30.erase(local30.end() - 27, local30.end());
                     if (fixture.tessellation) local30.erase(local30.end() - 44);
@@ -584,6 +586,7 @@ int main() {
                     reversed[278] = 1u;
                     auto main30 = reversed;
                     main30[4] = 30u;
+                    main30.resize(main30.size() - 3u);
                     main30.pop_back();
                     main30.erase(main30.end() - 27, main30.end());
                     if (fixture.tessellation) main30.erase(main30.end() - 44);
@@ -1006,6 +1009,8 @@ int main() {
         auto bytes = DecodeBase64(hostFirstEncoded[hostFirst]);
         Require(bytes[4] == 153u && bytes.back() == 0u && bytes[bytes.size() - 2u] == (hostFirst ? 1u : 0u));
         bytes.pop_back();
+        const auto hostFirstBlend = std::search(bytes.begin(), bytes.end(), pixel.sampleLocations.begin(), pixel.sampleLocations.begin() + 4) - 42;
+        bytes.erase(hostFirstBlend, hostFirstBlend + 40);
         bytes[4] = 52u;
         Require(serializer.Deserialize(EncodeBase64(bytes)).request.target.hostInterpolationFirst == hostFirst);
         bytes.pop_back();
@@ -1019,6 +1024,8 @@ int main() {
         auto bytes = DecodeBase64(serializer.Serialize(request));
         Require(serializer.Deserialize(EncodeBase64(bytes)).request.target.shaderImageMinLod == minLod && bytes[4] == 153u && bytes.back() == (minLod ? 1u : 0u));
         bytes.pop_back();
+        const auto minLodBlend = std::search(bytes.begin(), bytes.end(), pixel.sampleLocations.begin(), pixel.sampleLocations.begin() + 4) - 42;
+        bytes.erase(minLodBlend, minLodBlend + 40);
         bytes[4] = 52u;
         Require(!serializer.Deserialize(EncodeBase64(bytes)).request.target.shaderImageMinLod);
     }
