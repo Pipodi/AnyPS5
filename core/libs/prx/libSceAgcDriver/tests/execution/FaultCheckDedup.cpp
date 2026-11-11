@@ -185,8 +185,8 @@ std::vector<Case> Cases() {
     return {
         {"straight line, same descriptor three times", [](Program& p) { p.VectorLoad(DescriptorA, 0); p.VectorLoad(DescriptorA, 1); p.VectorLoad(DescriptorA, 2); },
             {2, {{false, 0}, {false, 1}, {false, 2}}, {Slot::A, Slot::A, Slot::A, Slot::Initial}}},
-        {"vector load, divergent if, join", [](Program& p) { p.VectorLoad(DescriptorA, 0); p.DivergentIf(HalfLanes, true, [](Program& q) { q.VectorLoad(DescriptorA, 1); }); p.VectorLoad(DescriptorA, 2); },
-            {2, {{false, 0}, {false, 1}, {false, 2}}, {Slot::A, Slot::AInHalf, Slot::A, Slot::Initial}}},
+        {"vector loads, divergent if with a repeat inside, join", [](Program& p) { p.VectorLoad(DescriptorA, 0); p.DivergentIf(HalfLanes, true, [](Program& q) { q.VectorLoad(DescriptorA, 1); q.VectorLoad(DescriptorA, 2); }); p.VectorLoad(DescriptorA, 3); },
+            {2, {{false, 0}, {false, 1}, {false, 2}, {false, 3}}, {Slot::A, Slot::AInHalf, Slot::AInHalf, Slot::A}}},
         {"vector load, uniform if, join", [](Program& p) { p.VectorLoad(DescriptorA, 0); p.UniformIf([](Program& q) { q.VectorLoad(DescriptorA, 1); }); p.VectorLoad(DescriptorA, 2); },
             {2, {{false, 0}, {false, 2}}, {Slot::A, Slot::Initial, Slot::A, Slot::Initial}}},
         {"check in a skipped uniform if does not cover the join", [](Program& p) { p.UniformIf([](Program& q) { q.VectorLoad(DescriptorA, 0); }); p.VectorLoad(DescriptorA, 1); },
