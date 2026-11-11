@@ -1812,7 +1812,7 @@ private:
             const std::array<IrValue*, 2> compare{&scalar, &m_builder.Constant(arm)};
             conditions.push_back(EmitBefore(inst, IrOpcode::IEqual32, IrType::Bool, compare));
         }
-        ReplaceWithArmCopies(inst, handles, {true, true}, handleCount, conditions, [&](std::uint32_t arm, std::uint32_t slot, std::size_t dword) {
+        ReplaceWithArmCopies(inst, handles, {true, true}, handleCount, conditions, false, [&](std::uint32_t arm, std::uint32_t slot, std::size_t dword) {
             return Rematerialize(web.arms[arm][offsets[slot] + dword], inst, true, phiSearchDepth);
         }, &scalar);
         return true;
