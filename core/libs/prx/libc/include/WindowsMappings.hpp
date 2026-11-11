@@ -1473,11 +1473,11 @@ private:
             const auto found = views.find(at);
             if (found != views.end()) {
                 const auto& view = found->second;
-                if (!view.resident || view.page->aliases.size() != 1 || view.viewBytes != pageBytes) return OwnedRefusal::Shared;
+                if (!view.resident || view.viewBytes != pageBytes) return OwnedRefusal::Shared;
                 if (!watchResident) return OwnedRefusal::Unwatched;
                 if (!ownedReadable(view.protection)) return OwnedRefusal::NotWritable;
                 if (view.hostWrites != 0) return OwnedRefusal::HostWrite;
-                if (view.hostImports != 0 || view.page->pins != 0) return OwnedRefusal::Pinned;
+                if (view.hostImports != 0 || view.pins != 0) return OwnedRefusal::Pinned;
                 if (at < regionBegin || at + pageBytes > regionEnd) {
                     const auto memory = query(at);
                     if (memory.State != MEM_COMMIT || memory.Type != MEM_PRIVATE) return OwnedRefusal::NotWritable;
