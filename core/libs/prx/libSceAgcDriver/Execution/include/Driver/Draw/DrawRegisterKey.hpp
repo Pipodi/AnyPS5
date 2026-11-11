@@ -17,7 +17,7 @@ struct RegisterStateKeyParts {
 std::uint64_t RegisterStateKey(const QueueState& queue, bool allUserWords = false, bool incremental = true, std::uint64_t* shapeKey = nullptr, RegisterStateKeyParts* parts = nullptr);
 std::uint64_t DrawShaderSetKey(const QueueState& queue, const ShaderRegistry& registry);
 
-// One pass over the five program addresses of a draw: the identity key, the shader-set key and the register-key tail
+// One pass over the six program addresses of a draw: the identity key, the shader-set key and the register-key tail
 // all read the same low/high/RSRC words and the same registry entry per stage, so a draw looks them up once.
 struct DrawStageWalk {
     bool present = false;
@@ -25,7 +25,7 @@ struct DrawStageWalk {
     const ShaderRegistry::mapped_type* snapshots = nullptr;
     std::uint64_t offset = 0;
 };
-using DrawRegistryWalk = std::array<DrawStageWalk, 5>;
+using DrawRegistryWalk = std::array<DrawStageWalk, 6>;
 
 void WalkDrawRegistry(const QueueState& queue, const ShaderRegistry& registry, DrawRegistryWalk& walk);
 std::uint64_t DrawShaderSetKey(const DrawRegistryWalk& walk);

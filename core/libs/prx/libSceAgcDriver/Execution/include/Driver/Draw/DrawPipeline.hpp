@@ -66,6 +66,7 @@ public:
     static void NoteProducerGpuWait(std::uint64_t ns);
     static std::uint64_t ProducerGpuWaits();
     static std::uint64_t ProducerGpuWaitNs();
+    enum class QueuedWrite : std::uint8_t { None, Stored, Unknown };
 
     static DrawPipeline& Queue0();
     static std::size_t Depth();
@@ -78,6 +79,7 @@ public:
     static unsigned Committers();
 
     void Enqueue(Commit commit, std::vector<Range> writes, std::uint64_t labelAddress = 0, std::vector<std::byte> labelBytes = {}, std::vector<Range> reads = {}, Prepare prepare = {}, bool draw = false);
+    void EnqueueStore(Commit commit, std::uint64_t address, std::vector<std::byte> bytes);
     void Drain(DrainReason reason, std::uint32_t opcode = 0x100);
     void Stop();
     void ReleaseRetired();
@@ -86,6 +88,7 @@ public:
     // without a drain (upstream #6208). LOCAL A/B: APS5_NO_PIPELINE_DMA=1 (any value but 0) restores
     // the behaviour before it: DMA_DATA runs on the worker after a drain.
     static bool DmaItems();
+    static std::uint64_t DrainRequestsByReason(DrainReason reason);
     bool Busy() const;
     std::size_t Outstanding() const { return outstanding.load(std::memory_order_acquire); }
     bool Overlaps(std::uint64_t address, std::size_t bytes);
@@ -111,6 +114,7 @@ public:
     static bool HeldReads(std::uint64_t address, std::size_t bytes);
     static std::uint64_t HeldReadQueries();
     void ReleaseRunningReads();
+    QueuedWrite StoredBytes(std::uint64_t address, std::size_t bytes, std::span<std::byte> out);
 
     static bool MetadataPassesPipelined();
     static void CountPipelinedMetadataPass();
@@ -133,8 +137,10 @@ private:
         DrainReason drainReason = DrainReason::Packet;
         std::uint32_t drainOpcode = 0;
         std::uint64_t drainNs = 0;
+        bool store = false;
     };
     DrawPipeline() = default;
+    void enqueue(Item item);
     template<typename TRanges, typename TBounds>
     bool pendingWrites(const TRanges& ranges, TBounds& bounds) {
         std::uint64_t lowest = ~std::uint64_t{0}, highest = 0;
@@ -216,6 +222,7 @@ private:
     DrainReason lastDrainReason = DrainReason::Packet;
     std::uint32_t lastDrainOpcode = 0;
     std::uint64_t lastDrainNs = 0;
+    std::array<std::atomic<std::uint64_t>, static_cast<std::size_t>(DrainReason::Count)> reasonRequests{};
     std::uint64_t depthSum = 0;
     std::int64_t lastPopNs = 0;
     std::int64_t lastFinishNs = 0;

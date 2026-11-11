@@ -6,9 +6,15 @@ namespace ShaderRecompiler {
 
 namespace {
 
-constexpr std::uint32_t CurrentVersion = 148u;
+constexpr std::uint32_t CurrentVersion = 153u;
+constexpr std::uint32_t MainLastVersion = 53u;
+constexpr std::uint32_t MainSkippedVersion = 50u;
 constexpr std::uint32_t DrawParameterBlockTag = 0x31504447u;
 constexpr std::uint32_t LocalFeatures = 22u;
+constexpr std::uint32_t TargetBlendFlag = 0x10000u;
+constexpr std::uint32_t FurtherMergeShift = 17u;
+constexpr std::uint32_t FurtherMergeMask = 7u << FurtherMergeShift;
+
 constexpr char kBase64Alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 std::string base64Encode(std::string_view data) {
@@ -245,7 +251,7 @@ ConservativeZExport readConservativeZExport(Reader& reader) {
 
 ColorExportPacking readColorExportPacking(Reader& reader) {
     const auto value = reader.ReadU8();
-    if (value > static_cast<std::uint8_t>(ColorExportPacking::Uint)) {
+    if (value > static_cast<std::uint8_t>(ColorExportPacking::UintClamp16)) {
         throw std::runtime_error("RequestSerializer: invalid ColorExportPacking value");
     }
     return static_cast<ColorExportPacking>(value);
@@ -369,12 +375,32 @@ void writePixelInfo(Writer& writer, const ShaderPixelStageInfo& info) {
     for (const std::uint8_t location : info.sampleLocations) writer.WriteU8(location);
     writer.WriteBool(info.stencilOperationValueExport);
     for (const std::uint32_t order : info.sampleOrder) writer.WriteU32(order);
-    writer.WriteU8(info.targetMerge.target);
-    writer.WriteU32(info.targetMerge.mask);
-    writer.WriteU8(info.targetMerge.samples);
-    for (const std::uint32_t word : info.targetMerge.descriptor) writer.WriteU32(word);
-    writer.WriteBool(info.targetMerge.depthStencilWrites);
-    writer.WriteBool(info.targetMerge.depthStencilTests);
+    if (info.targetMerges.size() > 8u) throw std::runtime_error("a recompile request merges into more than eight color targets");
+    const auto further = static_cast<std::uint32_t>(std::max<std::size_t>(info.targetMerges.size(), 1u) - 1u);
+    for (std::uint32_t index = 0; index <= further; ++index) {
+        const auto& merge = info.targetMerges.empty() ? TargetMerge{} : info.targetMerges[index];
+        writer.WriteU8(merge.target);
+        writer.WriteU32(static_cast<std::uint32_t>(merge.mask) | (merge.blend.enabled ? TargetBlendFlag : 0u) | (index == 0u ? further << FurtherMergeShift : 0u));
+        writer.WriteU8(merge.samples);
+        for (const std::uint32_t word : merge.descriptor) writer.WriteU32(word);
+        writer.WriteBool(merge.depthStencilWrites);
+        writer.WriteBool(merge.depthStencilTests);
+        if (!merge.blend.enabled) continue;
+        const auto& blend = merge.blend;
+        writer.WriteBool(blend.snorm);
+        writer.WriteU8(blend.colorSource);
+        writer.WriteU8(blend.colorDestination);
+        writer.WriteU8(blend.colorOperation);
+        writer.WriteU8(blend.alphaSource);
+        writer.WriteU8(blend.alphaDestination);
+        writer.WriteU8(blend.alphaOperation);
+        writer.WriteU8(blend.writeMask);
+        for (const std::uint32_t word : blend.constants) writer.WriteU32(word);
+    }
+    if (info.depthExportEnable) {
+        writer.WriteU32(std::bit_cast<std::uint32_t>(info.depthExportMin));
+        writer.WriteU32(std::bit_cast<std::uint32_t>(info.depthExportMax));
+    }
 }
 
 ShaderPixelStageInfo readPixelInfo(Reader& reader, std::uint32_t version, std::uint32_t local) {
@@ -460,15 +486,36 @@ ShaderPixelStageInfo readPixelInfo(Reader& reader, std::uint32_t version, std::u
     if (version >= 42u) {
         for (std::uint32_t& order : info.sampleOrder) order = reader.ReadU32();
     }
-    if (version >= 46u) {
-        info.targetMerge.target = reader.ReadU8();
-        const auto mask = reader.ReadU32();
-        if (mask > 0xffffu) throw std::runtime_error("invalid recompile request target merge mask");
-        info.targetMerge.mask = static_cast<std::uint16_t>(mask);
-        info.targetMerge.samples = reader.ReadU8();
-        for (std::uint32_t& word : info.targetMerge.descriptor) word = reader.ReadU32();
-        info.targetMerge.depthStencilWrites = reader.ReadBool();
-        info.targetMerge.depthStencilTests = reader.ReadBool();
+    for (std::uint32_t index = 0, count = version >= 46u ? 1u : 0u; index < count; ++index) {
+        TargetMerge merge;
+        merge.target = reader.ReadU8();
+        const auto word = reader.ReadU32();
+        if ((word & ~(0xffffu | TargetBlendFlag | (index == 0u ? FurtherMergeMask : 0u))) != 0u) throw std::runtime_error("invalid recompile request target merge mask");
+        count += (word & FurtherMergeMask) >> FurtherMergeShift;
+        merge.mask = static_cast<std::uint16_t>(word & 0xffffu);
+        merge.samples = reader.ReadU8();
+        for (std::uint32_t& descriptor : merge.descriptor) descriptor = reader.ReadU32();
+        merge.depthStencilWrites = reader.ReadBool();
+        merge.depthStencilTests = reader.ReadBool();
+        if ((word & TargetBlendFlag) != 0u) {
+            auto& blend = merge.blend;
+            blend.enabled = true;
+            blend.snorm = reader.ReadBool();
+            blend.colorSource = reader.ReadU8();
+            blend.colorDestination = reader.ReadU8();
+            blend.colorOperation = reader.ReadU8();
+            blend.alphaSource = reader.ReadU8();
+            blend.alphaDestination = reader.ReadU8();
+            blend.alphaOperation = reader.ReadU8();
+            blend.writeMask = reader.ReadU8();
+            for (std::uint32_t& constant : blend.constants) constant = reader.ReadU32();
+        }
+        if (merge.mask != 0u) info.targetMerges.push_back(merge);
+        else if (index != 0u || count != 1u) throw std::runtime_error("invalid recompile request target merge mask");
+    }
+    if (version >= 49u && info.depthExportEnable) {
+        info.depthExportMin = std::bit_cast<float>(reader.ReadU32());
+        info.depthExportMax = std::bit_cast<float>(reader.ReadU32());
     }
     if (version < 5u) {
         const auto input = [](PixelInput value, bool present) { return present ? PixelInputBit(value) : 0u; };
@@ -933,7 +980,10 @@ DeserializedRequest deserialize(std::string_view decoded, std::uint32_t version,
         result.request.target.pixelFunctionStorageDwords = reader.ReadU32();
     }
     if (version >= 48u) result.request.target.fragmentBarycentricBuiltins = reader.ReadBool();
-    if (version >= 148u && result.request.context.compute.has_value()) {
+    if (version >= 51u) result.request.target.tessellationEvaluationSubgroups = reader.ReadBool();
+    if (version >= 52u) result.request.target.hostInterpolationFirst = reader.ReadBool();
+    if (version >= 53u) result.request.target.shaderImageMinLod = reader.ReadBool();
+    if (version >= CurrentVersion && result.request.context.compute.has_value()) {
         const bool singleWorkgroup = reader.ReadBool();
         result.request.context.compute->singleWorkgroup = singleWorkgroup;
         if (result.compute.has_value()) result.compute->singleWorkgroup = singleWorkgroup;
@@ -996,6 +1046,9 @@ std::string RequestSerializer::Serialize(const RecompileRequest& request) const 
     writer.WriteBool(request.target.largePixelFunctionLdsBuffer);
     writer.WriteU32(request.target.pixelFunctionStorageDwords);
     writer.WriteBool(request.target.fragmentBarycentricBuiltins);
+    writer.WriteBool(request.target.tessellationEvaluationSubgroups);
+    writer.WriteBool(request.target.hostInterpolationFirst);
+    writer.WriteBool(request.target.shaderImageMinLod);
     if (request.context.compute.has_value()) writer.WriteBool(request.context.compute->singleWorkgroup);
     // Optional trailing block (no version bump, so requests without it serialize as before): the
     // GPU-side indirect draw parameter SGPRs of a vertex stage.
@@ -1012,7 +1065,7 @@ DeserializedRequest RequestSerializer::Deserialize(std::string_view text) const 
     Reader reader(decoded);
     if (reader.ReadU32() != 0x41505335u) throw std::runtime_error("invalid recompile request signature");
     const auto version = reader.ReadU32();
-    if (version < 1u || version > CurrentVersion) throw std::runtime_error("unsupported recompile request serialization version");
+    if (version < 1u || version > CurrentVersion || version == MainSkippedVersion || (version > MainLastVersion && version != CurrentVersion)) throw std::runtime_error("unsupported recompile request serialization version");
     if (version >= CurrentVersion) return deserialize(decoded, version, LocalFeatures, false);
     if (version == 24u || version == 26u || version == 30u) {
         try {

@@ -68,7 +68,7 @@ void ReapColdDraws();
 void ParkColdDraw(std::shared_ptr<void> owner, std::shared_future<void> build);
 bool SplitDrawBuild();
 std::shared_ptr<PreparedDraw> PrepareDraw(const Context& context, const State& state, const Pm4::DrawParameters& draw, std::span<const CompiledShader> shaders, std::span<const GuestMemorySnapshot> snapshots = {});
-void Draw(const Context& context, const State& state, const Pm4::DrawParameters& draw, std::span<const CompiledShader> shaders, std::span<const GuestMemorySnapshot> snapshots = {}, std::shared_ptr<const DrawRecipe>* recipe = nullptr, PreparedDraw* prepared = nullptr, const AheadDraw* ahead = nullptr, const DrawTraceContext* trace = nullptr);
+void Draw(const Context& context, const State& state, const Pm4::DrawParameters& draw, std::span<const CompiledShader> shaders, std::span<const GuestMemorySnapshot> snapshots = {}, std::shared_ptr<const DrawRecipe>* recipe = nullptr, PreparedDraw* prepared = nullptr, const AheadDraw* ahead = nullptr, const DrawTraceContext* trace = nullptr, std::uint64_t shape = 0);
 
 struct PixelFunctionLdsLayouts {
     VkDescriptorSetLayout empty = VK_NULL_HANDLE;
@@ -80,6 +80,12 @@ void PreparePixelFunctionLds(const Context& context, VkCommandBuffer commands, s
 void BindPixelFunctionLds(const Context& context, VkCommandBuffer commands, VkPipelineLayout layout);
 void CheckPixelFunctionLds(const Context& context);
 void ReleasePixelFunctionLds(VkDevice device);
+bool UsesMeshWindow(std::span<const CompiledShader> shaders);
+bool ValidationKey(const Context& context, std::span<const CompiledShader> shaders, const State& state, std::vector<std::uint64_t>& key);
+VkDescriptorSetLayout MeshWindowSetLayout(const Context& context);
+void PrepareMeshWindow(const Context& context);
+void BindMeshWindow(const Context& context, VkCommandBuffer commands, VkPipelineLayout layout);
+void ReleaseMeshWindow(VkDevice device);
 std::optional<std::string> KnownValidationFailure(const Context& context, std::span<const CompiledShader> shaders, const State& state);
 std::uint64_t DrawRenderPassKey(const Context& context, const State& state, std::span<const VkImageView> targetViews);
 
@@ -124,6 +130,13 @@ struct MeshArgumentRules {
     std::uint32_t maxTotal;
 };
 MeshArgumentRules MeshArgumentRulesFor(const Context& context, const ShaderRecompiler::MeshConfiguration& mesh, std::uint32_t indexCount);
+struct MeshGrid {
+    std::uint32_t groups;
+    std::uint32_t instances;
+    std::uint32_t layers;
+    std::uint32_t layerStride;
+};
+std::optional<MeshGrid> MeshGridFor(const Context& context, std::uint32_t groups, std::uint32_t instances);
 MeshArguments ResolveMeshArguments(const Pm4::DrawArguments& record, const MeshArgumentRules& rules);
 
 // Why DrawWithRecipe did not record from the recipe (the caller then runs Draw): the draw is not
@@ -174,6 +187,7 @@ struct DrawPassCounts {
     std::uint64_t storeFlushes = 0;
 };
 std::array<DrawPassCounts, 2> DrawPassTotals();
+std::array<std::uint64_t, PassBreakCount> DrawPassBreaks();
 const char* IndirectDrawPathName(IndirectDrawPath path);
 
 // Draw packets that drew nothing, for the [draws] line: Nothing (an empty count, or no color writes

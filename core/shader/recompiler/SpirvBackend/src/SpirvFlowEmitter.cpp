@@ -183,28 +183,13 @@ std::uint32_t EmitBranchCondition(SpirvValueEmitContext& ctx, const BlockInfo& i
         return ctx.Def(info.condition);
     }
     auto& state = ctx.state;
-    const auto ballot = ctx.Ballot(info.condition);
-    const auto low = state.module.AllocateId();
-    const auto high = state.module.AllocateId();
-    const auto result = state.module.AllocateId();
-    state.module.AddFunction(spv::OpCompositeExtract, TypeU32(state), low, ballot, 0u);
-    state.module.AddFunction(spv::OpCompositeExtract, TypeU32(state), high, ballot, 1u);
-    const auto kind = info.terminator.condition;
-    const bool zero = kind == BranchCondition::ExecZero || kind == BranchCondition::VccZero || kind == BranchCondition::SccZero;
-    // A zero condition must hold on both lanes of every invocation still running, so the halves' AND is
-    // compared with a ballot of those invocations, not with all 32 bits: an invocation that left early
-    // (StopBdaInvocationIf after a recorded fault) drops out of every later ballot, and a loop leaving on
-    // execz, vccz or scc0 then never left (a GPU hang instead of the fault report).
-    std::uint32_t expected = ConstantU32(state, 0u);
-    if (zero) {
-        const auto active = state.module.AllocateId();
-        EmitSubgroupBallot(state, active, ConstantBool(state, true));
-        expected = state.module.AllocateId();
-        state.module.AddFunction(spv::OpCompositeExtract, TypeU32(state), expected, active, 0u);
+    const auto own = ctx.Def(info.condition);
+    const auto other = ctx.otherHalf->Def(info.condition);
+    if (condition == BranchCondition::ExecZero || condition == BranchCondition::VccZero || condition == BranchCondition::SccZero) {
+        const auto clear = Binary(state, spv::OpLogicalOr, TypeBool(state), Unary(state, spv::OpLogicalNot, TypeBool(state), own), Unary(state, spv::OpLogicalNot, TypeBool(state), other));
+        return Unary(state, spv::OpLogicalNot, TypeBool(state), EmitWaveAny(state, clear));
     }
-    const auto combined = EmitBinaryU32(state, zero ? spv::OpBitwiseAnd : spv::OpBitwiseOr, low, high);
-    state.module.AddFunction(zero ? spv::OpIEqual : spv::OpINotEqual, TypeBool(state), result, combined, expected);
-    return result;
+    return EmitWaveAny(state, Binary(state, spv::OpLogicalOr, TypeBool(state), own, other));
 }
 
 void EmitStructuredTerminator(SpirvValueEmitContext& ctx, const IrProgram& program, const BlockInfo& info) {
@@ -394,7 +379,7 @@ void EmitDirectInstruction(SpirvValueEmitContext& ctx, const IrValue& inst) {
         case IrOpcode::CompositeExtractU32x2: return Invoke(EmitCompositeExtractU32x2, ctx, inst);
         case IrOpcode::CompositeExtractU32x3: return Invoke(EmitCompositeExtractU32x3, ctx, inst);
         case IrOpcode::CompositeExtractU32x4: return Invoke(EmitCompositeExtractU32x4, ctx, inst);
-        case IrOpcode::PackHalf2x16: return Invoke(EmitPackHalf2x16, ctx, inst);
+        case IrOpcode::PackHalf2x16: return Invoke(EmitPackHalf2x16Value, ctx, inst);
         case IrOpcode::PackFloat2x16Rtz: return Invoke(EmitPackFloat2x16Rtz, ctx, inst);
         case IrOpcode::FPAdd16x2: return Invoke(EmitFPAdd16x2, ctx, inst);
         case IrOpcode::FPMul16x2: return Invoke(EmitFPMul16x2, ctx, inst);
