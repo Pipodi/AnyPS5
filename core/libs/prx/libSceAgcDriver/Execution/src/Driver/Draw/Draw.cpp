@@ -1016,6 +1016,7 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
             std::vector<Graphics::CompiledShader> stages;
             std::vector<Graphics::GuestMemorySnapshot> snapshots;
             std::vector<std::shared_ptr<const ShaderRecompiler::RecompileResult>> patched;
+            std::vector<std::shared_ptr<const std::vector<ShaderRecompiler::RegisteredImageView>>> views;
         };
         std::vector<ExpandedDraw> expanded;
         std::vector<DrawPipeline::Range> writes;
@@ -1037,6 +1038,8 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
             pipeline.Note(DrawPipeline::Event::IndirectCommit);
             phaseTiming.Phase(DrawRowLockWait);
         };
+        std::vector<std::shared_ptr<const std::vector<ShaderRecompiler::RegisteredImageView>>> heldViews;
+        for (const auto& capture : stageCaptures) if (capture.registeredViews != nullptr) heldViews.push_back(capture.registeredViews);
         for (std::uint32_t record = 0; record < records.size(); ++record) {
             const auto& arguments = records[record];
             if (traceIndirect) std::fprintf(stderr, "[draw]   record %u: count %u instances %u first %u vertexOffset %u startInstance %u\n", record, arguments.count, arguments.instances, arguments.firstVertexOrIndex, arguments.vertexOffset, arguments.firstInstance);
@@ -1068,7 +1071,7 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
                 setMeshIndexBuffer(direct);
                 patched.insert(0);
             }
-            ExpandedDraw item{direct, stages, {}, {}};
+            ExpandedDraw item{direct, stages, {}, {}, heldViews};
             for (const auto programIndex : patched) {
                 if (programResults[programIndex] == nullptr) continue;
                 const auto pushBytes = programResults[programIndex]->pushConstants.size();
@@ -1080,8 +1083,11 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
                 }
                 require(patchedResult->pushConstants.size() == pushBytes, "patched program changed its push constant layout");
                 for (auto& stage : item.stages) {
-                    if (stage.program == programResults[programIndex]) stage.program = patchedResult.get();
+                    if (stage.program != programResults[programIndex]) continue;
+                    stage.program = patchedResult.get();
+                    stage.registeredImageViews = stageCaptures[programIndex].registeredViews.get();
                 }
+                if (stageCaptures[programIndex].registeredViews != nullptr) item.views.push_back(stageCaptures[programIndex].registeredViews);
                 current[programIndex] = patchedResult.get();
                 item.patched.push_back(std::move(patchedResult));
             }
