@@ -1388,7 +1388,7 @@ int main(int argc, char** argv) {
         KeptUntilFence();
         SmallDeviceRetention();
         SmallDeviceOwnTier();
-        ExactSizeReuseScan();
+        if (std::getenv("APS5_NO_EXACT_SIZE_REUSE") == nullptr) ExactSizeReuseScan();
         Budget();
         AddressAndHostUnchanged();
         SmallDeviceClasses();
