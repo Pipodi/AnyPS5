@@ -230,7 +230,6 @@ bool PipelineCache::save(bool final, bool waitForPipelines) try {
     auto disk = fileUnchanged ? File{} : readFile();
     if (disk.state == FileState::Unreadable) {
         std::fprintf(stderr, "[pipeline-cache] cannot read %s; not saving over it\n", path.string().c_str());
-        settle(readHeader());
         return true;
     }
     if (disk.state == FileState::Invalid) std::fprintf(stderr, "[pipeline-cache] replacing %s: %s\n", path.string().c_str(), disk.invalidReason);
