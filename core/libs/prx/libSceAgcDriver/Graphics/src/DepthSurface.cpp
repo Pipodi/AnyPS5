@@ -2482,6 +2482,7 @@ DepthSurface* drawnDepth = nullptr;
 bool AliasesPlane(const DepthTarget& target, const StorageTexture& storage, bool stencil) {
     const auto& descriptor = storage.Descriptor();
     if (descriptor.width != target.extent.width || descriptor.height != target.extent.height) return false;
+    if (descriptor.mipCount != 1 || descriptor.baseLevel != 0) return false;
     const auto format = storage.StorageFormat();
     if (stencil) return format == VK_FORMAT_R8_UINT || format == VK_FORMAT_R8_UNORM || format == VK_FORMAT_R8_SINT || format == VK_FORMAT_R8_SNORM;
     if (target.format == VK_FORMAT_D16_UNORM || target.format == VK_FORMAT_D16_UNORM_S8_UINT) return format == VK_FORMAT_R16_UINT || format == VK_FORMAT_R16_UNORM || format == VK_FORMAT_R16_SINT || format == VK_FORMAT_R16_SNORM || format == VK_FORMAT_R16_SFLOAT;
