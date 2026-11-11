@@ -2512,6 +2512,20 @@ bool sameFaultMemory(const VkDescriptorBufferInfo& left, const VkDescriptorBuffe
     return left.buffer == right.buffer && left.offset < right.offset + right.range && right.offset < left.offset + left.range;
 }
 
+void faultArenaStackWordsTests(const Context& shared) {
+    const Context context = shared;
+    std::lock_guard gpu(AgcDriver::GuestMemory::GpuMutex());
+    const bool counters = std::getenv("APS5_SHADER_COUNTERS") != nullptr;
+    const bool sharedSlots = std::getenv("APS5_NO_SHARED_FAULT_SLOTS") == nullptr;
+    const auto fullBytes = ShaderRecompiler::BdaAbi::FaultBufferBytes + (counters ? 16u * sizeof(std::uint32_t) : 0u);
+    BdaResources full(context);
+    Require(full.HoldsFaultSlot() == sharedSlots, "a BdaResources did not follow APS5_NO_SHARED_FAULT_SLOTS for its fault slot");
+    Require(full.Fault().range == fullBytes, "a full fault slot does not carry the stack's shader counter words exactly when APS5_SHADER_COUNTERS is set");
+    BdaResources reporting(context, true);
+    Require(reporting.Fault().range == (sharedSlots ? sizeof(ShaderRecompiler::BdaAbi::Fault) : fullBytes), "a report-only fault slot changed size");
+    Require(!sameFaultMemory(full.Fault(), reporting.Fault()), "a report-only fault slot overlaps a full one");
+}
+
 void faultSlotTests(const Context& shared, const BdaTestAccess& access) {
     const Context context = shared;
     std::lock_guard gpu(AgcDriver::GuestMemory::GpuMutex());
@@ -5150,12 +5164,17 @@ void splitDrawBuildTests(const Context& context, const BdaTestAccess& access) {
     reject([&] { ShaderResources refused(DeferredDrawBuild{}, context, addressStages, ColorTarget{}, 0, 0, 0); }, "cannot map address tables");
 }
 
+void RunBdaFaultArenaTests(const Context& context) {
+    faultArenaStackWordsTests(context);
+}
+
 void RunBdaResourceTests(const Context& context, const BdaTestAccess& access) {
     splitDrawBuildTests(context, access);
     directImageFaultTests(context, access);
     bindlessFaultTests(context, access);
     guardedWrapFaultTests(context, access);
     faultSlotTests(context, access);
+    faultArenaStackWordsTests(context);
     alignas(64) std::array<std::uint32_t, 16> guest{};
     guest[0] = 123;
     const auto address = reinterpret_cast<std::uintptr_t>(guest.data());

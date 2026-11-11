@@ -13435,6 +13435,14 @@ int main(int argc, char** argv) {
     setenv("APS5_HEAP_MIRROR_MIB", "4", 1);
 #endif
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--bda-fault-arena") {
+            mock = MockVulkan{};
+            auto bdaContext = mockContext();
+            bdaContext.bufferDeviceAddress = true;
+            bdaContext.limits.maxStorageBufferRange = 1u << 27;
+            RunBdaFaultArenaTests(bdaContext);
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--linear-volume-nonresident") {
             LinearVolumeNonResidentTests();
             return 0;
