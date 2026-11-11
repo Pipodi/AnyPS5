@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <span>
 #include <string>
@@ -124,7 +125,8 @@ void NullThenBound(AgcDriver::VulkanDevice& device, Mode mode) {
     const auto& code = Codes[marker];
     const auto first = Run(device, code, marker, GameNull, "null V# before any bound slot", 0xffffffffu, mode);
     const auto bound = Run(device, code, marker, Descriptor(Input.data(), InputBytes, Format32UInt), "bound after null", 0xffffffffu, mode);
-    Require(first.pipeline != bound.pipeline, "a slot never seen bound did not specialize as absent");
+    if (std::getenv("APS5_NO_ABSENT_RUNTIME_FORMAT") == nullptr) Require(first.pipeline == bound.pipeline && first.spirv == bound.spirv, "a slot never seen bound did not give its run-time-format module to the bound slot");
+    else Require(first.pipeline != bound.pipeline, "a slot never seen bound did not specialize as absent");
     const auto repeated = Run(device, code, marker, GameNull, "same null V# after learning", 0xffffffffu, mode);
     Require(repeated.pipeline == bound.pipeline && repeated.spirv == bound.spirv, "the full-result memo retained the null module from before learning");
     const auto learned = Run(device, code, marker, ZeroNull, "zero V# after the slot was bound", 0xffffffffu, mode);
