@@ -682,7 +682,7 @@ void BufferPool::Put(const BufferAllocation& allocation) noexcept {
     std::vector<BufferAllocation> evicted;
     VkDeviceSize excess = 0;
     try {
-        if (DeviceTiered(allocation.properties)) excess = vram.Excess();
+        if (DeviceTiered(allocation.properties) && !allocation.hostPlaced) excess = vram.Excess();
         std::lock_guard lock(mutex);
         auto& tier = tierFor(allocation.bytes, allocation.properties);
         if (excess != 0 && (&tier == &deviceTier || &tier == &smallDeviceTier)) {

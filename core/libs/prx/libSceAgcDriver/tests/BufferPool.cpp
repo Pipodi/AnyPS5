@@ -1735,12 +1735,6 @@ int main(int argc, char** argv) {
             MemoryAccountingIdleReclaim();
             return failures == 0 ? 0 : 1;
         }
-        if (argc == 2 && std::string_view(argv[1]) == "--host-placement") {
-            HostPlacement();
-            HostSlotBeforeCacheRelease();
-            IdleReclaimSkipsHostPlaced();
-            return failures == 0 ? 0 : 1;
-        }
         if (argc == 2 && std::string_view(argv[1]) == "--memory-accounting-budget-cap") {
             MemoryAccountingBudgetCap();
             return failures == 0 ? 0 : 1;
@@ -1810,7 +1804,10 @@ int main(int argc, char** argv) {
         ImageMemoryReclaim();
         RenderTargetMemoryReuse();
         ImageMemoryOverBudget();
+        HostPlacement();
+        HostSlotBeforeCacheRelease();
         RefusedDevicePlacement();
+        IdleReclaimSkipsHostPlaced();
         StagingHeadroom();
         AttachmentReclaim();
     } catch (const std::exception& error) {
