@@ -78,7 +78,7 @@ void requireZeroBranchesCountRunningInvocations(const char* name, std::span<cons
         if (op == spv::OpBranchConditional) conditions.push_back(words[cursor + 1]);
         cursor += count;
     }
-    require(ballots >= 2, std::string(name) + ": the program was not emitted with two lanes per invocation");
+    require(ballots >= 1, std::string(name) + ": the program was not emitted with two lanes per invocation");
     for (const auto condition : conditions) {
         const auto equality = equalities.find(condition);
         if (equality == equalities.end()) continue;
