@@ -1566,7 +1566,7 @@ private:
                     if (value->Opcode() == IrOpcode::SelectU32) {
                         if (value->Parent() != block || value->ArgumentCount() != 3u || value->Argument(0)->Resolve() != condition) return nullptr;
                         selected.push_back(value);
-                    } else if (HoldsProgramCounter(value, phiSearchDepth) || Rematerialize(value, position, false, phiSearchDepth) == nullptr) {
+                    } else if (HoldsControlValue(value) || Rematerialize(value, position, false, phiSearchDepth) == nullptr) {
                         return nullptr;
                     }
                 }
@@ -1646,7 +1646,7 @@ private:
             if (value->IsPhi() && value->Parent() == block && value->PhiBlockCount() != predecessors.size()) {
                 return GiveUp(web, "a descriptor Phi's operands do not match its block's predecessors");
             }
-            if (web.lifted && !value->IsPhi() && (HoldsProgramCounter(value, phiSearchDepth) || Rematerialize(value, position, false, phiSearchDepth) == nullptr)) {
+            if (web.lifted && !value->IsPhi() && (HoldsControlValue(value) || Rematerialize(value, position, false, phiSearchDepth) == nullptr)) {
                 return nullptr;
             }
         }
@@ -1757,7 +1757,7 @@ private:
                     block = value->Parent();
                     reads.push_back(value);
                     value = value->Argument(0)->Resolve();
-                } else if (HoldsProgramCounter(value, phiSearchDepth) || Rematerialize(value, inst, false, phiSearchDepth) == nullptr) {
+                } else if (HoldsControlValue(value) || Rematerialize(value, inst, false, phiSearchDepth) == nullptr) {
                     return false;
                 }
                 tuple.push_back(value);

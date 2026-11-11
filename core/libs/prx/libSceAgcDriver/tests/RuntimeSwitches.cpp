@@ -182,16 +182,13 @@ int refused() {
         AgcDriver::Graphics::AbAtPresent(1, 0.0);
     } catch (const std::invalid_argument& error) {
         if (std::string(error.what()).find("APS5_SPANNED_WAVE is read once at startup") != std::string::npos) {
-            std::printf("runtime switch refusal test passed
-");
+            std::printf("runtime switch refusal test passed\n");
             return 0;
         }
-        std::fprintf(stderr, "FAILED: unexpected refusal: %s
-", error.what());
+        std::fprintf(stderr, "FAILED: unexpected refusal: %s\n", error.what());
         return 1;
     }
-    std::fprintf(stderr, "FAILED: APS5_AB naming a startup-only variable was not refused at the first present
-");
+    std::fprintf(stderr, "FAILED: APS5_AB naming a startup-only variable was not refused at the first present\n");
     return 1;
 }
 
