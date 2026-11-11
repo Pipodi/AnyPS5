@@ -4637,6 +4637,8 @@ bool readWrittenStagingTests(const Device& device, Recorder& recorder) {
 void stagingDiffTests(const Device& device, Recorder& recorder) {
     const auto& context = device.GetContext();
     const bool diff = std::getenv("APS5_STAGING_DIFF") != nullptr && context.bufferDeviceAddress;
+    const bool changed = !diff && std::getenv("APS5_NO_CHANGED_COPY_BACK") == nullptr && context.bufferDeviceAddress;
+    const bool shaderWins = std::getenv("APS5_CHANGED_COPY_ALWAYS") != nullptr;
     if (context.hostImportAlignment == 0) {
         std::cout << "host imports unavailable: staging copy-backs not tested\n";
         return;
@@ -4690,9 +4692,9 @@ void stagingDiffTests(const Device& device, Recorder& recorder) {
         auto expected = 0x11111111u;
         const auto at = index >= first ? index - first : bytes;
         if (at >= 64 && at < 80) expected = 0x22222222u;
-        else if (at == 200) expected = 0x55555555u;
-        else if (at >= 128 && at < 132) expected = diff ? 0x88888888u : 0x11111111u;
-        else if (at >= 4096 && at < 4112) expected = diff ? 0x33333333u : 0x11111111u;
+        else if (at == 200) expected = changed && !shaderWins ? 0x44444444u : 0x55555555u;
+        else if (at >= 128 && at < 132) expected = diff || changed ? 0x88888888u : 0x11111111u;
+        else if (at >= 4096 && at < 4112) expected = diff || changed ? 0x33333333u : 0x11111111u;
         if (words[index] != expected && wrong++ < 8) std::cout << "staging copy-back dword " << index << " holds 0x" << std::hex << words[index] << ", expected 0x" << expected << std::dec << "\n";
     }
     Require(wrong == 0, "a staged copy-back left the wrong guest bytes");
