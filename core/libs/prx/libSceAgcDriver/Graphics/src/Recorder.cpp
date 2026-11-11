@@ -1300,13 +1300,8 @@ Recorder::~Recorder() {
     if (dispatchArgumentPipeline != VK_NULL_HANDLE) context.Function<PFN_vkDestroyPipeline>("vkDestroyPipeline")(context.device, dispatchArgumentPipeline, nullptr);
     if (dispatchArgumentLayout != VK_NULL_HANDLE) context.Function<PFN_vkDestroyPipelineLayout>("vkDestroyPipelineLayout")(context.device, dispatchArgumentLayout, nullptr);
     for (int lane = 0; lane < 2; ++lane) {
-    for (auto& [commands, fence] : spare[static_cast<std::size_t>(lane)]) {
-        context.Function<PFN_vkFreeCommandBuffers>("vkFreeCommandBuffers")(context.device, poolOf(lane), 1, &commands);
-        context.Function<PFN_vkDestroyFence>("vkDestroyFence")(context.device, fence, nullptr);
-    }
+    for (const auto fence : spare[static_cast<std::size_t>(lane)]) context.Function<PFN_vkDestroyFence>("vkDestroyFence")(context.device, fence, nullptr);
     spare[static_cast<std::size_t>(lane)].clear();
-    for (auto chunk : spareChunks[static_cast<std::size_t>(lane)]) context.Function<PFN_vkFreeCommandBuffers>("vkFreeCommandBuffers")(context.device, poolOf(lane), 1, &chunk);
-    spareChunks[static_cast<std::size_t>(lane)].clear();
     }
     for (const auto pool : sparePools) context.Function<PFN_vkDestroyQueryPool>("vkDestroyQueryPool")(context.device, pool, nullptr);
     sparePools.clear();
@@ -2141,17 +2136,11 @@ Recorder::BatchedStagingStats Recorder::BatchedStagingCounts() {
 VkCommandBuffer Recorder::beginChunk() {
     VkCommandBuffer commands = VK_NULL_HANDLE;
     const int chunkLane = currentLane();
-    auto& chunks = spareChunks[static_cast<std::size_t>(chunkLane)];
-    if (!chunks.empty()) {
-        commands = chunks.back();
-        chunks.pop_back();
-    } else {
-        VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-        allocation.commandPool = poolOf(chunkLane);
-        allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocation.commandBufferCount = 1;
-        Check(context.Function<PFN_vkAllocateCommandBuffers>("vkAllocateCommandBuffers")(context.device, &allocation, &commands), "vkAllocateCommandBuffers recorder chunk");
-    }
+    VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    allocation.commandPool = poolOf(chunkLane);
+    allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocation.commandBufferCount = 1;
+    Check(context.Function<PFN_vkAllocateCommandBuffers>("vkAllocateCommandBuffers")(context.device, &allocation, &commands), "vkAllocateCommandBuffers recorder chunk");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     const auto result = function(beginCommandBuffer, "vkBeginCommandBuffer")(commands, &begin);
@@ -2508,17 +2497,16 @@ void Recorder::ensureOpen() {
         auto batch = std::make_unique<Batch>();
         batch->lane = currentLane();
         try {
+            VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+            allocation.commandPool = poolOf(currentLane());
+            allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            allocation.commandBufferCount = 1;
+            Check(context.Function<PFN_vkAllocateCommandBuffers>("vkAllocateCommandBuffers")(context.device, &allocation, &batch->commands), "vkAllocateCommandBuffers recorder");
             auto& spares = spare[static_cast<std::size_t>(currentLane())];
             if (!spares.empty()) {
-                // The pool resets command buffers on begin; the fence was reset when the batch completed.
-                std::tie(batch->commands, batch->fence) = spares.back();
+                batch->fence = spares.back();
                 spares.pop_back();
             } else {
-                VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-                allocation.commandPool = poolOf(currentLane());
-                allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-                allocation.commandBufferCount = 1;
-                Check(context.Function<PFN_vkAllocateCommandBuffers>("vkAllocateCommandBuffers")(context.device, &allocation, &batch->commands), "vkAllocateCommandBuffers recorder");
                 VkFenceCreateInfo info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
                 Check(context.Function<PFN_vkCreateFence>("vkCreateFence")(context.device, &info, nullptr, &batch->fence), "vkCreateFence recorder");
             }
@@ -6045,36 +6033,25 @@ void Recorder::release(Batch& batch) noexcept {
     batch.endedSamples.clear();
     batch.segments = VK_NULL_HANDLE;
     batch.segmentPool.reset();
-    // Split-off command buffers: a submitted (so completed) batch's are reused; a discarded one's
-    // may still be recording (an open prelude) and are freed.
-    for (auto chunk : batch.chunks) {
-        if (batch.submitted && spareChunks[static_cast<std::size_t>(batch.lane)].size() < 256) {
-            try {
-                spareChunks[static_cast<std::size_t>(batch.lane)].push_back(chunk);
-                continue;
-            } catch (...) {
-            }
-        }
-        context.Function<PFN_vkFreeCommandBuffers>("vkFreeCommandBuffers")(context.device, poolOf(batch.lane), 1, &chunk);
-    }
+    for (auto chunk : batch.chunks) context.Function<PFN_vkFreeCommandBuffers>("vkFreeCommandBuffers")(context.device, poolOf(batch.lane), 1, &chunk);
     batch.chunks.clear();
     batch.prelude = {};
-    // A completed (or never submitted) batch's objects are kept for reuse: the fence is signaled or
-    // untouched, so resetting it cannot block, and the command buffer is no longer pending.
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
-    if (batch.commands != VK_NULL_HANDLE && batch.fence != VK_NULL_HANDLE && spare[static_cast<std::size_t>(batch.lane)].size() < 64 && function(resetFences, "vkResetFences")(context.device, 1, &batch.fence) == VK_SUCCESS) {
-        spare[static_cast<std::size_t>(batch.lane)].emplace_back(batch.commands, batch.fence);
-        if (profile) fencesKept.fetch_add(1, std::memory_order_relaxed);
-        batch.commands = VK_NULL_HANDLE;
-        batch.fence = VK_NULL_HANDLE;
-        return;
-    }
     if (batch.commands != VK_NULL_HANDLE) {
         context.Function<PFN_vkFreeCommandBuffers>("vkFreeCommandBuffers")(context.device, poolOf(batch.lane), 1, &batch.commands);
         if (profile) commandBuffersFreed.fetch_add(1, std::memory_order_relaxed);
     }
-    if (batch.fence != VK_NULL_HANDLE) context.Function<PFN_vkDestroyFence>("vkDestroyFence")(context.device, batch.fence, nullptr);
     batch.commands = VK_NULL_HANDLE;
+    if (batch.fence != VK_NULL_HANDLE && spare[static_cast<std::size_t>(batch.lane)].size() < 64 && function(resetFences, "vkResetFences")(context.device, 1, &batch.fence) == VK_SUCCESS) {
+        try {
+            spare[static_cast<std::size_t>(batch.lane)].push_back(batch.fence);
+            if (profile) fencesKept.fetch_add(1, std::memory_order_relaxed);
+            batch.fence = VK_NULL_HANDLE;
+            return;
+        } catch (...) {
+        }
+    }
+    if (batch.fence != VK_NULL_HANDLE) context.Function<PFN_vkDestroyFence>("vkDestroyFence")(context.device, batch.fence, nullptr);
     batch.fence = VK_NULL_HANDLE;
 }
 
