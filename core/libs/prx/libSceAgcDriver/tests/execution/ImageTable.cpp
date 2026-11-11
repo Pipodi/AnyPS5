@@ -1322,7 +1322,7 @@ void RunStoreTests(AgcDriver::VulkanDevice& device) {
         void* data;
         Registration(void* data, std::size_t bytes) : data(data) { GuestAllocations::Mutation().Add(data, bytes, true, true, true); }
         ~Registration() { GuestAllocations::Mutation().Remove(data); }
-    } registeredHalf(StoreHalfTexels.data(), sizeof(StoreHalfTexels)), registeredUint(UintTexels.data(), sizeof(UintTexels)), registeredTable(Table.data(), sizeof(Table));
+    } registeredHalf(StoreHalfTexels.data(), sizeof(StoreHalfTexels)), registeredUint(UintTexels.data(), sizeof(UintTexels)), registeredSint(SintTexels.data(), sizeof(SintTexels)), registeredTable(Table.data(), sizeof(Table));
     StoreHalfTexels.fill(0x3555u);
     auto image = Image(StoreHalfTexels.data(), 13u);
     image[3] = (image[3] & ~0xfffu) | 0x24cu;
@@ -1386,6 +1386,25 @@ void RunStoreTests(AgcDriver::VulkanDevice& device) {
     AgcDriver::Graphics::StorageTexture::FlushPending(reinterpret_cast<std::uintptr_t>(UintTexels.data()), sizeof(UintTexels), nullptr, "test");
     device.WaitIdle();
     for (std::uint32_t index = 0; index < UintTexels.size(); ++index) Require(UintTexels[index] == (index < Width ? 0x89abcdefu : 0x12345678u), "image table store: UINT descriptor wrote the wrong texel " + std::to_string(index));
+    SintTexels.fill(0x12345678);
+    StoreHalfTexels.fill(0x3555u);
+    SetWideRecord(0u, Image(SintTexels.data(), Format32SInt));
+    auto sint16Image = Image(StoreHalfTexels.data(), 12u);
+    sint16Image[3] = (sint16Image[3] & ~0xfffu) | 0x24cu;
+    SetWideRecord(1u, sint16Image);
+    Keys = {};
+    Keys[0] = 0u;
+    Keys[1] = 1u;
+    const auto storedSint = Run(device, uintCode, 2, Lanes, 64);
+    Require(!Faulted(storedSint), "image table store: SINT descriptors written as raw uint faulted:\n" + storedSint.log);
+    AgcDriver::Graphics::StorageTexture::FlushPending(reinterpret_cast<std::uintptr_t>(SintTexels.data()), sizeof(SintTexels), nullptr, "test");
+    flush();
+    for (std::uint32_t index = 0; index < SintTexels.size(); ++index) Require(SintTexels[index] == (index < Width ? static_cast<std::int32_t>(0x89abcdefu) : 0x12345678), "image table store: R32_SINT descriptor wrote the wrong texel " + std::to_string(index));
+    for (std::uint32_t index = 0; index < StoreHalfTexels.size(); ++index) {
+        const auto row = index / StoreHalfPitch;
+        const auto column = index % StoreHalfPitch;
+        Require(StoreHalfTexels[index] == (row == 1u && column < Width ? 0x8000u : 0x3555u), "image table store: R16_SINT descriptor wrote the wrong texel or padding " + std::to_string(index));
+    }
     auto overlapImage = Image(Table.data(), 13u);
     overlapImage[2] = (overlapImage[2] & ~(0x3fffu << 14u)) | (1u << 14u);
     SetWideRecord(0u, overlapImage);
