@@ -8489,10 +8489,21 @@ void verifyDepthExportClamp() {
         auto bytes = decodeBase64(RequestSerializer{}.Serialize(tail));
         require(bytes.size() > 8u && bytes[4] == 153u, "depth export: a depth exporting request did not use serialization version 153");
         static constexpr std::array<std::uint8_t, 8> boundBytes{0x00u, 0x00u, 0x80u, 0x3eu, 0x00u, 0x00u, 0x40u, 0x3fu};
+        const auto stackBlendBlock = [](const RecompileRequest& source) {
+            auto marked = source;
+            auto markedPixel = *marked.context.pixel;
+            markedPixel.targetBlend[0].sourceFactor ^= 0x5au;
+            marked.context.pixel = markedPixel;
+            const auto plainBytes = decodeBase64(RequestSerializer{}.Serialize(source));
+            const auto markedBytes = decodeBase64(RequestSerializer{}.Serialize(marked));
+            return std::mismatch(plainBytes.begin(), plainBytes.end(), markedBytes.begin()).first - plainBytes.begin() - 1;
+        };
         const auto found = std::search(bytes.begin(), bytes.end(), boundBytes.begin(), boundBytes.end());
         require(found != bytes.end() && std::search(found + 1, bytes.end(), boundBytes.begin(), boundBytes.end()) == bytes.end(),
             "depth export: the clamp bounds were not written exactly once");
         bytes.erase(found, found + boundBytes.size());
+        const auto tailBlend = stackBlendBlock(tail);
+        bytes.erase(bytes.begin() + tailBlend, bytes.begin() + tailBlend + 40);
         bytes.pop_back();
         bytes.pop_back();
         bytes.pop_back();
@@ -8521,6 +8532,8 @@ void verifyDepthExportClamp() {
                 require(bounds != ditheredBytes.end(), "a two-sample dithered depth exporting request lacks the clamp bounds");
                 ditheredBytes.erase(bounds, bounds + boundBytes.size());
             }
+            const auto ditheredBlend = stackBlendBlock(dithered);
+            ditheredBytes.erase(ditheredBytes.begin() + ditheredBlend, ditheredBytes.begin() + ditheredBlend + 40);
             ditheredBytes.pop_back();
             ditheredBytes.pop_back();
             ditheredBytes.pop_back();
