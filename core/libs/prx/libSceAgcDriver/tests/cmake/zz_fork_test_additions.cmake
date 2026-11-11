@@ -28,8 +28,12 @@ if(BUILD_TESTING)
     add_test(NAME agc_buffer_pool_no_exact_size_reuse COMMAND agc_buffer_pool_tests)
     set_tests_properties(agc_buffer_pool_no_exact_size_reuse PROPERTIES ENVIRONMENT
         "APS5_NO_EXACT_SIZE_REUSE=1;APS5_IMAGE_POOL=1")
+    add_test(NAME agc_buffer_pool_host_placement COMMAND agc_buffer_pool_tests --host-placement)
+    set_tests_properties(agc_buffer_pool_host_placement PROPERTIES ENVIRONMENT "APS5_IMAGE_POOL=1;APS5_NO_VRAM_BUDGET=1" TIMEOUT 30)
+    set_property(TEST agc_memory_accounting agc_driver_memory_accounting APPEND PROPERTY ENVIRONMENT "APS5_IMAGE_POOL=1")
+    set_property(TEST agc_driver_dumped_constant_capture APPEND PROPERTY ENVIRONMENT "APS5_NO_DRAW_AHEAD=1")
     if(WIN32)
-        set_tests_properties(agc_buffer_pool_no_small_device_tier agc_buffer_pool_no_exact_size_reuse PROPERTIES ENVIRONMENT_MODIFICATION
+        set_tests_properties(agc_buffer_pool_no_small_device_tier agc_buffer_pool_no_exact_size_reuse agc_buffer_pool_host_placement PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
     set_tests_properties(agc_import_settle_initial_dcc PROPERTIES ENVIRONMENT "APS5_DEFERRED_SETTLES=1" SKIP_RETURN_CODE 77 TIMEOUT 30)
