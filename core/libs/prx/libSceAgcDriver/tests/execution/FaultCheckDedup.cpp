@@ -185,7 +185,7 @@ std::vector<Case> Cases() {
     return {
         {"straight line, same descriptor three times", [](Program& p) { p.VectorLoad(DescriptorA, 0); p.VectorLoad(DescriptorA, 1); p.VectorLoad(DescriptorA, 2); },
             {2, {{false, 0}, {false, 1}, {false, 2}}, {Slot::A, Slot::A, Slot::A, Slot::Initial}}},
-        {"unguarded scalar load, divergent if, join", [](Program& p) { p.ScalarLoad(0); p.DivergentIf(HalfLanes, true, [](Program& q) { q.ScalarLoad(1); }); p.ScalarLoad(2); },
+        {"vector load, divergent if, join", [](Program& p) { p.VectorLoad(DescriptorA, 0); p.DivergentIf(HalfLanes, true, [](Program& q) { q.VectorLoad(DescriptorA, 1); }); p.VectorLoad(DescriptorA, 2); },
             {2, {{false, 0}, {false, 1}, {false, 2}}, {Slot::A, Slot::AInHalf, Slot::A, Slot::Initial}}},
         {"vector load, uniform if, join", [](Program& p) { p.VectorLoad(DescriptorA, 0); p.UniformIf([](Program& q) { q.VectorLoad(DescriptorA, 1); }); p.VectorLoad(DescriptorA, 2); },
             {2, {{false, 0}, {false, 2}}, {Slot::A, Slot::Initial, Slot::A, Slot::Initial}}},
