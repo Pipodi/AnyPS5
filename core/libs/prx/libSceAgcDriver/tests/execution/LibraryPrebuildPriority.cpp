@@ -83,7 +83,7 @@ std::uint64_t FirstPrebuildAfter(std::vector<std::uint32_t> words) {
             std::lock_guard ran(gate->mutex);
             gate->order.push_back(program);
             gate->changed.notify_all();
-        }, program);
+        }, 0, nullptr, program);
     }
     Packet dcb{words.data(), static_cast<std::uint32_t>(words.size()), 0, {}};
     Require(sceAgcDriverSubmitDcb(&dcb) == 0, "the submission binding a pixel program failed");
@@ -122,7 +122,7 @@ void CheckLargeBacklog() {
             std::lock_guard ran(gate->mutex);
             gate->order.push_back(program);
             gate->changed.notify_all();
-        }, program);
+        }, 0, nullptr, program);
     }
     Require(AgcDriver::DriverDetail::LibraryPrebuildsWaiting(), "queued prebuilds were not reported as waiting");
     std::vector<std::uint32_t> words;
