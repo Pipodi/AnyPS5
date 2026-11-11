@@ -528,6 +528,7 @@ int main() {
                     blended[282] = 1u;
                     auto local26 = blended;
                     local26[4] = 26u;
+                    local26.pop_back();
                     local26.erase(local26.end() - 35, local26.end());
                     if (fixture.tessellation) local26.erase(local26.end() - 36);
                     EraseMeshBarycentricFlag(local26);
@@ -536,6 +537,7 @@ int main() {
                     Require(serializer.Serialize(serializer.Deserialize(EncodeBase64(local26)).request) == EncodeBase64(blended));
                     auto local30 = blended;
                     local30[4] = 30u;
+                    local30.pop_back();
                     local30.erase(local30.end() - 27, local30.end());
                     if (fixture.tessellation) local30.erase(local30.end() - 44);
                     EraseMeshBarycentricFlag(local30);
@@ -546,6 +548,7 @@ int main() {
                     reversed[278] = 1u;
                     auto main30 = reversed;
                     main30[4] = 30u;
+                    main30.pop_back();
                     main30.erase(main30.end() - 27, main30.end());
                     if (fixture.tessellation) main30.erase(main30.end() - 44);
                     EraseMeshBarycentricFlag(main30);
@@ -882,6 +885,7 @@ int main() {
     };
     auto version46Dither = twoSample;
     version46Dither.pop_back();
+    version46Dither.erase(version46Dither.begin() + ditherByte + 23u, version46Dither.begin() + ditherByte + 63u);
     version46Dither[4] = 46u;
     Require(rejectsDither(version46Dither));
     version46Dither[ditherByte] = 1u;
