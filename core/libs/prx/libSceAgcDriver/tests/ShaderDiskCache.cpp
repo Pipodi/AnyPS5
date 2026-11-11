@@ -2179,7 +2179,10 @@ void verifyBindingPlanSelection() {
     snapshot.buffers[1].dwords[3] = 0x3100bfacu;
     rejectsAlignment("base is not aligned to its element");
     snapshot.buffers[1].dwords[0] &= ~1u;
-    static_cast<void>(builder.Prepare(compiled.layout, info, IrShaderStage::Compute, snapshot));
+    const auto formattedPlan = builder.Prepare(compiled.layout, info, IrShaderStage::Compute, snapshot);
+    std::set<std::uint32_t> formattedIds;
+    for (const auto& constant : formattedPlan.specialization) require(formattedIds.insert(constant.id).second, "a formatted compute buffer supplied specialization ID " + std::to_string(constant.id) + " twice");
+    require(formattedIds.contains(PipelineSpecialization::BufferBase + PipelineSpecialization::BufferWords + 2u) && formattedIds.contains(PipelineSpecialization::BufferRuntimeFormatBase + 1u), "a formatted compute buffer lost its size tail or runtime format flag");
     snapshot.buffers[1].dwords[3] = 0x31014facu;
     rejectsAlignment("base is not aligned to its element");
 }

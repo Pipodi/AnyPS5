@@ -61,6 +61,13 @@ inline constexpr std::uint32_t MirrorUnnormalizedBase = 57536u;
 inline constexpr std::uint32_t MinLodBase = 57600u;
 inline constexpr std::uint32_t VolumeGatherBase = 57664u;
 inline constexpr std::uint32_t UnnormalizedWrapBase = 57728u;
+inline constexpr std::uint32_t BufferRuntimeFormatBase = 57792u;
+static_assert(UnnormalizedWrapBase + 64u <= BufferRuntimeFormatBase, "the runtime format flags overlap the unnormalized wrap guards");
+static_assert(BufferRuntimeFormatBase + (ImageBase - BufferBase) / BufferWords <= ImageComponentBase, "the runtime format flags overlap the image component words");
+
+inline constexpr bool IsBufferRuntimeFormat(std::uint32_t id) {
+    return id >= BufferRuntimeFormatBase && id < BufferRuntimeFormatBase + (ImageBase - BufferBase) / BufferWords;
+}
 
 inline constexpr std::uint32_t DescriptorIndex(std::uint32_t binding, std::uint32_t element) {
     return DescriptorIndexBase + binding * DescriptorIndexStride + element;
@@ -69,8 +76,6 @@ inline constexpr std::uint32_t DescriptorIndex(std::uint32_t binding, std::uint3
 inline constexpr bool IsWorkgroupOffset(std::uint32_t id) {
     return id >= WorkgroupOffsetBase && id < WorkgroupOffsetBase + WorkgroupOffsetWords;
 }
-
-inline constexpr std::uint32_t BufferRuntimeFormatWord = 2u;
 
 inline bool AbsentRuntimeFormat() {
     static const bool enabled = std::getenv("APS5_NO_ABSENT_RUNTIME_FORMAT") == nullptr;

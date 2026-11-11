@@ -233,7 +233,7 @@ DecodedDescriptor decode(SpirvValueEmitContext& context, const IrValue& instruct
     auto runtimeWord3 = (runtimeFormat || selectsFormat) ? context.Arg(handle, 3u) : 0u;
     if ((runtimeFormat || selectsFormat) && GcnGuestShaders()) runtimeWord3 = gcnWord3(state, word1, runtimeWord3);
     const auto specializedWord3 = runtimeFormat ? 0u : state.module.SpecializationConstant(u32, first + 1u, 0u);
-    const auto word3 = runtimeFormat ? runtimeWord3 : selectsFormat ? Select(state, u32, nonzero(state, state.module.SpecializationConstant(u32, first + PipelineSpecialization::BufferRuntimeFormatWord, 0u)), runtimeWord3, specializedWord3) : specializedWord3;
+    const auto word3 = runtimeFormat ? runtimeWord3 : selectsFormat ? Select(state, u32, nonzero(state, state.module.SpecializationConstant(u32, PipelineSpecialization::BufferRuntimeFormatBase + memory.resource, 0u)), runtimeWord3, specializedWord3) : specializedWord3;
     auto base = ConstantU32(state, 0u);
     if (memory.gpuDescriptor || BufferAccessOf(instruction.Opcode()) == BufferAccess::Atomic) {
         const auto u64 = TypeScalarU64(state);
@@ -1171,7 +1171,7 @@ std::uint32_t formattedCall(SpirvValueEmitContext& context, const IrValue& instr
             shared = {ConstantU32(state, 0u), parameters[3], parameters[5], word3, nonzero(state, parameters[7]), parameters[0], nonzero(state, parameters[8]), parameters[1], parameters[2]};
         } else if (state.program.Resources().stage == IrShaderStage::Compute) {
             const auto specialized = state.module.SpecializationConstant(u32, first + 1u, 0u);
-            const auto word3 = state.program.Info().buffers.at(memory.resource).descriptorFormatted ? Select(state, u32, nonzero(state, state.module.SpecializationConstant(u32, first + PipelineSpecialization::BufferRuntimeFormatWord, 0u)), parameters[6], specialized) : specialized;
+            const auto word3 = state.program.Info().buffers.at(memory.resource).descriptorFormatted ? Select(state, u32, nonzero(state, state.module.SpecializationConstant(u32, PipelineSpecialization::BufferRuntimeFormatBase + memory.resource, 0u)), parameters[6], specialized) : specialized;
             shared = {ConstantU32(state, 0u), parameters[3], parameters[5], word3, nonzero(state, parameters[7]), parameters[0], nonzero(state, parameters[8]), parameters[1], parameters[2]};
         } else {
             const auto word1 = state.module.SpecializationConstant(u32, first, 0u);
@@ -1180,7 +1180,7 @@ std::uint32_t formattedCall(SpirvValueEmitContext& context, const IrValue& instr
             shared = {ConstantU32(state, 0u), parameters[3], stride, state.module.SpecializationConstant(u32, first + 1u, 0u), swizzle, parameters[0], nonzero(state, parameters[8]), parameters[1], parameters[2]};
         }
         const auto runtimeFormat = state.program.Info().buffers.at(memory.resource).descriptorFormatted && state.program.Resources().stage == IrShaderStage::Compute && !state.registrationModules;
-        const auto absentRuntime = runtimeFormat && !store ? both(state, nonzero(state, state.module.SpecializationConstant(u32, first + PipelineSpecialization::BufferRuntimeFormatWord, 0u)), Unary(state, spv::OpLogicalNot, TypeBool(state), shared.valid)) : 0u;
+        const auto absentRuntime = runtimeFormat && !store ? both(state, nonzero(state, state.module.SpecializationConstant(u32, PipelineSpecialization::BufferRuntimeFormatBase + memory.resource, 0u)), Unary(state, spv::OpLogicalNot, TypeBool(state), shared.valid)) : 0u;
         const auto value = absentRuntime != 0u ? EmitValueIfElse(state, absentRuntime, valueType, [&] { return components == 1u ? ConstantU32(state, 0u) : ConstantU32CompositeZero(state, components); }, [&] { return formatSwitch(context, instruction, shared, components, store, 0u); }) : formatSwitch(context, instruction, shared, components, store, store ? parameters[9] : 0u);
         if (store) state.module.AddFunction(spv::OpReturn);
         else state.module.AddFunction(spv::OpReturnValue, value);

@@ -1357,7 +1357,7 @@ std::shared_ptr<const std::set<std::uint32_t>> declaredSpecializationIds(const C
 bool RuntimeFormatFlagPosition(const std::vector<std::uint64_t>& key, std::size_t position) {
     if (position < 2u) return false;
     const auto id = static_cast<std::uint32_t>(key[position] >> 32u);
-    return id < PipelineSpecialization::ImageBase && id % PipelineSpecialization::BufferWords == PipelineSpecialization::BufferRuntimeFormatWord && static_cast<std::uint32_t>(key[position - 1u] >> 32u) + 1u == id;
+    return PipelineSpecialization::IsBufferRuntimeFormat(id) && static_cast<std::uint32_t>(key[position - 1u] >> 32u) == PipelineSpecialization::BufferBase + (id - PipelineSpecialization::BufferRuntimeFormatBase) * PipelineSpecialization::BufferWords + 1u;
 }
 
 struct RuntimeFormatCandidate {
@@ -1774,7 +1774,7 @@ RecompileResult materializeResult(const CompiledVariant& variant, const Recompil
             static const bool keepUndeclared = std::getenv("APS5_NO_UNDECLARED_CONSTANT_FILTER") != nullptr;
             if (!keepUndeclared) {
                 const auto declared = declaredSpecializationIds(artifact);
-                std::erase_if(constants, [&](const PipelineSpecializationConstant& constant) { return constant.id >= PipelineSpecialization::BufferBase && constant.id < PipelineSpecialization::ImageBase && !declared->contains(constant.id); });
+                std::erase_if(constants, [&](const PipelineSpecializationConstant& constant) { return ((constant.id >= PipelineSpecialization::BufferBase && constant.id < PipelineSpecialization::ImageBase) || PipelineSpecialization::IsBufferRuntimeFormat(constant.id)) && !declared->contains(constant.id); });
             }
             const auto module = artifact.registrationModule && plan->bindings.specialization.empty() ? registrationModule(artifact.variantId, moduleKey, [&] { return specializeModule(variant.artifact, variant.bindings.layout, vertexClasses, constants, request.target); }) : specializeModule(variant.artifact, variant.bindings.layout, vertexClasses, constants, request.target);
             if (variant.bindings.layout.UsesPushData() && !module->pushData) throw std::runtime_error("specialization removed the prepared push constant interface");
