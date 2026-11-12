@@ -7849,11 +7849,15 @@ void ShaderResources::resolveStorageImageTables() {
             try {
                 Require(absolute < capacity, "the storage image table exceeds the device's capacity of " + std::to_string(capacity) + " images");
                 const auto resource = DecodeTextureResource(words);
-                Require(binding.imageShapes.at(element) == ShaderRecompiler::DescriptorImageShape::Image2D && resource.dimension == TextureDimension::k2D, "storage image tables require a 2D image view");
+                const auto shape = binding.imageShapes.at(element);
+                const bool firstLayer = shape == ShaderRecompiler::DescriptorImageShape::Image2D && resource.dimension == TextureDimension::k2DArray;
+                Require(firstLayer || MatchesGuestDimension(shape, resource.dimension), "AGC graphics: guest storage texture dimension disagrees with the table entry's image shape (shape " + std::to_string(static_cast<int>(shape)) + ", dimension " + std::to_string(static_cast<int>(resource.dimension)) + ")");
                 Require(binding.imageWritten.at(element), "storage image tables require a writable image");
                 const auto mip = std::min(resource.baseLevel, resource.mipCount - 1u);
                 Require(resource.minLod <= mip * 256u, "guest storage texture descriptor clamps its minimum LOD above the level it addresses, which is not implemented");
                 const auto guestBytes = DescribeSurface(resource).guestBytes;
+                CompletePendingCpuWrites(context, resource.baseAddress, static_cast<std::size_t>(guestBytes));
+                if (resource.dccAddress != 0) CompletePendingCpuWrites(context, resource.dccAddress, DccKeyBytes(guestBytes));
                 auto texture = cachedStorageTexture(context, words, resource, mip, guestBytes);
                 const bool uintStorage = element < binding.imageUintStorage.size() && binding.imageUintStorage[element];
                 if (uintStorage && texture != nullptr) texture->StorageView(mip, false, true);
@@ -7866,7 +7870,7 @@ void ShaderResources::resolveStorageImageTables() {
                 storageTextures.push_back(std::move(texture));
                 storageMips.push_back(mip);
                 storageKeys.push_back(resource.dccAddress);
-                storageFirstLayer.push_back(false);
+                storageFirstLayer.push_back(firstLayer);
                 storageWritten.push_back(true);
                 storageAtomic.push_back(element < binding.imageAtomic.size() && binding.imageAtomic[element]);
                 storageAtomic64.push_back(element < binding.imageAtomic64.size() && binding.imageAtomic64[element]);
