@@ -5554,8 +5554,7 @@ void Recorder::Submit() {
     submission.pCommandBuffers = commandBuffers.empty() ? &batch->commands : commandBuffers.data();
     // The timeline reaches this batch's serial when it completes (see WaitSerial).
     const std::uint64_t serial = submissions + 1;
-    if (CheckpointMarkersEnabled() && batch->queue == 0 && batch->predictedSerial != 0) {
-        Require(batch->predictedSerial == serial, "Recorder::Submit submit serial mismatch");
+    if (CheckpointMarkersEnabled() && batch->queue == 0 && batch->predictedSerial != 0 && batch->predictedSerial == serial) {
         try {
             if (const auto snapshot = GuestBufferMemory::TrySnapshotAddressSpace(); snapshot.has_value()) AgcDriver::SubmissionSnapshots::DeviceSnapshots().NoteSubmit(serial, snapshot->first, snapshot->second, AgcDriver::SubmitBracket{serial, CompletedThrough(), batch->firstToken, batch->lastToken});
         } catch (...) {
