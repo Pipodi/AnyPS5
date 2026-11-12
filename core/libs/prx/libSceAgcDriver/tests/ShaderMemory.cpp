@@ -12755,6 +12755,39 @@ int main(int argc, char** argv) {
             return std::pair{id.has_value(), decorated};
         };
         require(readOnly("flattened_srt") == std::pair{true, true}, "the flattened SRT is not decorated NonWritable");
+        const auto flattenedSrtOnlyRead = [&] {
+            std::optional<std::uint32_t> id;
+            const auto walk = [&](const auto& visit) {
+                for (std::size_t at = 5; at < first.spirv.size() && (first.spirv[at] >> 16u) != 0u; at += first.spirv[at] >> 16u) visit(first.spirv[at] & 0xffffu, at, static_cast<std::size_t>(first.spirv[at] >> 16u));
+            };
+            walk([&](std::uint32_t opcode, std::size_t at, std::size_t) {
+                if (opcode == spv::OpName && std::strcmp(reinterpret_cast<const char*>(&first.spirv[at + 2u]), "flattened_srt") == 0) id = first.spirv[at + 1u];
+            });
+            if (!id) return false;
+            const auto declaration = [](std::uint32_t opcode) { return opcode == spv::OpName || opcode == spv::OpDecorate || opcode == spv::OpVariable || opcode == spv::OpEntryPoint; };
+            std::vector<std::uint32_t> chains;
+            bool clean = true;
+            walk([&](std::uint32_t opcode, std::size_t at, std::size_t words) {
+                if (opcode == spv::OpDecorate && first.spirv[at + 1u] == *id) clean = clean && first.spirv[at + 2u] == spv::DecorationNonWritable;
+                if (declaration(opcode)) return;
+                if ((opcode == spv::OpAccessChain || opcode == spv::OpInBoundsAccessChain) && first.spirv[at + 3u] == *id) {
+                    chains.push_back(first.spirv[at + 2u]);
+                    return;
+                }
+                for (std::size_t operand = 1; operand < words; ++operand) clean = clean && first.spirv[at + operand] != *id;
+            });
+            walk([&](std::uint32_t opcode, std::size_t at, std::size_t words) {
+                if (declaration(opcode)) return;
+                for (std::size_t operand = 1; operand < words; ++operand) {
+                    if (std::ranges::find(chains, first.spirv[at + operand]) == chains.end()) continue;
+                    const bool definition = (opcode == spv::OpAccessChain || opcode == spv::OpInBoundsAccessChain) && operand == 2u;
+                    const bool read = opcode == spv::OpLoad && operand == 3u;
+                    clean = clean && (definition || read);
+                }
+            });
+            return clean && !chains.empty();
+        };
+        require(flattenedSrtOnlyRead(), "the flattened SRT is written, aliased, or reached other than by access chains feeding loads");
         for (const auto* table : {"bda_pagetable", "table_map"}) require(!readOnly(table).first || readOnly(table).second, "a read-only BDA page table or image table map is not decorated NonWritable");
         payload = 0x40000000u;
         AgcDriver::ShaderMemory updatedMemory({});
