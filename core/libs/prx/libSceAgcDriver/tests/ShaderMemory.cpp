@@ -5773,31 +5773,54 @@ void verifyImageTableRegistration() {
     require(storeFault == 0u, "image table registration: an ordinary store has a whole-table fault");
     const auto* stores = TableBinding(*store.result, DescriptorRole::ImageTable);
     require(stores != nullptr && stores->kind == DescriptorKind::StorageImage && !stores->readOnly && stores->binding == RuntimeAbi::StorageImageTableBinding && stores->count == 2u && std::all_of(stores->imageWritten.begin(), stores->imageWritten.end(), [](bool written) { return written; }), "image table registration: storage elements lack their writable binding");
-    for (const auto opcode : {0x0au, 0x0fu, 0x52u}) {
-        auto unsupportedCode = storeCode;
-        unsupportedCode[8] = (unsupportedCode[8] & ~(0x7fu << 18u)) | (opcode << 18u);
-        if (opcode == 0x0fu) unsupportedCode[8] = (unsupportedCode[8] & ~0xf00u) | 0x100u;
-        if (opcode == 0x52u) {
-            expectFailure([&] { static_cast<void>(CompileTable(TableRequest(unsupportedCode, userData))); }, "MIMG BY2/BY4 stores are not implemented", "image table registration: a BY store passed translation");
-            continue;
-        }
-        const auto unsupported = CompileTable(TableRequest(unsupportedCode, userData));
-        require(unsupported.capture->plan->info.images.at(0).tableOperation == TableOperation::Unsupported, "image table registration: packed or atomic stores were admitted");
-        const auto fault = TableMap(*unsupported.result)[Abi::TableHeader(0) + Abi::TableFault];
-        require((fault & Abi::PoisonFlag) != 0u && unsupported.result->imageTablePoison.at(fault & ~Abi::PoisonFlag).reason == static_cast<std::uint32_t>(Abi::PoisonReason::UnsupportedOperation), "image table registration: an unsupported store lost its whole-table fault");
-        if (opcode != 0x0fu) {
-            auto mixedCode = unsupportedCode;
-            mixedCode.insert(mixedCode.end() - 1, storeCode.begin() + 8, storeCode.begin() + 10);
-            const auto mixed = CompileTable(TableRequest(mixedCode, userData));
-            const auto& info = mixed.capture->plan->info;
-            require(info.images.size() == 2u && info.images[0].tableOperation == TableOperation::Unsupported && info.runtimeImageModes[0].empty() && info.images[1].tableOperation == TableOperation::Supported && !info.runtimeImageModes[1].empty(), "image table registration: a mixed shader emitted unsupported store modes or lost its supported store");
-            const auto& map = TableMap(*mixed.result);
-            const auto mixedFault = map[Abi::TableHeader(info.images[0].table) + Abi::TableFault];
-            require((mixedFault & Abi::PoisonFlag) != 0u && mixed.result->imageTablePoison.at(mixedFault & ~Abi::PoisonFlag).reason == static_cast<std::uint32_t>(Abi::PoisonReason::UnsupportedOperation) && map[Abi::TableHeader(info.images[1].table) + Abi::TableFault] == 0u, "image table registration: mixed stores did not retain independent support and fault states");
-            const auto* binding = TableBinding(*mixed.result, DescriptorRole::ImageTable);
-            require(binding != nullptr && binding->kind == DescriptorKind::StorageImage && binding->count == stores->count, "image table registration: unsupported stores changed the supported storage binding");
-        }
-    }
+    const auto storageTable = [&](const auto& compiled) {
+        const auto* binding = TableBinding(*compiled.result, DescriptorRole::ImageTable);
+        return binding != nullptr && binding->kind == DescriptorKind::StorageImage ? binding : nullptr;
+    };
+    const auto requireSupportedStore = [&](const auto& compiled, const char* name) {
+        const auto& plan = *compiled.capture->plan;
+        require(plan.info.images.size() == 1u && plan.info.images[0].table == 0u && plan.info.images[0].tableOperation == TableOperation::Supported, (std::string("image table registration: a table T# feeding ") + name + " was not a supported table operation").c_str());
+        const auto fault = TableMap(*compiled.result)[Abi::TableHeader(0) + Abi::TableFault];
+        const auto* binding = storageTable(compiled);
+        require((fault & Abi::PoisonFlag) == 0u && binding != nullptr && binding->count != 0u && std::all_of(binding->imageWritten.begin(), binding->imageWritten.end(), [](bool written) { return written; }), (std::string("image table registration: the ") + name + " table was not bound as written storage elements").c_str());
+        return binding;
+    };
+    auto atomicCode = storeCode;
+    atomicCode[8] = 0xf0440108u;
+    const auto atomic = CompileTable(TableRequest(atomicCode, userData));
+    const auto* atomicTable = requireSupportedStore(atomic, "image_atomic_add");
+    require(atomicTable->imageAtomic.size() == atomicTable->count && std::all_of(atomicTable->imageAtomic.begin(), atomicTable->imageAtomic.end(), [](bool atomic) { return atomic; }), "image table registration: the image_atomic_add table was not bound as atomic storage elements");
+    auto atomic64Code = storeCode;
+    atomic64Code[8] = 0xf0440308u;
+    guest.heap[0] = TableT(texture.bytes.data(), TableFormat32_32UInt, TableType2D);
+    static constexpr std::array<std::uint32_t, 5> int64ImageCapabilities{29u, spv::CapabilityInt64, spv::CapabilityPhysicalStorageBufferAddresses, spv::CapabilityStorageBuffer8BitAccess, spv::CapabilityInt64ImageEXT};
+    auto atomic64Request = TableRequest(atomic64Code, userData);
+    atomic64Request.target.supportedCapabilities = int64ImageCapabilities;
+    const auto atomic64 = CompileTable(atomic64Request);
+    const auto* atomic64Table = requireSupportedStore(atomic64, "image_atomic64_add");
+    require(atomic64Table->imageAtomic64.size() == atomic64Table->count && std::all_of(atomic64Table->imageAtomic64.begin(), atomic64Table->imageAtomic64.end(), [](bool atomic) { return atomic; }), "image table registration: the image_atomic64_add table was not bound as 64-bit atomic storage elements");
+    guest.heap[0] = TableT(texture.bytes.data(), TableFormat32UInt, TableType2D);
+    auto packedStoreCode = storeCode;
+    packedStoreCode[8] = 0xf0280f08u;
+    const auto packedStore = CompileTable(TableRequest(packedStoreCode, userData));
+    static_cast<void>(requireSupportedStore(packedStore, "image_store_pck"));
+    auto swapCode = storeCode;
+    swapCode[8] = (swapCode[8] & ~(0x7fu << 18u)) | (0x0fu << 18u);
+    swapCode[8] = (swapCode[8] & ~0xf00u) | 0x100u;
+    const auto swap = CompileTable(TableRequest(swapCode, userData));
+    static_cast<void>(requireSupportedStore(swap, "image_atomic_swap"));
+    auto byCode = storeCode;
+    byCode[8] = (byCode[8] & ~(0x7fu << 18u)) | (0x52u << 18u);
+    expectFailure([&] { static_cast<void>(CompileTable(TableRequest(byCode, userData))); }, "MIMG BY2/BY4 stores are not implemented", "image table registration: a BY store passed translation");
+    auto mipStoreCode = storeCode;
+    mipStoreCode[8] = 0xf0240f08u;
+    const auto mipStore = CompileTable(TableRequest(mipStoreCode, userData));
+    const auto& mipPlan = *mipStore.capture->plan;
+    require(mipPlan.info.images.size() == 1u && mipPlan.info.images[0].table == 0u && (mipPlan.info.images[0].tableOperation == TableOperation::Unsupported || mipPlan.info.images[0].mipMode == ImageMipMode::DynamicStorage), "image table registration: a table T# feeding image_store_mip was not planned as an unsupported or dynamic-mip table store");
+    const auto mipFault = TableMap(*mipStore.result)[Abi::TableHeader(0) + Abi::TableFault];
+    require((mipFault & Abi::PoisonFlag) != 0u && mipStore.result->imageTablePoison.at(mipFault & ~Abi::PoisonFlag).reason == static_cast<std::uint32_t>(Abi::PoisonReason::UnsupportedOperation) && mipStore.result->imageTableFaults != 0u, "image table registration: the image_store_mip table does not fault on use");
+    const auto* mipTable = storageTable(mipStore);
+    require(mipTable == nullptr || mipTable->count == 0u, "image table registration: the unsupported image_store_mip bound storage table elements");
 
     const std::vector<std::uint32_t> compareCode{0xf4080100u, 0xfa000000u, 0xf4080200u, 0xfa000010u, 0xf4080700u, 0xfa000030u, 0x7e200500u, 0x8f108510u, 0xf42c0502u, 0x20000000u, 0xf0fc0108u, 0x00450000u, 0xe0700000u, 0x80070000u, 0xbf810000u};
     auto compareRequest = TableRequest(compareCode, userData);

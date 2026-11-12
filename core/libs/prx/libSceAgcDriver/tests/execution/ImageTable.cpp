@@ -247,6 +247,18 @@ alignas(256) constexpr std::array<std::uint32_t, 19> StoreTableCutCode{
     0xf0202108u, 0x80080401u, 0xbf810000u,
 };
 
+alignas(256) constexpr std::array<std::uint32_t, 16> StoreLaneTableCode{
+    0xf4080100u, 0xfa000000u, 0xf4080200u, 0xfa000010u, 0x8f108202u, 0xf4200444u, 0x20000000u, 0x9312b011u,
+    0xf42c0802u, 0x24000000u, 0x360200bfu, 0x7e040280u, 0x7e080301u, 0xf0208f08u, 0x00090401u, 0xbf810000u,
+};
+
+
+alignas(256) constexpr std::array<std::uint32_t, 17> StoreLaneCutCode{
+    0xf4080100u, 0xfa000000u, 0xf4080200u, 0xfa000010u, 0x8f108202u, 0xf4200444u, 0x20000000u, 0x9312b011u,
+    0xf42c0802u, 0x24000000u, 0x360200bfu, 0x7e040280u, 0x7da400ffu, 0x00001000u, 0xf0208f08u, 0x00090401u,
+    0xbf810000u,
+};
+
 constexpr std::uint32_t SelectedStoreValue = 0xc0de5eedu;
 
 alignas(256) constexpr std::array<std::uint32_t, 18> SelectedStoreCode{
@@ -1429,7 +1441,41 @@ void RunStoreTests(AgcDriver::VulkanDevice& device) {
     SetClassRecords();
 }
 
-[[maybe_unused]] void RunAtomicTests(AgcDriver::VulkanDevice& device) {
+void RunLaneStoreTests(AgcDriver::VulkanDevice& device) {
+    struct Registration {
+        void* data;
+        Registration(void* data, std::size_t bytes) : data(data) { GuestAllocations::Mutation().Add(data, bytes, true, true, true); }
+        ~Registration() { GuestAllocations::Mutation().Remove(data); }
+    } registeredUint(UintTexels.data(), sizeof(UintTexels)), registeredFloat(FloatTexels.data(), sizeof(FloatTexels)), registeredSint(SintTexels.data(), sizeof(SintTexels));
+    SetClassRecords();
+    const auto savedUint = UintTexels;
+    const auto savedFloat = FloatTexels;
+    const auto savedSint = SintTexels;
+    const auto untouched = [&] { return UintTexels == savedUint && FloatTexels == savedFloat && SintTexels == savedSint; };
+    Keys = {};
+    Keys[0] = 1;
+    const auto cut = Run(device, StoreLaneCutCode, 1, Lanes, 64);
+    AgcDriver::Graphics::StorageTexture::FlushAllPending("image table store test");
+    Require(!Faulted(cut), "image table store: a store with EXEC clear faulted:\n" + cut.log);
+    Require(untouched(), "image table store: a store with EXEC clear reached an image");
+    const auto stored = Run(device, StoreLaneTableCode, 1, Lanes, 64);
+    AgcDriver::Graphics::StorageTexture::FlushAllPending("image table store test");
+    Require(!Faulted(stored), "image table store: a store through a table faulted:\n" + stored.log);
+    Require(stored.imageTableCount == 2u, "image table store: the storage table does not hold one element per distinct T# (" + std::to_string(stored.imageTableCount) + ")");
+    for (std::uint32_t x = 0; x < Width; ++x) Require(UintTexels[x] == x, "image table store: texel " + std::to_string(x) + " of the selected image is " + Hex(UintTexels[x]) + ", expected " + Hex(x));
+    Require(std::equal(UintTexels.begin() + Width, UintTexels.end(), savedUint.begin() + Width), "image table store: a store to row 0 reached another row");
+    Require(FloatTexels == savedFloat && SintTexels == savedSint, "image table store: a store through key 1 reached another entry's image");
+    UintTexels = savedUint;
+    const auto restored = Run(device, StoreLaneCutCode, 1, Lanes, 64);
+    AgcDriver::Graphics::StorageTexture::FlushAllPending("image table store test");
+    Require(!Faulted(restored) && untouched(), "image table store: restoring the image failed:\n" + restored.log);
+    Keys[0] = 6;
+    const auto null = Run(device, StoreLaneTableCode, 1, Lanes, 64);
+    AgcDriver::Graphics::StorageTexture::FlushAllPending("image table store test");
+    Require(untouched(), "image table store: a store through a null entry reached an image:\n" + null.log);
+}
+
+void RunAtomicTests(AgcDriver::VulkanDevice& device) {
     struct Registration {
         void* data;
         Registration(void* data, std::size_t bytes) : data(data) { GuestAllocations::Mutation().Add(data, bytes, true, true, true); }
@@ -1464,7 +1510,7 @@ void RunStoreTests(AgcDriver::VulkanDevice& device) {
     for (std::uint32_t x = 0; x < Width; ++x) Require(UintTexels[x] == (x ^ 1u) && std::bit_cast<std::uint32_t>(FloatTexels[x]) == 0x3f800000u + x, "image table atomic: an add through a null entry reached an image:\n" + null.log);
 }
 
-[[maybe_unused]] void RunAtomic64Tests(AgcDriver::VulkanDevice& device) {
+void RunAtomic64Tests(AgcDriver::VulkanDevice& device) {
     if (!TargetHasCapability(device.Target(), spv::CapabilityInt64ImageEXT)) {
         std::puts("skipped the 64-bit table atomic rows, the device has no shaderImageInt64Atomics");
         return;
@@ -2994,6 +3040,9 @@ int main(int argc, char** argv) {
         RunSelectedRecordTests(*device);
         RunModeTests(*device);
         RunStoreTests(*device);
+        RunLaneStoreTests(*device);
+        RunAtomicTests(*device);
+        RunAtomic64Tests(*device);
         RunSelectedStoreTests(*device);
         RunPointerTests(*device);
         RunPointerRecordTests(*device);
