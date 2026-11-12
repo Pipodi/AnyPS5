@@ -45,6 +45,7 @@ public:
     void Suspend(const std::function<void()>& accept);
     void PresentBuffer(const DisplayBuffer& buffer);
     void FrameBoundary();
+    void RewindTailFlips(std::uint64_t flips);
 
 private:
     enum class State { Waiting, Recording, Done };
@@ -56,6 +57,7 @@ private:
         std::uint32_t protection = 0;
         std::uint32_t access = 0;
         bool readable = false;
+        std::uint64_t since = 0;
     };
 
     FrameRecorder(std::filesystem::path directory, std::filesystem::path trigger, std::uint64_t atBoundary, std::uint64_t frames);
@@ -84,7 +86,8 @@ private:
     void emitDelta();
     static void collectShaderPages(std::span<const Shader* const> shaders, std::set<std::uint64_t>& blocks, std::set<std::uint64_t>& hostPages);
     void emitShaderDelta(std::span<const Shader* const> shaders);
-    void writeDelta(std::span<const Span> spans, std::span<const std::uint64_t> hostPages, std::span<const Range> added = {}, std::span<const std::pair<std::uint64_t, std::vector<std::byte>>> images = {});
+    void writeDelta(std::span<Span> spans, std::span<const std::uint64_t> hostPages, std::span<const Range> added = {}, std::span<const std::pair<std::uint64_t, std::vector<std::byte>>> images = {});
+    void frameBoundaryLocked();
     bool triggered();
     void start();
     void finish();
@@ -102,6 +105,7 @@ private:
     std::string header() const;
     std::vector<Range> committedRanges();
     std::vector<Range> newRanges();
+    std::uint64_t blockSince(std::uint64_t block) const;
 
     std::filesystem::path directory;
     std::filesystem::path trigger;
@@ -140,9 +144,10 @@ private:
     std::map<std::uint64_t, std::uint64_t> blockHashes;
     std::uint64_t ordinal = 0;
     std::uint64_t boundaries = 0;
+    std::uint64_t rewindTailFlips = 0;
     std::uint64_t startBoundary = 0;
     std::uint64_t recordedFrames = 0;
-    std::uint64_t generation = 0;
+    std::uint64_t startGeneration = 0;
     std::uint64_t deltaGroups = 0;
     std::uint64_t blockedDeltas = 0;
     std::uint64_t rereadDeltas = 0;

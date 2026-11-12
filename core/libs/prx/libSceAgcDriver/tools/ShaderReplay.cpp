@@ -12,6 +12,8 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/PipelineFingerprint.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/ResultFootprint.hpp"
 
+#include <spirv/unified1/spirv.hpp>
+
 #if ANYPS5_ENABLE_SPIRV_TOOLS
 #include "spirv-tools/libspirv.hpp"
 #endif
@@ -21,6 +23,7 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -31,6 +34,7 @@
 #include <memory>
 #include <span>
 #include <sstream>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -66,6 +70,7 @@ bool g_robust2 = false;
 bool g_waveLdsMemoryBarriers = false;
 bool g_deviceScopeLdsMemoryBarriers = false;
 bool g_ldsLockFences = false;
+bool g_shaderFma = false;
 bool g_code = false;
 bool g_prepareOnly = false;
 bool g_pipelineOnly = false;
@@ -76,6 +81,36 @@ bool g_describe = false;
 bool g_nativeTarget = false;
 bool g_bindless = false;
 std::string g_expectedSpirv;
+bool g_float16WidenNans = false;
+bool g_float16NarrowNans = false;
+
+bool OutputSpirv(const char* path, std::span<const std::uint32_t> spirv) {
+    if (g_spirv) {
+        std::string name(path);
+        name = name.substr(name.find_last_of("/\\") + 1) + ".spv";
+        std::ofstream file(name, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(spirv.data()), static_cast<std::streamsize>(spirv.size_bytes()));
+        file.close();
+        if (!file) {
+            std::printf("  could not write %s\n", name.c_str());
+            return false;
+        }
+    }
+#if ANYPS5_ENABLE_SPIRV_TOOLS
+    if (g_disassemble) {
+        spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_2);
+        std::string text;
+        if (!tools.Disassemble(spirv.data(), spirv.size(), &text, SPV_BINARY_TO_TEXT_OPTION_FRIENDLY_NAMES)) {
+            std::printf("  could not disassemble SPIR-V\n");
+            return false;
+        }
+        std::printf("%s\n", text.c_str());
+    }
+#else
+    if (g_disassemble) std::printf("  (--dis needs ANYPS5_ENABLE_SPIRV_TOOLS=ON)\n");
+#endif
+    return true;
+}
 
 void ConfigurePipelineReplay(int argc, char** argv) {
     std::string cache;
@@ -384,25 +419,6 @@ std::string TargetDifference(const ShaderRecompiler::SpirvTarget& captured, cons
     return text;
 }
 
-void InspectSpirv(const char* path, std::span<const std::uint32_t> words) {
-    if (g_spirv) {
-        std::string name(path);
-        name = name.substr(name.find_last_of("/\\") + 1) + ".spv";
-        std::ofstream file(name, std::ios::binary);
-        file.write(reinterpret_cast<const char*>(words.data()), static_cast<std::streamsize>(words.size_bytes()));
-        if (!file) throw std::runtime_error("could not write " + name);
-    }
-#if ANYPS5_ENABLE_SPIRV_TOOLS
-    if (g_disassemble) {
-        spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_2);
-        std::string text;
-        if (tools.Disassemble(words.data(), words.size(), &text, SPV_BINARY_TO_TEXT_OPTION_FRIENDLY_NAMES)) std::printf("%s\n", text.c_str());
-    }
-#else
-    if (g_disassemble) std::printf("  (--dis needs ANYPS5_ENABLE_SPIRV_TOOLS=ON)\n");
-#endif
-}
-
 bool Replay(const char* path, std::unique_ptr<AgcDriver::VulkanDevice>& device) {
     auto request = ShaderRecompiler::RequestSerializer{}.Deserialize(ReadText(path));
     if (g_nativeTarget) {
@@ -455,6 +471,14 @@ bool Replay(const char* path, std::unique_ptr<AgcDriver::VulkanDevice>& device) 
     if (g_waveLdsMemoryBarriers) request.request.target.waveLdsMemoryBarriers = true;
     if (g_deviceScopeLdsMemoryBarriers) request.request.target.deviceScopeLdsMemoryBarriers = true;
     if (g_ldsLockFences) request.request.target.ldsLockFences = true;
+    if (g_shaderFma) {
+        request.supportedCapabilities.push_back(spv::CapabilityFMAKHR);
+        request.supportedExtensions.push_back("SPV_KHR_fma");
+        request.request.target.supportedCapabilities = request.supportedCapabilities;
+        request.request.target.supportedExtensions = request.supportedExtensions;
+    }
+    if (g_float16WidenNans) request.request.target.float16WidenNans = true;
+    if (g_float16NarrowNans) request.request.target.float16NarrowNans = true;
     std::printf("%s: %zu code words, %zu user data, %zu memory regions, wave%u\n", path, request.request.shader.code.size(), request.request.context.userData.size(), request.request.context.memory.size(), request.request.context.waveSize);
     if (request.request.context.compute.has_value()) {
         const auto& compute = *request.request.context.compute;
@@ -474,6 +498,13 @@ bool Replay(const char* path, std::unique_ptr<AgcDriver::VulkanDevice>& device) 
         // mem_<code address>_<guest address>.bin next to the request for inspection with other tools.
         const auto& context = request.request.context;
         for (std::size_t i = 0; i < context.userData.size(); ++i) std::printf("  user[%zu] = 0x%08x\n", i, context.userData[i]);
+        if (request.request.graphics.has_value()) {
+            const auto& linked = request.request.graphics->linkedPrograms;
+            for (std::size_t index = 0; index < linked.size(); ++index) {
+                std::printf("  linked program %zu (stage %u, 0x%llx): user data base register %u, first user SGPR %u\n", index, static_cast<unsigned>(linked[index].binary.stage), static_cast<unsigned long long>(linked[index].binary.codeAddress), linked[index].userDataBaseRegister, linked[index].firstUserSgpr);
+                for (std::size_t i = 0; i < linked[index].userData.size(); ++i) std::printf("    user[%zu] = 0x%08x\n", i, linked[index].userData[i]);
+            }
+        }
         for (const auto& region : context.memory) {
             char name[96];
             std::snprintf(name, sizeof(name), "mem_%llx_%llx.bin", static_cast<unsigned long long>(request.request.shader.codeAddress), static_cast<unsigned long long>(region.guestAddress));
@@ -495,6 +526,20 @@ bool Replay(const char* path, std::unique_ptr<AgcDriver::VulkanDevice>& device) 
             return false;
         }
         std::printf("  code -> %s\n", name.c_str());
+        if (request.request.graphics.has_value()) {
+            const auto& linked = request.request.graphics->linkedPrograms;
+            for (std::size_t index = 0; index < linked.size(); ++index) {
+                const auto linkedName = name + ".linked" + std::to_string(index);
+                const auto& linkedCode = linked[index].binary.code;
+                std::ofstream linkedFile(linkedName, std::ios::binary);
+                linkedFile.write(reinterpret_cast<const char*>(linkedCode.data()), static_cast<std::streamsize>(linkedCode.size() * sizeof(linkedCode[0])));
+                if (!linkedFile) {
+                    std::printf("  could not write %s\n", linkedName.c_str());
+                    return false;
+                }
+                std::printf("  linked program %zu (stage %u, 0x%llx) -> %s\n", index, static_cast<unsigned>(linked[index].binary.stage), static_cast<unsigned long long>(linked[index].binary.codeAddress), linkedName.c_str());
+            }
+        }
     }
     if (g_assembly) {
         const auto program = ShaderRecompiler::RdnaInstructionDecoder{}.Decode(request.request.shader.code);
@@ -546,8 +591,9 @@ bool Replay(const char* path, std::unique_ptr<AgcDriver::VulkanDevice>& device) 
                 std::uint64_t largest = 0;
                 for (const auto& binding : result->bindings) largest = std::max<std::uint64_t>(largest, AgcDriver::DriverDetail::VectorHeapBytes(binding.guestDescriptor));
                 std::printf("  result heap: %llu bytes, %zu bindings, largest guest descriptor %llu bytes\n", static_cast<unsigned long long>(ShaderRecompiler::ResultHeapBytes(*result)), result->bindings.size(), static_cast<unsigned long long>(largest));
+                return OutputSpirv(path, result->spirv);
             }
-            return true;
+            return OutputSpirv(path, ShaderRecompiler::GetPreparedArtifact(*handle).spirv);
         } catch (const std::exception& error) {
             std::printf("  %s failed: %s\n", phase, FirstLine(error.what()).c_str());
             return false;
@@ -560,8 +606,7 @@ bool Replay(const char* path, std::unique_ptr<AgcDriver::VulkanDevice>& device) 
             const auto words = ShaderRecompiler::GetPreparedArtifact(*prepared).spirv.Words();
             if (words.empty()) throw std::runtime_error("prepared shader has no SPIR-V");
             std::printf("  prepared only: %zu SPIR-V words; runtime memory not materialized\n", words.size());
-            InspectSpirv(path, words);
-            return true;
+            return OutputSpirv(path, words);
         }
         if (g_variants) {
             // --fingerprint-variants: the pipeline fingerprint components of each way to materialize the
@@ -620,7 +665,7 @@ bool Replay(const char* path, std::unique_ptr<AgcDriver::VulkanDevice>& device) 
             if (!device) device = std::make_unique<AgcDriver::VulkanDevice>();
             if (const auto refusal = CheckPipelineReference(path, result, *device); !refusal.empty()) throw std::runtime_error("pipeline-only " + refusal);
         }
-        InspectSpirv(path, result.spirv);
+        if (!OutputSpirv(path, result.spirv)) return false;
         if (g_pipelineOnly) {
             auto nativeRequest = request.request;
             nativeRequest.target = device->ComputeTarget(request.request.context.waveSize);
@@ -730,7 +775,7 @@ int MakeRequest(int argc, char** argv) {
 int main(int argc, char** argv) {
     if (argc >= 2 && std::string(argv[1]) == "--make-request") return MakeRequest(argc, argv);
     if (argc < 2) {
-        std::fprintf(stderr, "usage: agc_shader_replay [--dis] [--asm] [--cfg] [--mem] [--spv] [--prepare] [--materialize] [--code] [--maintenance8] [--robust2] [--wave-lds-memory-barriers] [--device-scope-lds-memory-barriers] [--bindless] [--prepare-only | --pipeline-only --pipeline-cache DIR [--expect-spv FILE | --no-reference]] [--lds-lock-fences] <shader.req>...\n  --prepare replays the request as a prepared artifact\n  --materialize also captures the resources from the request memory and materializes the prepared invocation\n  --prepare-only plans and compiles without materializing runtime memory\n  --pipeline-only recompiles captured compute inputs and creates the native pipeline without guest resources or dispatch\n  --pipeline-cache selects an existing private cache directory; __GL_SHADER_DISK_CACHE_PATH must select a separate fresh empty directory\n  --expect-spv requires byte equality with an ordinary replay before device creation (one request); without it each\n    request needs the .fp sidecar APS5_PIPELINE_REQUESTS saved next to it, and its pipeline fingerprint must match\n  --no-reference skips that check (requests from older runs); a hit in the game's pipeline cache then proves the match\n  several requests share one device and cache; each success prints a PIPELINE-RESULT line\n  --fingerprint-variants prints the pipeline fingerprint components of each way to materialize a request against its .fp\n    (--describe adds the values: specialization constants, bindings)\n  --native-target replaces a captured compute target with this device's (requests from builds with another target) and names the fields that differed\n  --bindless (or APS5_BINDLESS_IMAGES=1) compiles table images through the bindless descriptor heap; a device made for --pipeline-only enables it too\n  the driver writes shader_<address>.req files when APS5_DUMP_SHADERS is set; shader_<address>.prepare.req holds a request whose preparation failed before any resource capture, so replay it with --prepare\n");
+        std::fprintf(stderr, "usage: agc_shader_replay [--dis] [--asm] [--cfg] [--mem] [--spv] [--prepare] [--materialize] [--code] [--maintenance8] [--robust2] [--wave-lds-memory-barriers] [--device-scope-lds-memory-barriers] [--bindless] [--prepare-only | --pipeline-only --pipeline-cache DIR [--expect-spv FILE | --no-reference]] [--lds-lock-fences] [--shader-fma] [--f16-widen-nans] [--f16-narrow-nans] <shader.req>...\n  --prepare replays the request as a prepared artifact\n  --materialize also captures the resources from the request memory and materializes the prepared invocation\n  --prepare-only plans and compiles without materializing runtime memory\n  --pipeline-only recompiles captured compute inputs and creates the native pipeline without guest resources or dispatch\n  --pipeline-cache selects an existing private cache directory; __GL_SHADER_DISK_CACHE_PATH must select a separate fresh empty directory\n  --expect-spv requires byte equality with an ordinary replay before device creation (one request); without it each\n    request needs the .fp sidecar APS5_PIPELINE_REQUESTS saved next to it, and its pipeline fingerprint must match\n  --no-reference skips that check (requests from older runs); a hit in the game's pipeline cache then proves the match\n  several requests share one device and cache; each success prints a PIPELINE-RESULT line\n  --fingerprint-variants prints the pipeline fingerprint components of each way to materialize a request against its .fp\n    (--describe adds the values: specialization constants, bindings)\n  --native-target replaces a captured compute target with this device's (requests from builds with another target) and names the fields that differed\n  --bindless (or APS5_BINDLESS_IMAGES=1) compiles table images through the bindless descriptor heap; a device made for --pipeline-only enables it too\n  the driver writes shader_<address>.req files when APS5_DUMP_SHADERS is set; shader_<address>.prepare.req holds a request whose preparation failed before any resource capture, so replay it with --prepare\n");
         return 2;
     }
     for (int i = 1; i < argc; ++i) {
@@ -801,6 +846,18 @@ int main(int argc, char** argv) {
         }
         if (std::string(argv[i]) == "--lds-lock-fences") {
             g_ldsLockFences = true;
+            continue;
+        }
+        if (std::string(argv[i]) == "--shader-fma") {
+            g_shaderFma = true;
+            continue;
+        }
+        if (std::string(argv[i]) == "--f16-widen-nans") {
+            g_float16WidenNans = true;
+            continue;
+        }
+        if (std::string(argv[i]) == "--f16-narrow-nans") {
+            g_float16NarrowNans = true;
             continue;
         }
         if (std::string(argv[i]) == "--mem") {

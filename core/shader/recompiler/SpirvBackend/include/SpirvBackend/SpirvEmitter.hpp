@@ -54,6 +54,8 @@ struct SpirvTargetOptions {
     std::vector<std::uint32_t> formattedLoadFastFormats;
     bool ldsLockFences = false;
     bool meshWindowBuffer = false;
+    bool float16WidenNans = false;
+    bool float16NarrowNans = false;
 };
 
 struct SpirvEmitInfo {

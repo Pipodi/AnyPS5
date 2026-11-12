@@ -100,6 +100,8 @@ enum class RuntimeSwitch : std::size_t {
     ResourceCacheLarge,
     ReadOnlyBdaItems,
     DeferLabelStore,
+    NoGuardSpans,
+    NoOwnedDrawInputs,
     Count,
 };
 

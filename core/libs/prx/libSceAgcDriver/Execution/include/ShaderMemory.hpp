@@ -188,6 +188,7 @@ private:
     bool recordProbes = false;
     mutable std::vector<Probe> probes;
     PendingWriteQuery pendingSpan = nullptr;
+    bool spanQuery = false;
     std::size_t descriptorSpanBytes = 0;
     std::uint64_t rawInvalidations = 0;
     std::uint32_t forceSync = 0;

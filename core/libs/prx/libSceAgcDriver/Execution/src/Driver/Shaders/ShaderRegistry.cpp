@@ -1233,10 +1233,17 @@ std::vector<ShaderRecompiler::TableCallee> ReadTableCallees(const ShaderRecompil
     constexpr std::uint64_t limitBytes = 64u << 20u;
     constexpr std::size_t limitCallees = 64u;
     const auto slot = call.userDataRegister - request.context.userDataBaseRegister;
-    const auto pointer = call.constantPointer ? *call.constantPointer : static_cast<std::uint64_t>(request.context.userData[slot]) | static_cast<std::uint64_t>(request.context.userData[slot + 1u]) << 32u;
-    const auto words = ReadGuestBytes(pointer + call.descriptorOffset, 16u, "call table descriptor");
     ShaderRecompiler::ShaderBufferResource descriptor{};
-    std::memcpy(descriptor.fields.data(), words.data(), words.size());
+    if (call.descriptorInUserData) {
+        if (slot + 4u > request.context.userData.size()) throw std::runtime_error("its call table descriptor is outside the user data");
+        std::uint32_t words[4]{};
+        for (std::size_t index = 0u; index < 4u; ++index) words[index] = request.context.userData[slot + index];
+        std::memcpy(descriptor.fields.data(), words, sizeof(words));
+    } else {
+        const auto pointer = call.constantPointer ? *call.constantPointer : static_cast<std::uint64_t>(request.context.userData[slot]) | static_cast<std::uint64_t>(request.context.userData[slot + 1u]) << 32u;
+        const auto words = ReadGuestBytes(pointer + call.descriptorOffset, 16u, "call table descriptor");
+        std::memcpy(descriptor.fields.data(), words.data(), words.size());
+    }
     const auto bytes = descriptor.GetSize();
     if (bytes > limitBytes) throw std::runtime_error("its call table of " + std::to_string(bytes) + " bytes is larger than the " + std::to_string(limitBytes) + " bytes that are searched for callees");
     const auto table = bytes == 0u ? std::vector<std::uint8_t>{} : ReadGuestBytes(descriptor.Base48(), bytes, "call table");
@@ -2809,24 +2816,24 @@ void Driver::ResolveGraphicsStagesAbi(std::span<const Shader* const> stages, std
     {
         std::lock_guard lock(mutex);
         registry = shaders;
-        for (const auto* shader : stages) {
-            const auto fields = GuestShaderFields(shader);
-            const auto address = reinterpret_cast<std::uintptr_t>(const_cast<const void*>(fields.code));
-            require(registry != nullptr && registry->contains(address), "graphics ABI refers to an unregistered shader");
-            const auto selected = RegisteredHeader(*registry, shader);
-            if (selected == nullptr) throw std::runtime_error("AGC driver: graphics ABI refers to a replaced shader header " + HeaderLocation(shader));
-            selectedStages.push_back(selected);
-            const auto& snapshot = *selected;
-            require(snapshot.registeredState != nullptr, "registered shader state is missing");
-            const auto registered = DecodeRegisteredState(snapshot, {});
-            registered.shader.ForEach([&](std::uint32_t offset, std::uint32_t value) { state.shader.insert_or_assign(offset, value); });
-            registered.context.ForEach([&](std::uint32_t offset, std::uint32_t value) { state.context.insert_or_assign(offset, value); });
-            registered.userConfig.ForEach([&](std::uint32_t offset, std::uint32_t value) { state.userConfig.insert_or_assign(offset, value); });
-            if (fields.type != snapshot.type) {
-                const std::size_t count = fields.num_sh_registers;
-                GuestMemory::CheckRange(fields.sh_registers, count * sizeof(ShaderRegister), alignof(ShaderRegister));
-                for (std::size_t index = 0; index < count; ++index) state.shader.insert_or_assign(fields.sh_registers[index].offset, fields.sh_registers[index].value);
-            }
+    }
+    for (const auto* shader : stages) {
+        const auto fields = GuestShaderFields(shader);
+        const auto address = reinterpret_cast<std::uintptr_t>(const_cast<const void*>(fields.code));
+        require(registry != nullptr && registry->contains(address), "graphics ABI refers to an unregistered shader");
+        const auto selected = RegisteredHeader(*registry, shader);
+        if (selected == nullptr) throw std::runtime_error("AGC driver: graphics ABI refers to a replaced shader header " + HeaderLocation(shader));
+        selectedStages.push_back(selected);
+        const auto& snapshot = *selected;
+        require(snapshot.registeredState != nullptr, "registered shader state is missing");
+        const auto registered = DecodeRegisteredState(snapshot, {});
+        registered.shader.ForEach([&](std::uint32_t offset, std::uint32_t value) { state.shader.insert_or_assign(offset, value); });
+        registered.context.ForEach([&](std::uint32_t offset, std::uint32_t value) { state.context.insert_or_assign(offset, value); });
+        registered.userConfig.ForEach([&](std::uint32_t offset, std::uint32_t value) { state.userConfig.insert_or_assign(offset, value); });
+        if (fields.type != snapshot.type) {
+            const std::size_t count = fields.num_sh_registers;
+            GuestMemory::CheckRange(fields.sh_registers, count * sizeof(ShaderRegister), alignof(ShaderRegister));
+            for (std::size_t index = 0; index < count; ++index) state.shader.insert_or_assign(fields.sh_registers[index].offset, fields.sh_registers[index].value);
         }
     }
     for (const auto reg : context) state.context.insert_or_assign(reg.offset, reg.value);
@@ -2958,14 +2965,15 @@ void Driver::ResolveShaderAbi(const Shader* shader, std::span<const ShaderRegist
         transaction.Commit();
         return;
     }
-    std::shared_ptr<const ShaderSnapshot> snapshot;
+    std::shared_ptr<const ShaderRegistry> registry;
     {
         std::lock_guard lock(mutex);
-        const auto address = reinterpret_cast<std::uintptr_t>(const_cast<const void*>(fields.code));
-        require(shaders != nullptr && shaders->contains(address), "static ABI refers to an unregistered shader");
-        snapshot = RegisteredHeader(*shaders, shader);
-        if (snapshot == nullptr) throw std::runtime_error("AGC driver: static ABI refers to a replaced shader header " + HeaderLocation(shader));
+        registry = shaders;
     }
+    const auto address = reinterpret_cast<std::uintptr_t>(const_cast<const void*>(fields.code));
+    require(registry != nullptr && registry->contains(address), "static ABI refers to an unregistered shader");
+    const auto snapshot = RegisteredHeader(*registry, shader);
+    if (snapshot == nullptr) throw std::runtime_error("AGC driver: static ABI refers to a replaced shader header " + HeaderLocation(shader));
     require(snapshot->registeredState != nullptr, "registered shader state is missing");
     QueueState state{};
     state.shader = snapshot->registeredState->shader.Expand();
@@ -3092,6 +3100,10 @@ std::uint32_t DepthCopyPixelUserWords(bool multisampled) {
     return multisampled ? 9u : 8u;
 }
 
+bool DriverOwnedProgram(std::uint64_t codeAddress) {
+    return codeAddress == NullPixelProgramAddress() || codeAddress == DepthCopyPixelProgramAddress(false) || codeAddress == DepthCopyPixelProgramAddress(true);
+}
+
 void Driver::ResolveGraphicsAbi(const Shader* vertex, const Shader* pixel, std::uint32_t primitiveType) {
     BindTitleThread();
     PerformanceContext timingContext(FrameTiming::Preparation());
@@ -3100,20 +3112,20 @@ void Driver::ResolveGraphicsAbi(const Shader* vertex, const Shader* pixel, std::
     if ((primitiveType != 0 && primitiveType != 7 && primitiveType != 17) || pixel == nullptr) return;
     ShaderPreparationTransaction transaction;
     require(vertex != nullptr && pixel != nullptr, "rectangle ABI requires vertex and fragment shaders");
-    std::shared_ptr<const ShaderSnapshot> front;
-    std::shared_ptr<const ShaderSnapshot> fragment;
+    std::shared_ptr<const ShaderRegistry> registry;
     {
         std::lock_guard lock(mutex);
-        const auto lookup = [&](const Shader* shader) {
-            const auto address = reinterpret_cast<std::uintptr_t>(const_cast<const void*>(GuestShaderFields(shader).code));
-            require(shaders != nullptr && shaders->contains(address), "rectangle ABI refers to an unregistered shader");
-            const auto snapshot = RegisteredHeader(*shaders, shader);
-            if (snapshot == nullptr) throw std::runtime_error("AGC driver: rectangle ABI refers to a replaced shader header " + HeaderLocation(shader));
-            return snapshot;
-        };
-        front = lookup(vertex);
-        fragment = lookup(pixel);
+        registry = shaders;
     }
+    const auto lookup = [&](const Shader* shader) {
+        const auto address = reinterpret_cast<std::uintptr_t>(const_cast<const void*>(GuestShaderFields(shader).code));
+        require(registry != nullptr && registry->contains(address), "rectangle ABI refers to an unregistered shader");
+        const auto snapshot = RegisteredHeader(*registry, shader);
+        if (snapshot == nullptr) throw std::runtime_error("AGC driver: rectangle ABI refers to a replaced shader header " + HeaderLocation(shader));
+        return snapshot;
+    };
+    const auto front = lookup(vertex);
+    const auto fragment = lookup(pixel);
     require(front != fragment, "rectangle stages refer to the same shader");
     const auto localDevice = device.Load();
     require(localDevice != nullptr, "shader registration device is missing");

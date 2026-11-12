@@ -6,6 +6,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/Context.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/PassHazards.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Mutex.hpp"
+#include "prx/libSceAgcDriver/Execution/include/SubmissionSnapshots.hpp"
 #include <unordered_map>
 #include <atomic>
 #include <chrono>
@@ -337,7 +338,7 @@ public:
     // the GPU mutex is not held by this thread.
     bool RetireOldest();
     std::size_t InFlightKeptBytes() const { return inFlightKeptBytes; }
-    enum class SnapshotUse : std::uint8_t { Storage, Vertex, Index16, Index32, Index16Restart, Index32Restart };
+    enum class SnapshotUse : std::uint8_t { Storage, Vertex, Index16, Index32, Index16Restart, Index32Restart, PaddedVertex };
     static constexpr std::size_t DrawSnapshotBudget = std::size_t{1024} << 20u;
     static constexpr std::size_t DrawSnapshotEntries = 1024;
     static constexpr std::size_t UnwrittenSnapshotEntries = 4096;
@@ -346,8 +347,18 @@ public:
     std::shared_ptr<Buffer> UnwrittenDrawSnapshot(std::uint64_t address, std::size_t bytes, const std::array<std::uint64_t, 3>& stamp, VkDeviceSize* offset = nullptr);
     void NoteUnwrittenDrawSnapshot(std::uint64_t address, std::size_t bytes, const std::array<std::uint64_t, 3>& stamp, std::shared_ptr<Buffer> buffer, VkDeviceSize offset = 0);
     std::shared_ptr<Buffer> ReusableDrawSnapshot(std::uint64_t address, std::size_t bytes, SnapshotUse use = SnapshotUse::Storage, std::uint32_t* derived = nullptr, std::uint64_t generation = 0, VkDeviceSize* offset = nullptr);
+    struct OwnedDrawInputProof {
+        std::vector<std::uint64_t> words;
+        std::uint64_t since = 0;
+        std::uint64_t registry = 0;
+        std::uint64_t forget = 0;
+        std::uint64_t note = 0;
+    };
+    OwnedDrawInputProof ArmOwnedDrawInput(std::uint64_t address, std::size_t bytes) const;
+    std::shared_ptr<Buffer> ReusableOwnedDrawInput(std::uint64_t address, std::size_t bytes, SnapshotUse use, std::uint32_t* derived);
+    void KeepOwnedDrawInput(std::uint64_t address, std::size_t bytes, const OwnedDrawInputProof& proof, std::shared_ptr<Buffer> buffer, SnapshotUse use, std::uint32_t derived);
     static constexpr std::size_t ContainingSnapshotProbes = 16;
-    void KeepDrawSnapshot(std::uint64_t address, std::size_t bytes, std::uint64_t generation, std::uint64_t registryGeneration, std::shared_ptr<Buffer> buffer, SnapshotUse use = SnapshotUse::Storage, std::uint32_t derived = 0);
+    void KeepDrawSnapshot(std::uint64_t address, std::size_t bytes, std::uint64_t generation, std::uint64_t registryGeneration, std::shared_ptr<Buffer> buffer, SnapshotUse use = SnapshotUse::Storage, std::uint32_t derived = 0, bool ownedInsertion = false);
     // Owned draw snapshots (APS5_NO_OWNED_DRAW_SNAPSHOTS=1 off; an APS5_AB switch). A read-only draw
     // input outside the write watch (CollectWrites 0: host imports compared, not watched) had no
     // proof that it was unchanged, so every draw copied it whole into a new buffer. Its blocks are
@@ -398,16 +409,20 @@ public:
     void NotePendingWordFill(std::uint64_t address, std::size_t bytes, std::uint32_t word);
     // Notes several [begin, end) ranges and publishes the snapshot once (a dispatch writes many buffers).
     void NotePendingWrites(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges);
+    static constexpr std::int16_t ReachValue = -2;
+    void NotePendingReach(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges);
     bool PendingWriteOverlaps(std::uint64_t address, std::size_t bytes) const;
     // Whether a pending write over the range is in a batch of the other lane than the calling
     // thread's (open, or in flight): this lane's own pending writers run before what it records next.
     bool PendingWriteOtherLane(std::uint64_t address, std::size_t bytes) const;
+    bool PendingStoreOverlaps(std::uint64_t address, std::size_t bytes) const;
     // Whether no unfinished batch writes the range any more: no open-batch overlap, and every
     // overlapping in-flight batch's fence has signaled (its in-place GPU stores are final in host
     // memory; its completion stores are the caller's business, see VulkanDevice::CopyBuffer).
     bool PendingWriteSettled(std::uint64_t address, std::size_t bytes) const;
     std::uint64_t LastWriteNote(std::uint64_t address, std::size_t bytes) const;
     std::uint64_t NewestWriteNote(std::uint64_t address, std::size_t bytes) const;
+    std::uint64_t NewestStoreNote(std::uint64_t address, std::size_t bytes) const;
     struct PendingWrite {
         std::uint64_t begin;
         std::uint64_t end;
@@ -539,6 +554,7 @@ public:
     bool DumpSamples(VkDeviceAddress target, std::uint64_t address = 0);
     void NoteSampledDraw(VkCommandBuffer commands);
     void NoteDrawTraceToken(std::uint64_t token) noexcept;
+    void NoteFaultToken(AgcDriver::FaultToken token) noexcept;
     bool QueuesSampleDumps() const;
     void PrepareSampleSlot();
     void EndPassSamples();
@@ -687,6 +703,7 @@ public:
     // After the calling worker recorded (or dropped) its queued labels: its ranges are cleared and
     // the entries of its dwords still without a batch (stored by the CPU, or dropped) leave the table.
     static void ForgetQueuedLabels();
+    static bool QueuedLabelsPending();
     // The function the flush hook calls, on the accessing thread (which may hold the GPU mutex),
     // when an access overlaps one of that thread's queued labels; it records them. Set once.
     static void SetQueuedLabelRecorder(void (*recorder)());
@@ -744,12 +761,14 @@ public:
     // so a batch is submitted after a bounded amount of work (APS5_BATCH_CAP).
     static std::uint64_t RecordedWorkSinceSubmit();
     static void CountRecordedWork();
+    bool NoteGuestWork(VkCommandBuffer commands);
 
     // The recorder of the current device, for code that only has guest addresses (the flush hook)
     // and for helpers that must not recycle resources the recorded work still uses.
     static Recorder* Active();
     VkDevice Device() const { return context.device; }
     std::uint64_t Id() const { return id; }
+    static bool Alive(std::uint64_t id);
     // Whether the calling thread runs inside a batch's completion action (finish()): a store made
     // there must not have a publish recorded for it (UnitShadow), see SyncThrough.
     static bool InCompletion();
@@ -933,8 +952,12 @@ private:
         std::uint64_t waitOther = 0;
         bool handedOut = false;
         std::uint64_t edgeOwed = 0;
+        std::uint64_t predictedSerial = 0;
+        AgcDriver::FaultToken firstToken = 0;
+        AgcDriver::FaultToken lastToken = 0;
         std::uint64_t traceId = 0;
         bool submitted = false;
+        bool guestWork = false;
         std::atomic<bool> submitStarted{false};
         // The GpuMutex queue tag of the thread that opened the batch, and when it was submitted
         // (the [syncwait] line reports what a wait's target and the batches ahead of it were).
@@ -1203,6 +1226,8 @@ private:
     // `ownLabel`: the range is a label's own store (NoteLabel, AfterCompletions), which does not
     // overwrite the table entries it covers; any other range flags them (table mutex, briefly).
     bool noteWrite(std::uint64_t address, std::size_t bytes, bool ownLabel = false, int value = -1, std::int64_t word = -1);
+    void notePendingRanges(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges, int value);
+    std::uint64_t newestNote(std::uint64_t address, std::size_t bytes, bool reach) const;
     // Appends one range to `batch` (open or in flight) and publishes the snapshot if needed.
     void noteWriteOn(Batch& batch, std::uint64_t address, std::size_t bytes, bool ownLabel = false);
     void noteLabelOn(Batch& batch, std::uint64_t address, std::span<const std::byte> bytes, std::uint64_t stamp, std::uint32_t queue, bool behindCompletion = false);
@@ -1338,6 +1363,7 @@ private:
         std::list<DrawSnapshotKey>::iterator recent;
         std::shared_ptr<Buffer> buffer;
         std::uint32_t derived;
+        OwnedDrawInputProof owned;
     };
     struct DrawSnapshotPool {
         std::list<DrawSnapshotKey> recency;
@@ -1380,9 +1406,18 @@ private:
     };
     std::map<DrawSnapshotKey, IndexRange> indexRanges;
     std::list<DrawSnapshotKey> indexRangeRecency;
+    bool ownedDrawInputHolds(std::uint64_t address, std::size_t bytes, const OwnedDrawInputProof& proof) const;
     bool refreshDrawSnapshot(DrawSnapshot& entry, std::uint64_t address, std::size_t bytes);
     std::shared_ptr<Buffer> containingDrawSnapshot(std::uint64_t address, std::size_t bytes, VkDeviceSize* offset);
 };
+
+inline void EmitNvCheckpointToken(VkCommandBuffer commands, AgcDriver::FaultToken token, PFN_vkCmdSetCheckpointNV setCheckpoint) noexcept {
+    try {
+        if (commands == VK_NULL_HANDLE || setCheckpoint == nullptr || token == 0) return;
+        setCheckpoint(commands, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(token)));
+    } catch (...) {
+    }
+}
 
 }
 

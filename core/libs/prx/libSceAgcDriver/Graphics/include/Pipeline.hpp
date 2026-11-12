@@ -53,16 +53,16 @@ public:
     VkShaderStageFlags HeapStages() const { return heapStages; }
     std::shared_ptr<Framebuffer> AcquireFramebuffer(std::span<const VkImageView> targets, std::span<const std::shared_ptr<void>> owners, VkExtent2D extent, std::uint32_t layers = 1);
     // Begins the render pass on the framebuffer, binds the pipeline and sets its dynamic state.
-    void Begin(VkCommandBuffer commands, const Framebuffer& framebuffer, VkExtent2D extent, const State& state, PassBinding* bound = nullptr) const;
+    void Begin(VkCommandBuffer commands, const Framebuffer& framebuffer, VkExtent2D extent, const State& state, PassBinding* bound = nullptr, const State* masked = nullptr) const;
     // The same inside a render pass another pipeline of the same attachments began (compatible by
     // construction: the attachment formats alone decide).
-    void Continue(VkCommandBuffer commands, const State& state, PassBinding* bound = nullptr) const;
+    void Continue(VkCommandBuffer commands, const State& state, PassBinding* bound = nullptr, const State* masked = nullptr) const;
     bool SplitsFaces() const { return backFaces != VK_NULL_HANDLE; }
     bool Libraries() const { return libraries; }
     bool Optimized() const { return optimized != nullptr && optimized->handle.load() != VK_NULL_HANDLE; }
-    void ContinueBackFaces(VkCommandBuffer commands, const State& state) const;
+    void ContinueBackFaces(VkCommandBuffer commands, const State& state, const State* masked = nullptr) const;
     bool SplitsSecondChannel() const { return secondChannel != VK_NULL_HANDLE; }
-    void ContinueSecondChannel(VkCommandBuffer commands) const;
+    void ContinueSecondChannel(VkCommandBuffer commands, const State& state, const State* masked = nullptr) const;
     const SampleOrder& HostSampleOrder() const { return sampleOrder; }
     bool ReordersSamples() const { return Graphics::ReordersSamples(sampleOrder); }
     bool SampleLocationsEnabled() const { return sampleLocationsEnabled; }
@@ -84,6 +84,7 @@ private:
     void release() noexcept;
     PassLibraryState libraryState(const State& state) const;
     void setLibraryState(VkCommandBuffer commands, const PassLibraryState& values) const;
+    void setColorWriteMasks(VkCommandBuffer commands, const State& state, const State* masked, bool secondChannel) const;
     Context context;
     std::vector<VkShaderModule> _modules;
     VkPipelineLayout layout = VK_NULL_HANDLE;
@@ -176,6 +177,7 @@ bool HasStencil(VkFormat format);
 void ValidateViewport(const Context& context, const VkViewport& viewport);
 void ValidateDepthBounds(const Context& context, const State& state);
 void ValidateMeshLimits(const Context& context, const ShaderRecompiler::MeshConfiguration& mesh, std::uint32_t invocations);
+void ValidateLineWidth(const Context& context, float width);
 void ValidateProvokingVertex(const Context& context, const State& state, std::span<const CompiledShader> shaders = {});
 bool BarycentricPatches(const State& state, std::span<const CompiledShader> shaders);
 bool ValidateSampleLocations(const Context& context, const State& state);
@@ -185,7 +187,7 @@ bool ShadersWriteMemory(std::span<const CompiledShader> shaders);
 bool DeclaresEarlyFragmentTests(const ShaderRecompiler::RecompileResult& program);
 void ValidateSampleMask(const Context& context, const State& state, std::span<const CompiledShader> shaders);
 // Returns the color attachment locations the pixel shader writes.
-std::set<std::uint32_t> ValidateShaders(std::span<const CompiledShader> shaders, const State& state, const VkPhysicalDeviceSubgroupProperties& subgroup, bool fragmentShaderBarycentric, bool descriptorIndexing = false, bool imageInt64Atomics = false, bool geometryShader = false, bool sampleRateShading = false, bool bufferInt64Atomics = false, bool shaderClipDistance = false, bool shaderCullDistance = false, bool viewportIndexLayer = false, bool runtimeDescriptorArray = false, bool demoteToHelperInvocation = false, bool shaderTerminateInvocation = false, bool meshShader = true, bool shaderResourceMinLod = false);
+std::set<std::uint32_t> ValidateShaders(std::span<const CompiledShader> shaders, const State& state, const VkPhysicalDeviceSubgroupProperties& subgroup, bool fragmentShaderBarycentric, bool descriptorIndexing = false, bool imageInt64Atomics = false, bool geometryShader = false, bool sampleRateShading = false, bool bufferInt64Atomics = false, bool shaderClipDistance = false, bool shaderCullDistance = false, bool viewportIndexLayer = false, bool runtimeDescriptorArray = false, bool demoteToHelperInvocation = false, bool shaderTerminateInvocation = false, bool meshShader = true, bool shaderResourceMinLod = false, bool fmaFloat16 = false);
 
 }
 

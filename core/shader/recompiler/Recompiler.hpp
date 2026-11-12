@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -17,6 +18,7 @@
 #include <span>
 #include <stdexcept>
 #include <ranges>
+#include <stdexcept>
 #include <functional>
 #include <utility>
 #include <string_view>
@@ -74,6 +76,8 @@ struct ShaderComputeStageInfo {
     // through the L1-cached binding and s_barrier also orders buffer memory (SpirvRuntimeBuffer,
     // SpirvFlowEmitter). Set only with APS5_SINGLE_GROUP_COHERENCE=1 (driver, opt-in: not shown exact).
     bool singleWorkgroup = false;
+    std::uint32_t granulatedVgprCount = 0;
+    std::uint32_t sharedVgprBlocks = 0;
 
     [[nodiscard]] bool PartialGroups() const {
         return partialThreads != std::array<std::uint32_t, 3>{};
@@ -204,8 +208,13 @@ struct TargetBlend {
 
 struct TargetMerge {
     std::uint8_t target = 0;
-    std::uint16_t mask = 0;
+    std::uint32_t mask = 0;
     std::uint8_t samples = 1;
+    ColorExportPacking packing = ColorExportPacking::None;
+    std::uint32_t blendControl = 0;
+    bool layered = false;
+    std::uint32_t firstSlice = 0;
+    std::uint32_t lastSlice = 0;
     std::array<std::uint32_t, 8> descriptor{};
     bool depthStencilWrites = false;
     bool depthStencilTests = false;
@@ -324,6 +333,13 @@ struct GuestContext {
     bool layerRowSamples = false;
 };
 
+struct SharedVectorRegisters {
+    std::uint32_t base = 0;
+    std::uint32_t count = 0;
+};
+
+[[nodiscard]] SharedVectorRegisters GuestSharedVectorRegisters(const GuestContext& context);
+
 struct MeshTargetLimits {
     std::array<std::uint32_t, 3> maxWorkgroupSize;
     std::uint32_t maxWorkgroupInvocations;
@@ -395,6 +411,8 @@ struct SpirvTarget {
     bool meshWindowBuffer = false;
     bool hostInterpolationFirst = false;
     bool shaderImageMinLod = false;
+    bool float16WidenNans = false;
+    bool float16NarrowNans = false;
 };
 
 struct BindingLayout {
@@ -670,6 +688,14 @@ public:
             if ((*this)[index] != other[index]) return false;
         }
         return true;
+    }
+    template<typename TVisit>
+    void ForEachSet(TVisit&& visit) const {
+        if (count <= InlineFlags) {
+            for (auto rest = bits; rest != 0; rest &= rest - 1) visit(static_cast<std::size_t>(std::countr_zero(rest)));
+            return;
+        }
+        for (auto it = std::find(spill.begin(), spill.end(), true); it != spill.end(); it = std::find(it + 1, spill.end(), true)) visit(static_cast<std::size_t>(it - spill.begin()));
     }
 
 private:

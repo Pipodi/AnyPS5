@@ -846,6 +846,10 @@ void* GuestArenaMapAlias_nid_postfix(std::uintptr_t address, std::size_t bytes) 
     return WindowsMappings::Get().MapAlias(address, bytes);
 }
 
+void* GuestArenaMapAliasForImport_nid_no_patch(std::uintptr_t address, std::size_t bytes, bool* boundsRefused) {
+    return WindowsMappings::Get().MapAlias(address, bytes, boundsRefused);
+}
+
 void GuestArenaUnmapAlias_nid_postfix(void* alias) {
     WindowsMappings::Get().UnmapAlias(alias);
 }
@@ -872,6 +876,14 @@ void GuestArenaComparedPages_nid_no_patch(std::uintptr_t address, std::size_t by
 
 void GuestArenaTakeUnreportedPages_nid_no_patch(std::uintptr_t address, std::size_t bytes, void** pages, std::size_t* count) {
     WindowsMappings::Get().ComparedPages(address, bytes, pages, count, true);
+}
+
+void GuestArenaKnownZero_nid_no_patch(std::uintptr_t address, std::size_t bytes, void (*zero)(void* context, std::uintptr_t begin, std::uintptr_t end), void* context) {
+    WindowsMappings::Get().KnownZero(address, bytes, zero, context);
+}
+
+void GuestArenaForgetKnownZero_nid_no_patch(std::uintptr_t address, std::size_t bytes) {
+    WindowsMappings::Get().ForgetKnownZero(address, bytes);
 }
 
 void GuestArenaForgetSection_nid_postfix(void* section) {

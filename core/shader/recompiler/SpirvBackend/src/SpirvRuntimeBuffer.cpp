@@ -13,7 +13,9 @@
 #include <array>
 #include <cstring>
 #include <type_traits>
+#include <cstdlib>
 #include <span>
+#include <unordered_map>
 #include <utility>
 #include <string>
 #include <vector>
@@ -149,11 +151,6 @@ void faultIf(SpirvValueEmitContext& context, const IrValue& instruction, std::ui
     auto& state = context.state;
     EmitIfCondition(state, condition, [&] { RecordBdaFault(state, address, ConstantU32(state, bytes), BdaInstructionPc(state, instruction), reason); });
     StopBdaInvocationIf(state, condition);
-}
-
-bool faultCheckDedupRequested() {
-    const char* value = std::getenv("APS5_SPIRV_FAULT_CHECK_DEDUP");
-    return value != nullptr && std::strcmp(value, "1") == 0;
 }
 
 bool faultBlockDominates(const SpirvEmitterState& state, const IrBlock* dominator, const IrBlock* block) {
@@ -1428,7 +1425,7 @@ std::optional<CoherentPair> coherentPair(SpirvValueEmitContext& context, const I
 void PlanFaultCheckDominators(SpirvEmitterState& state, const IrProgram& program) {
     state.faultChecks.clear();
     state.faultDominators.clear();
-    state.faultCheckDedup = faultCheckDedupRequested();
+    state.faultCheckDedup = std::getenv("APS5_NO_FAULT_CHECK_DEDUP") == nullptr;
     if (!state.faultCheckDedup) return;
     const auto& order = program.BlockOrder();
     if (order.empty() || !order.front()->Predecessors().empty()) return;
@@ -1589,6 +1586,9 @@ std::uint32_t EmitRuntimeScalarBufferLoad(SpirvValueEmitContext& context, const 
     checkDescriptor(context, instruction, resource, 0u);
     const auto u64 = TypeScalarU64(state);
     const auto size = Select(state, u64, equal(state, resource.stride, ConstantU32(state, 0u)), Unary(state, spv::OpUConvert, u64, resource.records), Binary(state, spv::OpIMul, u64, Unary(state, spv::OpUConvert, u64, resource.stride), Unary(state, spv::OpUConvert, u64, resource.records)));
+    const auto large = Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), size, BdaConstant(state, std::uint64_t{1u} << 32u));
+    const auto boundedSize = Select(state, u64, large, BdaConstant(state, std::uint64_t{1u} << 32u), size);
+    const auto limit = Unary(state, spv::OpUConvert, TypeU32(state), Binary(state, spv::OpShiftRightLogical, u64, boundedSize, BdaConstant(state, 2u)));
     struct DwordBounds {
         std::uint32_t byte;
         std::uint32_t offset;
@@ -1600,7 +1600,7 @@ std::uint32_t EmitRuntimeScalarBufferLoad(SpirvValueEmitContext& context, const 
         const auto noCarry = Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), address, context.Arg(dword, 1u));
         const auto byte = EmitAndConstant(state, address, ~3u);
         const auto offset = Unary(state, spv::OpUConvert, u64, byte);
-        return DwordBounds{byte, offset, both(state, noCarry, both(state, resource.valid, Binary(state, spv::OpULessThanEqual, TypeBool(state), Binary(state, spv::OpIAdd, u64, offset, BdaConstant(state, 4u)), size))), noCarry};
+        return DwordBounds{byte, offset, both(state, noCarry, both(state, resource.valid, Binary(state, spv::OpULessThan, TypeBool(state), Binary(state, spv::OpShiftRightLogical, TypeU32(state), byte, ConstantU32(state, 2u)), limit))), noCarry};
     };
     if (context.Memory(instruction).gpuDescriptor && hoisted && HasBdaSpanReads(state, instruction)) {
         const auto run = scalarRun(context, instruction);

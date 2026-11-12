@@ -1,7 +1,9 @@
+#include "prx/libc/include/HostThreadLocal.hpp"
 #include "Recompiler.hpp"
 #include "BdaAbi.hpp"
 #include "DirectImageRefusal.hpp"
 #include "UnnormalizedWrap.hpp"
+#include "RdnaDecoder/DiagnosticSink.hpp"
 #include "StencilReplay.hpp"
 #include <algorithm>
 #include <array>
@@ -44,6 +46,7 @@
 #include "Optimization/include/Optimization/HostInterpolationChecker.hpp"
 #include "Optimization/include/Optimization/MaskedSelectEliminator.hpp"
 #include "Optimization/include/Optimization/ReadLaneEliminator.hpp"
+#include "Optimization/include/Optimization/GotoPhiRefiner.hpp"
 #include "Optimization/include/Optimization/RedundantValueEliminator.hpp"
 #include "Optimization/include/Optimization/RequestMemoryView.hpp"
 #include "Optimization/include/Optimization/ResourceMaterializer.hpp"
@@ -260,6 +263,14 @@ std::atomic<std::uint64_t> frontEndBuilds{0};
 
 }
 
+SharedVectorRegisters GuestSharedVectorRegisters(const GuestContext& context) {
+    if (!context.compute.has_value() || context.compute->sharedVgprBlocks == 0u) return {};
+    if (context.waveSize != 64u) throw std::runtime_error("ShaderRecompiler: wave-shared VGPRs in a wave32 program are not modeled");
+    const SharedVectorRegisters registers{(context.compute->granulatedVgprCount + 1u) * 4u, context.compute->sharedVgprBlocks * 8u};
+    if (registers.base + registers.count > 256u) throw std::runtime_error("ShaderRecompiler: wave-shared VGPRs reach past v255");
+    return registers;
+}
+
 struct PreparedControlFlow {
     PreparedControlFlow(const RecompileRequest& request, const SwappcInfo& swappcInfo)
         : stage(request.shader.stage), mergedHull(MergedHullStage(request)), fallbacks(swappcInfo.linkedCallFallbacks.begin(), swappcInfo.linkedCallFallbacks.end()), swappc(WithFallbacks(swappcInfo, fallbacks)), code(request.shader.code.begin(), request.shader.code.end()),
@@ -338,12 +349,16 @@ IrProgram PrepareResourceProgram(const RecompileRequest& request, ShaderPreparat
     translateOptions.gcnLegacyVertexInputs = GcnGuestShaders() && request.context.userDataBaseRegister == 0u;
     translateOptions.userDataCount = static_cast<std::uint32_t>(request.context.userData.size());
     translateOptions.scratchDwords = request.context.compute.has_value() ? request.context.compute->scratchDwords : 0u;
+    const auto sharedVectors = GuestSharedVectorRegisters(request.context);
+    translateOptions.sharedVectorBase = sharedVectors.base;
+    translateOptions.sharedVectorCount = sharedVectors.count;
     translateOptions.sharedMemoryBytes = DeviceMemoryLdsBytes(request);
     const bool hostInterpolationFirst = stageKind == ShaderStageKind::Pixel && request.target.fragmentShaderBarycentricEnabled && request.target.hostInterpolationFirst;
     translateOptions.fragmentShaderBarycentricEnabled = request.target.fragmentShaderBarycentricEnabled && !hostInterpolationFirst;
     const auto supports = [&](spv::Capability capability) { return std::ranges::find(request.target.supportedCapabilities, static_cast<std::uint32_t>(capability)) != request.target.supportedCapabilities.end(); };
     translateOptions.nativeFloat16 = supports(spv::CapabilityFloat16) && supports(spv::CapabilityRoundingModeRTE) && supports(spv::CapabilityDenormPreserve);
     translateOptions.interpolationFunctions = supports(spv::CapabilityInterpolationFunction);
+    translateOptions.nativeFloat16Fma = translateOptions.nativeFloat16 && supports(spv::CapabilityFMAKHR);
     translateOptions.floatMode = request.context.floatMode;
     translateOptions.float32FlushToZero = HardwareFloat32Flush(request);
     translateOptions.float32FlushDeclared = supports(spv::CapabilityDenormFlushToZero);
@@ -413,8 +428,8 @@ IrProgram PrepareResourceProgram(const RecompileRequest& request, ShaderPreparat
                 constantFolder.Fold(program);
                 ResolveControlFlowIdentities(program);
                 deadCodeEliminator.RemoveIdentities(program);
+                deadCodeEliminator.Eliminate(program);
             }
-            deadCodeEliminator.Eliminate(program);
         }
         if (constantFolder.ComposePackedAncillary(program)) {
             deadCodeEliminator.Eliminate(program);
@@ -441,6 +456,10 @@ IrProgram PrepareResourceProgram(const RecompileRequest& request, ShaderPreparat
 
     deadCodeEliminator.EliminateUnobservedPhis(program);
     deadCodeEliminator.Eliminate(program);
+    constexpr GotoPhiRefiner gotoPhiRefiner;
+    if (gotoPhiRefiner.Refine(program).replacedOperands != 0u) {
+        deadCodeEliminator.Eliminate(program);
+    }
     constexpr SrtWalker srtWalker;
     srtWalker.BuildPlan(program);
     deadCodeEliminator.Eliminate(program);
@@ -843,6 +862,8 @@ CompiledVariant emitVariant(const RecompileRequest& request, IrProgram& program)
     targetOptions.formattedLoadFastFormats = FormattedLoadFastFormats();
     targetOptions.ldsLockFences = request.target.ldsLockFences;
     targetOptions.meshWindowBuffer = request.target.meshWindowBuffer;
+    targetOptions.float16WidenNans = request.target.float16WidenNans;
+    targetOptions.float16NarrowNans = request.target.float16NarrowNans;
 
     constexpr SpirvEmitter spirvEmitter;
     CompiledShaderArtifact result;
@@ -1124,7 +1145,7 @@ std::shared_ptr<const SpecializedModule> buildSpecializedModule(const CompiledSh
         const auto count = materialized[cursor] >> 16u;
         const auto op = static_cast<spv::Op>(materialized[cursor] & 0xffffu);
         if (op == spv::OpDecorate && count == 4u && materialized[cursor + 2u] == spv::DecorationBinding) descriptorVariables.emplace(materialized[cursor + 1u], materialized[cursor + 3u]);
-        if ((op == spv::OpAccessChain || op == spv::OpInBoundsAccessChain || op == spv::OpPtrAccessChain || op == spv::OpInBoundsPtrAccessChain || op == spv::OpLoad || op == spv::OpCopyObject) && count >= 4u) usedDescriptors.insert(materialized[cursor + 3u]);
+        if ((op == spv::OpAccessChain || op == spv::OpInBoundsAccessChain || op == spv::OpPtrAccessChain || op == spv::OpInBoundsPtrAccessChain || op == spv::OpLoad || op == spv::OpCopyObject || op == spv::OpArrayLength) && count >= 4u) usedDescriptors.insert(materialized[cursor + 3u]);
         cursor += count;
     }
     const auto unused = [&](std::uint32_t id) { return descriptorVariables.contains(id) && !usedDescriptors.contains(id); };
@@ -1825,6 +1846,18 @@ RecompileResult materializeResult(const CompiledVariant& variant, const Recompil
     DescriptorBindingBuilder{}.Populate(bindings, variant.bindings, *bindingPlan, variant.info.userDataBase, snapshot, partialThreads(request), &tables);
     result.workgroupMemoryDwords = WorkgroupMemoryStrideDwords(variant.info.info);
     result.bindings = std::move(bindings.bindings);
+    static const bool reporting = [] {
+        const auto* sink = Diagnostics();
+        return sink != nullptr && sink->descriptor != nullptr && (sink->enabled == nullptr || sink->enabled());
+    }();
+    if (const auto* sink = Diagnostics(); reporting && sink != nullptr) {
+        for (const auto& binding : result.bindings) {
+            if (binding.role != DescriptorRole::GuestBuffers && binding.role != DescriptorRole::GuestImages && binding.role != DescriptorRole::GuestSamplers) continue;
+            const bool atomic = std::ranges::any_of(binding.bufferAtomic, [](bool value) { return value; }) || std::ranges::any_of(binding.imageAtomic, [](bool value) { return value; });
+            const bool written = std::ranges::any_of(binding.imageWritten, [](bool value) { return value; }) || std::ranges::any_of(binding.bufferWritten, [](bool value) { return value; });
+            sink->descriptor(static_cast<int>(binding.kind), 0, atomic ? 2 : written ? 1 : binding.readOnly ? 0 : 3);
+        }
+    }
     if (std::ranges::none_of(result.bindings, [](const DescriptorBinding& binding) { return binding.role == DescriptorRole::BdaPagetable || binding.role == DescriptorRole::FaultBuffer; })) result.bdaAbiVersion = 0u;
     if (result.hasDeferredDirectImage && (variant.info.stage != IrShaderStage::Compute || result.bdaAbiVersion != BdaAbi::Version)) throw std::runtime_error("deferred direct image requires a compute fault buffer");
     if (UnnormalizedWrapEnabled()) {
@@ -1952,11 +1985,45 @@ struct PreparedInterface {
 
 namespace {
 
+void NoteShader(int what) {
+    if (const auto* sink = Diagnostics(); sink != nullptr && sink->shader != nullptr) sink->shader(what);
+}
+
+void NoteFailureOnce() {
+    struct CountedStorage {};
+    auto& counted = HostThreadLocal<std::exception_ptr, CountedStorage>();
+    const auto current = std::current_exception();
+    if (current == nullptr || current == counted) return;
+    counted = current;
+    NoteShader(1);
+    try {
+        std::rethrow_exception(current);
+    } catch (const UnsupportedInstructionError& error) {
+        if (const auto* sink = Diagnostics(); sink != nullptr && sink->unsupportedInstruction != nullptr) sink->unsupportedInstruction(error.encoding, nullptr, error.opcodeValue, error.file, error.line);
+    } catch (...) {
+    }
+}
+
+template <typename Compile>
+auto CountedCompile(Compile&& compile) {
+    try {
+        auto result = compile();
+        NoteShader(0);
+        return result;
+    } catch (const ConvertedSampleRequired&) {
+        throw;
+    } catch (const std::exception&) {
+        NoteFailureOnce();
+        throw;
+    }
+}
+
 std::shared_ptr<const CompiledVariant> findOrCompileVariant(SourceEntry& source, const RecompileRequest& request, bool& cacheHit, ShaderPreparationContext* preparation = nullptr) {
     if (source.plan == nullptr && FailureMemo() && source.planFailure) std::rethrow_exception(source.planFailure);
     for (const auto& candidate : source.variants) {
         if (sameLayout(candidate->layout, request.layout)) {
             cacheHit = true;
+            NoteShader(2);
             return candidate;
         }
     }
@@ -1976,6 +2043,7 @@ std::shared_ptr<const CompiledVariant> findOrCompileVariant(SourceEntry& source,
             loaded.artifact.variantId = nextVariantId();
             attachSubstitutes(loaded);
             variant = std::make_shared<const CompiledVariant>(std::move(loaded));
+            NoteShader(2);
         }
     }
     if (variant == nullptr) {
@@ -1984,10 +2052,10 @@ std::shared_ptr<const CompiledVariant> findOrCompileVariant(SourceEntry& source,
         std::exception_ptr emissionFailure;
         try {
             auto compiled = [&] {
-                if (layoutPair && preparation != nullptr) return PreparedInterface::Compile(source, request, *preparation, &emissionFailure);
+                if (layoutPair && preparation != nullptr) return CountedCompile([&] { return PreparedInterface::Compile(source, request, *preparation, &emissionFailure); });
                 auto program = source.program != nullptr ? std::move(*source.program) : PrepareResourceProgram(request, preparation);
                 source.program.reset();
-                return compileVariant(request, std::move(program), &emissionFailure);
+                return CountedCompile([&] { return compileVariant(request, std::move(program), &emissionFailure); });
             }();
             attachSubstitutes(compiled);
             variant = std::make_shared<const CompiledVariant>(std::move(compiled));
@@ -2027,7 +2095,7 @@ RecompileResult recompileOnce(const RecompileRequest& request) {
         auto program = PrepareResourceProgram(request);
         const auto plan = materializer.ExtractPlan(program);
         materializer.Materialize(plan, runtime, snapshot, request.target.bdaAbiVersion == BdaAbi::Version);
-        const auto variant = compileVariant(request, std::move(program));
+        const auto variant = CountedCompile([&] { return compileVariant(request, std::move(program)); });
         return materializeResult(variant, request, snapshot);
     }
     const auto source = getSource(request);
@@ -2186,19 +2254,24 @@ std::uint64_t snapshotHash(const RecompileRequest& request, const ResourceSnapsh
     mix(snapshot.uniformFill.value);
     const auto& tables = snapshot.tables;
     mix(tables.shader);
-    mix(tables.tables.size());
-    for (const auto& table : tables.tables) {
+    const auto mixTable = [&](const ImageTableColumnSnapshot& table) {
         mix(table.base);
         mix(table.size);
         mix(table.records);
         mix(table.keys);
         mix(table.fault);
         mix(table.outside ? 1u : 0u);
+        mix(table.nested ? 1u : 0u);
+        mix(table.pointers.Hash());
         mix(table.codes.Hash());
         mix(table.words.Hash());
         mix(table.readRanges.Hash());
         mix(table.addresses.Hash());
-    }
+    };
+    mix(tables.tables.size());
+    for (const auto& table : tables.tables) mixTable(table);
+    mix(tables.nested.size());
+    for (const auto& table : tables.nested) mixTable(table);
     mix(tables.ranges.size());
     for (const auto& [base, size] : tables.ranges) {
         mix(base);
@@ -2220,6 +2293,11 @@ std::uint64_t snapshotHash(const RecompileRequest& request, const ResourceSnapsh
             mix(merge.target);
             mix(merge.mask);
             mix(merge.samples);
+            mix(static_cast<std::uint64_t>(merge.packing));
+            mix(merge.blendControl);
+            mix(merge.layered);
+            mix(merge.firstSlice);
+            mix(merge.lastSlice);
             for (const auto word : merge.descriptor) mix(word);
             if (!merge.blend.enabled) continue;
             mix(merge.blend.snorm);
@@ -2366,7 +2444,7 @@ std::shared_ptr<const RecompileResult> materializeMemoized(SourceEntry& source, 
 std::shared_ptr<const RecompileResult> RecompileImpl(const RecompileRequest& request, const ResourceCapture& capture, bool* memoHit) {
     if (!request.useCache || capture.source == nullptr) {
         auto program = PrepareResourceProgram(request);
-        const auto variant = compileVariant(request, std::move(program));
+        const auto variant = CountedCompile([&] { return compileVariant(request, std::move(program)); });
         return std::make_shared<const RecompileResult>(materializeResult(variant, request, capture.snapshot));
     }
     if (!ResultMemo()) return std::make_shared<const RecompileResult>(materializeVariant(*capture.source, request, capture.snapshot));
@@ -2377,7 +2455,10 @@ template <typename Impl>
 auto recompileReporting(const RecompileRequest& request, Impl&& impl) -> decltype(impl()) {
     try {
         return impl();
+    } catch (const ConvertedSampleRequired&) {
+        throw;
     } catch (const std::exception& e) {
+        NoteFailureOnce();
         constexpr auto requestSerializer = RequestSerializer{};
         const auto inputInfo = "\nRecompileRequest:\n" + requestSerializer.Serialize(request);
         throw std::runtime_error(std::string("ShaderRecompiler::Recompile: ") + e.what() + inputInfo);

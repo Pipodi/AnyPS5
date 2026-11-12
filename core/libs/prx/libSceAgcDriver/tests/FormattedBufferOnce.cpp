@@ -95,7 +95,7 @@ Counts Count(std::span<const std::uint32_t> words) {
     return counts;
 }
 
-Counts Compile(std::size_t loads, bool formattedStores = false, bool gpu = false, bool vertex = false, bool registration = false, bool gpuStores = false, bool wave64Bindless = false, bool atomicBeforeLoads = false) {
+Counts Compile(std::size_t loads, bool formattedStores = false, bool gpu = false, bool pixel = false, bool registration = false, bool gpuStores = false, bool wave64Bindless = false, bool atomicBeforeLoads = false) {
     std::vector<std::uint32_t> code;
     if (gpu) code.push_back(0x7e160500u);
     if (gpuStores) code.push_back(0x7e0e0500u);
@@ -103,13 +103,13 @@ Counts Compile(std::size_t loads, bool formattedStores = false, bool gpu = false
     for (std::uint32_t load = 0; load < loads; ++load) code.insert(code.end(), {0xe0000000u | (load * 4u), 0x80020000u | ((10u + load) << 8u)});
     code.push_back(0xbf8c3f70u);
     for (std::uint32_t load = 0; load < loads; ++load) code.insert(code.end(), {(formattedStores ? 0xe0100000u : 0xe0700000u) | (load * 4u), 0x80010000u | ((10u + load) << 8u)});
-    if (vertex) code.insert(code.end(), {0xf80008cfu, 0x03020100u});
+    if (pixel) code.insert(code.end(), {0x7e0e02f2u, 0xf800180fu, 0x07070707u});
     code.push_back(0xbf810000u);
     const std::span<const std::uint32_t> words(code);
     const std::array<MemoryRegion, 1> memory{{{reinterpret_cast<std::uintptr_t>(code.data()), std::as_bytes(words)}}};
     const std::array<std::uint32_t, 12> userData{0u, 0u, 0u, 0u, 0x10000000u, 0u, 0x1000u, 0x31016facu, 0x20000000u, 0u, 0x1000u, 0x31038facu};
     RecompileRequest request{};
-    request.shader = {vertex ? ShaderStage::Vertex : ShaderStage::Compute, reinterpret_cast<std::uintptr_t>(code.data()), words, 0, {}};
+    request.shader = {pixel ? ShaderStage::Fragment : ShaderStage::Compute, reinterpret_cast<std::uintptr_t>(code.data()), words, 0, {}};
     request.target = Target();
     request.target.registrationModules = registration;
     request.target.bindlessImages = wave64Bindless;
@@ -117,11 +117,19 @@ Counts Compile(std::size_t loads, bool formattedStores = false, bool gpu = false
     request.context.waveSize = wave64Bindless ? 64u : 32u;
     request.context.userDataBaseRegister = 0;
     request.context.userData = userData;
-    if (vertex) request.context.vertex = ShaderVertexStageInfo{};
-    else request.context.compute = ShaderComputeStageInfo{{wave64Bindless ? 64u : 32u, 1u, 1u}, 0u, {false, false, false}, false, 1u};
+    if (pixel) {
+        request.context.pixel = ShaderPixelStageInfo{};
+        request.context.pixel->wave32 = true;
+        request.context.pixel->targetOutputMode[0] = 9u;
+        request.context.pixel->targetExportMapping.fill(0xe4u);
+    } else {
+        request.context.compute = ShaderComputeStageInfo{{wave64Bindless ? 64u : 32u, 1u, 1u}, 0u, {false, false, false}, false, 1u};
+    }
     request.context.memory = memory;
     request.useCache = false;
-    return Count(Recompile(request).spirv.Words());
+    const auto result = Recompile(request);
+    Check(result.registrationModule == registration, std::string("formatted buffer once: the module was ") + (registration ? "not " : "") + "emitted in registration form");
+    return Count(result.spirv.Words());
 }
 
 void SetFastFormats(const char* value) {
@@ -170,10 +178,10 @@ int main() {
         const auto scalarThree = CompileScalarReads(3);
         const auto atomicThenLoad = Compile(1, false, false, false, false, false, false, true);
         const auto gpuOne = Compile(1, false, true);
-        const auto vertexSpecialized = Compile(1, false, false, true, false);
-        const auto vertexRegistration = Compile(1, false, false, true, true);
-        Check(vertexRegistration.compareExchanges == vertexSpecialized.compareExchanges, "formatted buffer once: in registration form a store through an aligned V# kept the unaligned compare-exchange path (" + std::to_string(vertexRegistration.compareExchanges) + " compare-exchanges, " + std::to_string(vertexSpecialized.compareExchanges) + " specialized)");
-        Check(vertexRegistration.words < vertexSpecialized.words + vertexSpecialized.words * 3u / 5u, "formatted buffer once: in registration form a formatted load from a known descriptor kept every format's decoder (" + std::to_string(vertexRegistration.words) + " words, " + std::to_string(vertexSpecialized.words) + " specialized)");
+        const auto pixelSpecialized = Compile(1, false, false, true, false);
+        const auto pixelRegistration = Compile(1, false, false, true, true);
+        Check(pixelRegistration.compareExchanges == pixelSpecialized.compareExchanges, "formatted buffer once: in registration form a store through an aligned V# kept the unaligned compare-exchange path (" + std::to_string(pixelRegistration.compareExchanges) + " compare-exchanges, " + std::to_string(pixelSpecialized.compareExchanges) + " specialized)");
+        Check(pixelRegistration.words < pixelSpecialized.words + pixelSpecialized.words / 2u, "formatted buffer once: in registration form a formatted load from a known descriptor kept every format's decoder (" + std::to_string(pixelRegistration.words) + " words, " + std::to_string(pixelSpecialized.words) + " specialized)");
         Check(one.words < gpuOne.words / 2u, "formatted buffer once: a formatted load from a known descriptor kept every format's decoder (" + std::to_string(one.words) + " words, a GPU-selected descriptor needs " + std::to_string(gpuOne.words) + ")");
         Check(one.calls == none.calls + 1 && one.functions == none.functions + 1, "formatted buffer once: one formatted load emitted " + std::to_string(one.calls - none.calls) + " calls and " + std::to_string(one.functions - none.functions) + " functions more than none, expected one call to one shared function");
         Check(three.calls == one.calls + 2 && three.functions == one.functions, "formatted buffer once: two more formatted loads from the same descriptor emitted " + std::to_string(three.calls - one.calls) + " calls and " + std::to_string(three.functions - one.functions) + " functions more, expected two calls and no function");
@@ -213,7 +221,7 @@ int main() {
         const auto gpuStoreWave64 = Compile(3, true, true, false, false, true, true);
         Check(gpuStoreOne.functions > gpuOne.functions, "formatted buffer once: a formatted store through a GPU-selected descriptor emitted no shared store function");
         Check(gpuStoreThree.functions == gpuStoreOne.functions && gpuStoreThree.calls > gpuStoreOne.calls && gpuStoreWave64.functions == gpuStoreOne.functions, "formatted buffer once: two more formatted stores through a GPU-selected descriptor emitted " + std::to_string(gpuStoreThree.functions - gpuStoreOne.functions) + " more functions (wave64 with bindless images " + std::to_string(gpuStoreWave64.functions) + " of " + std::to_string(gpuStoreOne.functions) + "), expected calls to the shared one");
-        std::printf("formatted buffer once tests passed (%zu words for 1 load, %zu for 3; GPU-selected %zu and %zu; vertex %zu specialized, %zu registration)\n", one.words, three.words, gpuOne.words, gpuThree.words, vertexSpecialized.words, vertexRegistration.words);
+        std::printf("formatted buffer once tests passed (%zu words for 1 load, %zu for 3; GPU-selected %zu and %zu; pixel %zu specialized, %zu registration)\n", one.words, three.words, gpuOne.words, gpuThree.words, pixelSpecialized.words, pixelRegistration.words);
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());

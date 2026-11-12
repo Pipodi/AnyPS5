@@ -18,6 +18,7 @@
 #include <set>
 #include <unordered_map>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 #include <stdexcept>
 #include <string>
@@ -590,8 +591,9 @@ public:
         if (page < run->second.end) run->second.imported = true;
     }
 
-    void* MapAlias(std::uintptr_t address, std::size_t bytes) {
+    void* MapAlias(std::uintptr_t address, std::size_t bytes, bool* boundsRefused = nullptr) {
         std::lock_guard lock(mutex);
+        if (boundsRefused != nullptr) *boundsRefused = false;
         const auto refuse = [&](const char* reason) {
             char text[192];
             std::snprintf(text, sizeof(text), "read-write alias of shared guest memory 0x%llx+0x%llx: %s", static_cast<unsigned long long>(address), static_cast<unsigned long long>(bytes), reason);
@@ -602,7 +604,10 @@ public:
             const auto found = views.find(address + done);
             if (found == views.end() || !found->second.resident) continue;
             const auto run = std::prev(residentRuns.upper_bound(address + done));
-            if (run->first < address || run->second.end > address + bytes) throw refuse("a resident run of direct memory extends outside the range");
+            if (run->first < address || run->second.end > address + bytes) {
+                if (boundsRefused != nullptr) *boundsRefused = true;
+                throw refuse("a resident run of direct memory extends outside the range");
+            }
             for (auto page = views.find(run->first); page != views.end() && page->first < run->second.end; ++page) {
                 if (page->second.hostWrites != 0) return nullptr;
             }
@@ -842,6 +847,18 @@ public:
         if (protectionsInFlight != 0) --protectionsInFlight;
     }
 
+    void ForgetKnownZero(std::uintptr_t address, std::size_t bytes) {
+        (void)address;
+        (void)bytes;
+    }
+
+    void KnownZero(std::uintptr_t address, std::size_t bytes, void (*zero)(void* context, std::uintptr_t begin, std::uintptr_t end), void* context) {
+        (void)address;
+        (void)bytes;
+        (void)zero;
+        (void)context;
+    }
+
     bool Collect(std::uintptr_t address, std::size_t bytes, void** pages, std::size_t* count, bool clear, Collection collection = Collection::All) {
         std::lock_guard lock(mutex);
         const auto capacity = *count;
@@ -979,8 +996,8 @@ public:
                 }
                 const auto allocationEnd = privateAllocationEnd(cursor);
                 if (allocationEnd == 0) return false;
-                const auto stop = std::min(end, allocationEnd);
                 if (capacity == *count) return true;
+                const auto stop = ownedPending.empty() ? std::min(end, allocationEnd) : std::min({end, allocationEnd, (cursor & ~std::uintptr_t{4095}) + (capacity - *count) * 4096});
                 const auto touched = (((stop + 4095) & ~static_cast<std::uintptr_t>(4095)) - (cursor & ~static_cast<std::uintptr_t>(4095))) / 4096;
                 const auto room = std::min<ULONG_PTR>(capacity - *count, touched);
                 ULONG_PTR available = room;
@@ -1666,6 +1683,13 @@ private:
         }
         const auto section = first->second.section;
         const auto offset = first->second.offset;
+        std::vector<unsigned char> saved;
+        for (auto it = views.lower_bound(start); it != views.end() && it->first < stop; ++it) {
+            for (std::size_t sub = 0; sub < subpages; ++sub) {
+                const auto* bytes = reinterpret_cast<const unsigned char*>(it->first + sub * subpageBytes);
+                if ((it->second.armed & (1u << sub)) != 0) saved.insert(saved.end(), bytes, bytes + subpageBytes);
+            }
+        }
         if (!unmap(GetCurrentProcess(), reinterpret_cast<void*>(start), MEM_PRESERVE_PLACEHOLDER)) fail("unmap a run of shared guest pages to split it");
         split(start, at - start);
         mapRun(start, at - start, section->handle, offset);
@@ -1676,6 +1700,16 @@ private:
                 DWORD previous;
                 if (from < to && !VirtualProtect(reinterpret_cast<void*>(from), to - from, part.protection, &previous)) fail("protect a split run of shared guest pages");
             }
+        }
+        const auto* before = saved.data();
+        for (auto it = views.lower_bound(start); it != views.end() && it->first < stop; ++it) {
+            std::uint8_t written = 0;
+            for (std::size_t sub = 0; sub < subpages; ++sub) {
+                if ((it->second.armed & (1u << sub)) == 0) continue;
+                if (std::memcmp(reinterpret_cast<const void*>(it->first + sub * subpageBytes), before, subpageBytes) != 0) written |= static_cast<std::uint8_t>(1u << sub);
+                before += subpageBytes;
+            }
+            if (written != 0) invalidate(*it->second.page, written);
         }
     }
 

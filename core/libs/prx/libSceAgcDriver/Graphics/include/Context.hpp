@@ -120,6 +120,7 @@ struct DeviceFunctions {
     PFN_vkCmdEndRenderingKHR cmdEndRendering = nullptr;
     PFN_vkCmdSetViewport cmdSetViewport = nullptr;
     PFN_vkCmdSetScissor cmdSetScissor = nullptr;
+    PFN_vkCmdSetColorWriteMaskEXT cmdSetColorWriteMask = nullptr;
     PFN_vkCmdSetDepthBounds cmdSetDepthBounds = nullptr;
     PFN_vkCmdSetDepthBias cmdSetDepthBias = nullptr;
     PFN_vkCmdSetCullModeEXT cmdSetCullMode = nullptr;
@@ -182,10 +183,13 @@ struct Context {
     VkDeviceSize hostImportAlignment = 0;
     bool drawInputsInPlace = true;
     bool discreteGpu = false;
+    bool integratedGpu = false;
     bool dmaBufImport = false;
     bool sparseBinding = false;
     bool sparseResidencyBuffer = false;
     bool sparseResidencyAliased = false;
+    bool sparseResidencyImage2D = false;
+    PFN_vkGetPhysicalDeviceSparseImageFormatProperties sparseImageFormatProperties = nullptr;
     std::uint32_t queueFamily = 0;
     std::uint32_t sparseFamily = VK_QUEUE_FAMILY_IGNORED;
     VkQueue sparseQueue = VK_NULL_HANDLE;
@@ -198,7 +202,6 @@ struct Context {
     std::uint32_t settleFamily = 0;
     std::mutex* settleQueueMutex = nullptr;
     PFN_vkGetPhysicalDeviceMemoryProperties2 memoryProperties2 = nullptr;
-    bool integratedGpu = false;
     VkDeviceSize (*cacheReclaim)(VkDeviceSize bytes, bool newImage) = nullptr;
     RenderCache* renderCache = nullptr;
     DrawQueue* drawQueue = nullptr;
@@ -220,6 +223,7 @@ struct Context {
     bool dualSrcBlend = false;
     bool logicOp = false;
     bool samplerFilterMinmax = false;
+    bool samplerMirrorClampToEdge = false;
     bool nonSeamlessCubeMap = false;
     VkSampleCountFlags mergedCoverageSampleCounts = 0;
     VkSampleCountFlags truncatedCoverageSampleCounts = 0;
@@ -254,6 +258,7 @@ struct Context {
     bool largePoints = false;
     bool sampleRateShading = false;
     bool fillModeNonSolid = false;
+    bool wideLines = false;
     bool maintenance5 = false;
     bool storageImageMultisample = false;
     bool storageImageWriteWithoutFormat = false;
@@ -268,6 +273,7 @@ struct Context {
     bool viewportIndexLayer = false;
     bool demoteToHelperInvocation = false;
     bool earlyFragmentSampleMaskTestBeforeSampleCounting = false;
+    bool fmaFloat16 = false;
     bool primitiveListRestart = false;
     bool imageViewMinLod = false;
     bool shaderResourceMinLod = false;
@@ -277,6 +283,7 @@ struct Context {
     bool pushDescriptors = false;
     bool graphicsPipelineLibrary = false;
     bool pipelineLinkTimeOptimization = true;
+    bool dynamicColorWriteMask = false;
     std::uint32_t srgbDecodeFormats = 0;
     std::uint32_t srgbCopyFormats = 0;
     bool provokingVertexLast = false;

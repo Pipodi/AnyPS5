@@ -17,6 +17,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Texture.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
+#include "prx/libc/include/GuestArena.hpp"
 #include "ShaderDiskCache.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/GuestWriteWatch.hpp"
@@ -232,6 +233,8 @@ void Driver::stop() {
     require(!onWorkerThread(), "worker cannot stop itself");
     std::lock_guard shutdownLock(shutdownMutex);
     if (stopped) return;
+    GuestArena::GuestArenaSetHostWriteHook_nid_no_patch(nullptr);
+    if (!GuestMemory::StopHostWrites(1000)) std::fprintf(stderr, "[driver] a host write was still inside the driver's hook 1 s into the shutdown; stopping without waiting for it\n");
     MemoryStats::Stop();
     LibcRequestShutdown_nid_postfix();
     {
@@ -287,6 +290,7 @@ Driver::Driver() {
     });
     static_cast<void>(GuestMemory::TrackerGeneration());
     ShaderMemory::SetWaitedMsProvider(&Graphics::Recorder::ThreadWaitedMs);
+    GuestMemory::SetWaitedMsProvider(&Graphics::Recorder::ThreadWaitedMs);
     try {
         LibcRegisterShutdown_nid_postfix([] { Driver::Get().Shutdown(); });
     } catch (...) {
@@ -404,6 +408,61 @@ Driver::CaptureSettle Driver::WaitCompletedOrBlockedFor(std::chrono::millisecond
         }
         if (now >= deadline) return CaptureSettle::TimedOut;
     }
+}
+
+bool Driver::WaitIdleUnlessTitleWaitsFor(std::chrono::milliseconds timeout) {
+    require(!onWorkerThread(), "worker cannot wait for itself");
+    std::unique_lock lock(mutex);
+    const auto target = accepted;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    const auto idle = [&] { return failure != nullptr || stopping || completed >= target; };
+    const auto titleWaits = [&] {
+        return std::any_of(awaitedSlots.begin(), awaitedSlots.end(), [&](const AwaitedSlot& slot) {
+            const auto awaited = slot.address.load(std::memory_order_acquire);
+            return awaited != 0 && awaitsTitle(awaited);
+        });
+    };
+    ++idleWaiters;
+    while (!idle() && !titleWaits() && std::chrono::steady_clock::now() < deadline) changed.wait_for(lock, std::chrono::milliseconds(1));
+    --idleWaiters;
+    rethrowFailure();
+    checkStopping();
+    return idle();
+}
+
+bool Driver::WaitSettledFor(std::chrono::milliseconds timeout) {
+    require(!onWorkerThread(), "worker cannot wait for itself");
+    std::unique_lock lock(mutex);
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    const auto settled = [&] {
+        if (failure != nullptr || stopping) return true;
+        captureHold.store(true, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (completed >= accepted || parkedOnTitle()) return true;
+        captureHold.store(false, std::memory_order_relaxed);
+        return false;
+    };
+    ++idleWaiters;
+    bool done = settled();
+    while (!done && std::chrono::steady_clock::now() < deadline) done = changed.wait_for(lock, std::chrono::milliseconds(1), settled);
+    --idleWaiters;
+    rethrowFailure();
+    checkStopping();
+    return done;
+}
+
+bool Driver::Settled() {
+    std::lock_guard lock(mutex);
+    return failure != nullptr || stopping || completed >= accepted || parkedOnTitle();
+}
+
+void Driver::ReleaseSettled() {
+    if (!captureHold.load(std::memory_order_relaxed)) return;
+    {
+        std::lock_guard lock(mutex);
+        captureHold.store(false, std::memory_order_relaxed);
+    }
+    changed.notify_all();
 }
 
 std::vector<AwaitedWait> Driver::AwaitedWaits() {
@@ -550,6 +609,16 @@ bool Driver::SettleForCapture(std::chrono::milliseconds timeout) {
 
 bool Driver::Quiescent() {
     return runningWorkers.load(std::memory_order_acquire) == 0 && !DrawPipeline::Queue0().Busy() && !completionsPending();
+}
+
+void Driver::WaitForPipelineJournal() {
+    std::shared_ptr<VulkanDevice> localDevice = device.Load();
+    if (localDevice == nullptr) {
+        std::lock_guard gpuLock(GuestMemory::GpuMutex());
+        if (device == nullptr) device = std::make_shared<VulkanDevice>();
+        localDevice = device;
+    }
+    localDevice->WaitForPipelineJournalReplay();
 }
 
 std::pair<std::uint64_t, std::uint64_t> Driver::SerialProgress() {

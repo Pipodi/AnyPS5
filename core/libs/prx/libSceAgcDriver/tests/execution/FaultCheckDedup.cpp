@@ -187,6 +187,8 @@ std::vector<Case> Cases() {
             {2, {{false, 0}, {false, 1}, {false, 2}}, {Slot::A, Slot::A, Slot::A, Slot::Initial}}},
         {"vector loads, divergent if with a repeat inside, join", [](Program& p) { p.VectorLoad(DescriptorA, 0); p.DivergentIf(HalfLanes, true, [](Program& q) { q.VectorLoad(DescriptorA, 1); q.VectorLoad(DescriptorA, 2); }); p.VectorLoad(DescriptorA, 3); },
             {2, {{false, 0}, {false, 1}, {false, 2}, {false, 3}}, {Slot::A, Slot::AInHalf, Slot::AInHalf, Slot::A}}},
+        {"vector load, divergent if, join", [](Program& p) { p.VectorLoad(DescriptorA, 0); p.DivergentIf(HalfLanes, true, [](Program& q) { q.VectorLoad(DescriptorA, 1); }); p.VectorLoad(DescriptorA, 2); },
+            {1, {{false, 0}, {false, 1}, {false, 2}}, {Slot::A, Slot::AInHalf, Slot::A, Slot::Initial}}},
         {"vector load, uniform if, join", [](Program& p) { p.VectorLoad(DescriptorA, 0); p.UniformIf([](Program& q) { q.VectorLoad(DescriptorA, 1); }); p.VectorLoad(DescriptorA, 2); },
             {2, {{false, 0}, {false, 2}}, {Slot::A, Slot::Initial, Slot::A, Slot::Initial}}},
         {"check in a skipped uniform if does not cover the join", [](Program& p) { p.UniformIf([](Program& q) { q.VectorLoad(DescriptorA, 0); }); p.VectorLoad(DescriptorA, 1); },
@@ -294,10 +296,10 @@ ShaderRecompiler::RecompileResult Recompile(std::span<const std::uint32_t> code,
 
 void SetDedup(bool enabled) {
 #ifdef _WIN32
-    _putenv_s("APS5_SPIRV_FAULT_CHECK_DEDUP", enabled ? "1" : "");
+    _putenv_s("APS5_NO_FAULT_CHECK_DEDUP", enabled ? "" : "1");
 #else
-    if (enabled) setenv("APS5_SPIRV_FAULT_CHECK_DEDUP", "1", 1);
-    else unsetenv("APS5_SPIRV_FAULT_CHECK_DEDUP");
+    if (enabled) unsetenv("APS5_NO_FAULT_CHECK_DEDUP");
+    else setenv("APS5_NO_FAULT_CHECK_DEDUP", "1", 1);
 #endif
 }
 
@@ -326,7 +328,7 @@ struct Outcome {
 Outcome Run(AgcDriver::VulkanDevice& device, GuestBlock& guest, std::span<const std::uint32_t> code, std::uint32_t shift, bool dedup, bool invalidA, bool invalidB) {
     SetDedup(dedup);
     const auto shader = Recompile(code, guest, shift, device.Target());
-    SetDedup(false);
+    SetDedup(true);
     Outcome outcome;
     outcome.calls = CountFaultCalls(shader.spirv.Words());
     Prepare(guest, shift, invalidA, invalidB);
@@ -377,9 +379,9 @@ void RunCase(AgcDriver::VulkanDevice& device, GuestBlock& guest, const Case& tes
             const auto shift = 4u * Runs++;
             const auto off = Run(device, guest, code, shift, false, invalidA, invalidB);
             const auto on = Run(device, guest, code, shift, true, invalidA, invalidB);
-            Require(off.calls >= on.calls && off.calls - on.calls == test.expect.removed, label + ": the switch removed " + std::to_string(off.calls - on.calls) + " record_bda_fault calls (" + std::to_string(off.calls) + " off, " + std::to_string(on.calls) + " on), expected " + std::to_string(test.expect.removed));
-            Require(off.fault == on.fault, label + ": the fault differs, off '" + off.fault + "', on '" + on.fault + "'");
-            Require(off.output == on.output, label + ": the output differs between the switch off and on");
+            Require(off.calls >= on.calls && off.calls - on.calls == test.expect.removed, label + ": the default removed " + std::to_string(off.calls - on.calls) + " record_bda_fault calls (" + std::to_string(off.calls) + " opt-out, " + std::to_string(on.calls) + " default), expected " + std::to_string(test.expect.removed));
+            Require(off.fault == on.fault, label + ": the fault differs, opt-out '" + off.fault + "', default '" + on.fault + "'");
+            Require(off.output == on.output, label + ": the output differs between the default and APS5_NO_FAULT_CHECK_DEDUP");
             std::string expectedFault;
             bool faults = false;
             for (const auto& site : test.expect.executed) {

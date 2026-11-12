@@ -54,6 +54,7 @@ MIN_OUTPUT_LIMIT = 256 * 1024 * 1024
 PT_NULL = 0
 PT_LOAD = 1
 PT_DYNAMIC = 2
+PT_INTERP = 3
 PT_NOTE = 4
 PT_PHDR = 6
 ENTROPY_LIMIT = 7.5
@@ -62,7 +63,7 @@ ENTROPY_SAMPLE = 0x10000
 PHDR_NAMES = {
     PT_LOAD: "PT_LOAD",
     2: "PT_DYNAMIC",
-    3: "PT_INTERP",
+    PT_INTERP: "PT_INTERP",
     4: "PT_NOTE",
     PT_PHDR: "PT_PHDR",
     7: "PT_TLS",
@@ -166,13 +167,21 @@ def place_segments(data, headers, records):
     loads = [header for header in headers if header["type"] == PT_LOAD]
     used = set()
     placed = set()
-    for index, (flags, segment, size) in enumerate(records):
+    for flags, segment, size in records:
         target = flags >> RECORD_SEGMENT_SHIFT
         if flags & RECORD_HAS_SEGMENT and target < len(headers) and target not in placed and headers[target]["size"] == size:
             headers[target]["source"] = segment
             placed.add(target)
-            used.add(index)
     recorded = [header for header in headers if header["index"] in placed and header["vaddr"] == 0 and header["type"] != PT_LOAD]
+    for header in headers:
+        if header["type"] != PT_INTERP or header["vaddr"] != 0 or not header["size"] or header["index"] in placed:
+            continue
+        containers = [load for load in loads if load["offset"] <= header["offset"]
+                      and header["offset"] + header["size"] <= load["offset"] + load["size"]]
+        if containers:
+            host = min(containers, key=lambda load: load["size"])
+            header["host"] = host
+            placed.add(header["index"])
     if recorded:
         last = max(recorded, key=lambda header: header["offset"])
         cursor = last["source"] + last["size"]
@@ -192,8 +201,8 @@ def place_segments(data, headers, records):
     for header in loads:
         if header["size"] == 0 or header["index"] in placed:
             continue
-        for index, (_, segment, size) in enumerate(records):
-            if index in used:
+        for index, (flags, segment, size) in enumerate(records):
+            if flags & RECORD_HAS_SEGMENT or index in used:
                 continue
             if size == header["size"]:
                 used.add(index)
@@ -212,6 +221,9 @@ def place_segments(data, headers, records):
     for header in headers:
         if header["type"] == PT_LOAD:
             continue
+        if header["host"] is not None:
+            host = header["host"]
+            header["source"] = host["source"] + header["offset"] - host["offset"]
         if header["index"] in placed:
             host = load_for(header["vaddr"], header["size"])
             if host is not None:

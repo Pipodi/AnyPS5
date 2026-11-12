@@ -6,13 +6,14 @@ namespace ShaderRecompiler {
 
 namespace {
 
-constexpr std::uint32_t CurrentVersion = 153u;
-constexpr std::uint32_t MainLastVersion = 53u;
+constexpr std::uint32_t CurrentVersion = 156u;
+constexpr std::uint32_t MainLastVersion = 56u;
 constexpr std::uint32_t MainSkippedVersion = 50u;
 constexpr std::uint32_t DrawParameterBlockTag = 0x31504447u;
 constexpr std::uint32_t LocalFeatures = 22u;
-constexpr std::uint32_t TargetBlendFlag = 0x10000u;
-constexpr std::uint32_t FurtherMergeShift = 17u;
+constexpr std::uint32_t TargetMergeFlagShift = 16u;
+constexpr std::uint32_t TargetBlendFlag = 1u;
+constexpr std::uint32_t FurtherMergeShift = 1u;
 constexpr std::uint32_t FurtherMergeMask = 7u << FurtherMergeShift;
 
 constexpr char kBase64Alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -380,22 +381,29 @@ void writePixelInfo(Writer& writer, const ShaderPixelStageInfo& info) {
     for (std::uint32_t index = 0; index <= further; ++index) {
         const auto& merge = info.targetMerges.empty() ? TargetMerge{} : info.targetMerges[index];
         writer.WriteU8(merge.target);
-        writer.WriteU32(static_cast<std::uint32_t>(merge.mask) | (merge.blend.enabled ? TargetBlendFlag : 0u) | (index == 0u ? further << FurtherMergeShift : 0u));
+        writer.WriteU32(merge.mask);
         writer.WriteU8(merge.samples);
         for (const std::uint32_t word : merge.descriptor) writer.WriteU32(word);
         writer.WriteBool(merge.depthStencilWrites);
         writer.WriteBool(merge.depthStencilTests);
-        if (!merge.blend.enabled) continue;
-        const auto& blend = merge.blend;
-        writer.WriteBool(blend.snorm);
-        writer.WriteU8(blend.colorSource);
-        writer.WriteU8(blend.colorDestination);
-        writer.WriteU8(blend.colorOperation);
-        writer.WriteU8(blend.alphaSource);
-        writer.WriteU8(blend.alphaDestination);
-        writer.WriteU8(blend.alphaOperation);
-        writer.WriteU8(blend.writeMask);
-        for (const std::uint32_t word : blend.constants) writer.WriteU32(word);
+        writer.WriteU8(static_cast<std::uint8_t>((merge.blend.enabled ? TargetBlendFlag : 0u) | (index == 0u ? further << FurtherMergeShift : 0u)));
+        if (merge.blend.enabled) {
+            const auto& blend = merge.blend;
+            writer.WriteBool(blend.snorm);
+            writer.WriteU8(blend.colorSource);
+            writer.WriteU8(blend.colorDestination);
+            writer.WriteU8(blend.colorOperation);
+            writer.WriteU8(blend.alphaSource);
+            writer.WriteU8(blend.alphaDestination);
+            writer.WriteU8(blend.alphaOperation);
+            writer.WriteU8(blend.writeMask);
+            for (const std::uint32_t word : blend.constants) writer.WriteU32(word);
+        }
+        writer.WriteU8(static_cast<std::uint8_t>(merge.packing));
+        writer.WriteU32(merge.blendControl);
+        writer.WriteBool(merge.layered);
+        writer.WriteU32(merge.firstSlice);
+        writer.WriteU32(merge.lastSlice);
     }
     if (info.depthExportEnable) {
         writer.WriteU32(std::bit_cast<std::uint32_t>(info.depthExportMin));
@@ -490,14 +498,15 @@ ShaderPixelStageInfo readPixelInfo(Reader& reader, std::uint32_t version, std::u
         TargetMerge merge;
         merge.target = reader.ReadU8();
         const auto word = reader.ReadU32();
-        if ((word & ~(0xffffu | TargetBlendFlag | (index == 0u ? FurtherMergeMask : 0u))) != 0u) throw std::runtime_error("invalid recompile request target merge mask");
-        count += (word & FurtherMergeMask) >> FurtherMergeShift;
-        merge.mask = static_cast<std::uint16_t>(word & 0xffffu);
+        merge.mask = version < 55u ? word & 0xffffu : word;
         merge.samples = reader.ReadU8();
         for (std::uint32_t& descriptor : merge.descriptor) descriptor = reader.ReadU32();
         merge.depthStencilWrites = reader.ReadBool();
         merge.depthStencilTests = reader.ReadBool();
-        if ((word & TargetBlendFlag) != 0u) {
+        const std::uint32_t flags = version < 55u ? word >> TargetMergeFlagShift : reader.ReadU8();
+        if ((flags & ~(TargetBlendFlag | (index == 0u ? FurtherMergeMask : 0u))) != 0u) throw std::runtime_error("invalid recompile request target merge mask");
+        count += (flags & FurtherMergeMask) >> FurtherMergeShift;
+        if ((flags & TargetBlendFlag) != 0u) {
             auto& blend = merge.blend;
             blend.enabled = true;
             blend.snorm = reader.ReadBool();
@@ -509,6 +518,15 @@ ShaderPixelStageInfo readPixelInfo(Reader& reader, std::uint32_t version, std::u
             blend.alphaOperation = reader.ReadU8();
             blend.writeMask = reader.ReadU8();
             for (std::uint32_t& constant : blend.constants) constant = reader.ReadU32();
+        }
+        if (version >= 55u) {
+            merge.packing = readColorExportPacking(reader);
+            merge.blendControl = reader.ReadU32();
+            merge.layered = reader.ReadBool();
+            merge.firstSlice = reader.ReadU32();
+            merge.lastSlice = reader.ReadU32();
+        } else if (merge.mask != 0u && !merge.blend.enabled) {
+            merge.packing = ColorExportPacking::Unorm4_4_4_4;
         }
         if (merge.mask != 0u) info.targetMerges.push_back(merge);
         else if (index != 0u || count != 1u) throw std::runtime_error("invalid recompile request target merge mask");
@@ -983,6 +1001,14 @@ DeserializedRequest deserialize(std::string_view decoded, std::uint32_t version,
     if (version >= 51u) result.request.target.tessellationEvaluationSubgroups = reader.ReadBool();
     if (version >= 52u) result.request.target.hostInterpolationFirst = reader.ReadBool();
     if (version >= 53u) result.request.target.shaderImageMinLod = reader.ReadBool();
+    if (version >= 54u) {
+        result.request.target.float16WidenNans = reader.ReadBool();
+        result.request.target.float16NarrowNans = reader.ReadBool();
+    }
+    if (version >= 56u && result.request.context.compute.has_value()) {
+        result.request.context.compute->granulatedVgprCount = reader.ReadU32();
+        result.request.context.compute->sharedVgprBlocks = reader.ReadU32();
+    }
     if (version >= CurrentVersion && result.request.context.compute.has_value()) {
         const bool singleWorkgroup = reader.ReadBool();
         result.request.context.compute->singleWorkgroup = singleWorkgroup;
@@ -1049,6 +1075,12 @@ std::string RequestSerializer::Serialize(const RecompileRequest& request) const 
     writer.WriteBool(request.target.tessellationEvaluationSubgroups);
     writer.WriteBool(request.target.hostInterpolationFirst);
     writer.WriteBool(request.target.shaderImageMinLod);
+    writer.WriteBool(request.target.float16WidenNans);
+    writer.WriteBool(request.target.float16NarrowNans);
+    if (request.context.compute.has_value()) {
+        writer.WriteU32(request.context.compute->granulatedVgprCount);
+        writer.WriteU32(request.context.compute->sharedVgprBlocks);
+    }
     if (request.context.compute.has_value()) writer.WriteBool(request.context.compute->singleWorkgroup);
     // Optional trailing block (no version bump, so requests without it serialize as before): the
     // GPU-side indirect draw parameter SGPRs of a vertex stage.

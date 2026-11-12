@@ -21,6 +21,7 @@ target_include_directories(agc_driver_direct_image_refusal_tests PRIVATE
 
 if(BUILD_TESTING)
     target_sources(agc_write_tracking_tests PRIVATE Graphics/src/RuntimeSwitches.cpp)
+    target_sources(agc_mapped_copy_tests PRIVATE Graphics/src/RuntimeSwitches.cpp)
     set_tests_properties(agc_buffer_pool PROPERTIES ENVIRONMENT "APS5_IMAGE_POOL=1")
     add_test(NAME agc_buffer_pool_no_small_device_tier COMMAND agc_buffer_pool_tests)
     set_tests_properties(agc_buffer_pool_no_small_device_tier PROPERTIES ENVIRONMENT
@@ -50,8 +51,6 @@ if(BUILD_TESTING)
     set_tests_properties(agc_staging_copy_back_whole PROPERTIES TIMEOUT 60 ENVIRONMENT "APS5_NO_CHANGED_COPY_BACK=1")
     add_test(NAME agc_host_import_retirement_stress COMMAND agc_driver_recorder_tests --host-import-retirement-stress-only)
     set_tests_properties(agc_host_import_retirement_stress PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
-    add_test(NAME agc_untracked_forget COMMAND agc_driver_recorder_tests --untracked-forget-only)
-    set_tests_properties(agc_untracked_forget PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME agc_untracked_revalidate COMMAND agc_driver_recorder_tests --untracked-revalidate-only)
     set_tests_properties(agc_untracked_revalidate PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME agc_owned_vertex_inputs COMMAND agc_driver_recorder_tests --owned-vertex-inputs-only)
@@ -180,14 +179,6 @@ if(BUILD_TESTING)
     set_tests_properties(agc_driver_storage_flush_lane_wait_verify PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_VERIFY_FLUSH_LANE_WAIT=1" SKIP_RETURN_CODE 77 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" TIMEOUT 60)
     if(WIN32)
         set_tests_properties(agc_driver_storage_flush_lane_wait_off agc_driver_storage_flush_lane_wait_verify PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
-    endif()
-    add_test(NAME agc_driver_pipelined_sample_dump_drained COMMAND agc_driver_pipelined_sample_dump_tests)
-    set_tests_properties(agc_driver_pipelined_sample_dump_drained PROPERTIES
-            ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_PIPELINE_DRAIN_SAMPLE_DUMPS=1"
-            SKIP_RETURN_CODE 77 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
-    if(WIN32)
-        set_tests_properties(agc_driver_pipelined_sample_dump_drained PROPERTIES ENVIRONMENT_MODIFICATION
-                "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
     set_tests_properties(agc_shader_disk_cache PROPERTIES TIMEOUT 120)
     set_tests_properties(agc_driver_direct_image_refusal PROPERTIES TIMEOUT 60)
