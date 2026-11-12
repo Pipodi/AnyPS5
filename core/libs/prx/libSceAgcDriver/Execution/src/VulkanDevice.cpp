@@ -3300,10 +3300,12 @@ int VulkanDevice::WriteLabelOnGpu(std::uint64_t address, std::span<const std::by
     if (storeAtLabel) Graphics::StorageTexture::FlushAllPending("label", state->device);
     if (queue == 0) static_cast<void>(Graphics::StorageTexture::StoreDrawnLinear("label"));
     static const bool drainLabels = std::getenv("APS5_DRAIN_COMPLETION_LABELS") != nullptr;
-    const bool deferReadback = Graphics::RuntimeSwitches::Set(Graphics::RuntimeSwitch::DeferLabelReadback) && !drainLabels && Graphics::Recorder::LaneOfQueue(queue) == 0 && state->recorder && !bytes.empty() && bytes.size() <= 65536 && address % 4 == 0 && bytes.size() % 4 == 0 &&
-                               Graphics::HostImportFor(graphicsContext(), address, bytes.size()) != nullptr;
+    const bool recorderBusy = state->recorder && !state->recorder->Idle();
+    const bool labelShapeOk = state->recorder && !bytes.empty() && bytes.size() <= 65536 && address % 4 == 0 && bytes.size() % 4 == 0;
+    const bool imported = labelShapeOk && recorderBusy && Graphics::ExistingHostImportFor(graphicsContext(), address, bytes.size()) != nullptr;
+    const bool deferReadback = Graphics::RuntimeSwitches::Set(Graphics::RuntimeSwitch::DeferLabelReadback) && !drainLabels && Graphics::Recorder::LaneOfQueue(queue) == 0 && imported;
     const auto deferredBefore = deferReadback ? Graphics::StorageTexture::DeferredLabelReadbacks() : 0;
-    const bool storedOnGpu = state->recorder && !bytes.empty() && bytes.size() <= 65536 && address % 4 == 0 && bytes.size() % 4 == 0 && Graphics::HostImportFor(graphicsContext(), address, bytes.size()) != nullptr;
+    const bool storedOnGpu = imported;
     Graphics::StorageTexture::StoreReadbackBeforeLabel(deferReadback ? Graphics::StorageTexture::DeferredLabelReadbackReason : storedOnGpu ? "readback before a GPU label" : "readback before label", state->device);
     if (!state->recorder || bytes.empty() || bytes.size() > 65536 || address % 4 != 0 || bytes.size() % 4 != 0) return 4;
     auto& recorder = *state->recorder;
