@@ -102,6 +102,7 @@ constexpr std::array<const char*, SwitchCount> SwitchNames{
     "APS5_DEFER_LABEL_STORE",
     "APS5_NO_GUARD_SPANS",
     "APS5_NO_OWNED_DRAW_INPUTS",
+    "APS5_NO_RAW_POINTER_REACH",
 };
 
 struct Refusal {
