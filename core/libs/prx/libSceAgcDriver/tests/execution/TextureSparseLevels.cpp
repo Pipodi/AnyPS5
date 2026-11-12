@@ -277,7 +277,7 @@ std::uint64_t ClearedTextureBytes(const AgcDriver::Graphics::Context& context, c
     const VkClearColorValue clear{{0.25f, 0.5f, 0.75f, 1.0f}};
     std::lock_guard gpu(AgcDriver::GuestMemory::GpuMutex());
     const auto before = AgcDriver::Graphics::SampledTextureMemory();
-    const AgcDriver::Graphics::Texture texture(context, *context.detiler, resource, VkComponentMapping{}, std::span<const std::byte>{}, false, false, &clear);
+    const AgcDriver::Graphics::Texture texture(context, *context.detiler, resource, VkComponentMapping{}, std::span<const std::byte>{}, false, false, false, &clear);
     return AgcDriver::Graphics::SampledTextureMemory() - before;
 }
 

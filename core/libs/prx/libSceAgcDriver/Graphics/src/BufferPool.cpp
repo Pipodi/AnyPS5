@@ -416,6 +416,7 @@ VkDeviceSize BufferPool::PutSlot(VkDeviceMemory memory, VkDeviceSize offset) noe
         if (block.free.empty()) slab.available.push_back(&block);
         block.free.push_back(static_cast<std::uint32_t>(offset / block.slotBytes));
         MemoryAccounting::RetainPart(device, memory, block.slotBytes, true);
+        imageMemoryReleasedBytes += block.slotBytes;
         if (--block.used != 0) return 0;
         if (slab.emptyBlocks == 0) {
             ++slab.emptyBlocks;

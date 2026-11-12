@@ -862,6 +862,8 @@ Texture::Texture(const Context& context, TextureDetiler& detiler, const GuestTex
                     ImageSlabCounts().slabbed.fetch_add(1, std::memory_order_relaxed);
                 } else {
                     owned->memory = AllocateDeviceMemory(context, allocation, "vkAllocateMemory texture", requirements.memoryTypeBits, &inHostMemory, true);
+                    owned->memoryBytes = allocation.allocationSize;
+                    owned->memoryType = allocation.memoryTypeIndex;
                     Check(context.Function<PFN_vkBindImageMemory>("vkBindImageMemory")(context.device, image, owned->memory, 0), "vkBindImageMemory");
                     ImageSlabCounts().dedicated.fetch_add(1, std::memory_order_relaxed);
                 }

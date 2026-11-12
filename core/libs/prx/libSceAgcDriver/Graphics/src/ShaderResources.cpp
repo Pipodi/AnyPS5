@@ -2274,7 +2274,12 @@ std::shared_ptr<Texture> cachedTexture(const Context& context, std::span<const s
         } else {
         if (entry.slabs.has_value()) reportCommittedSlabs(resource, *entry.slabs, guestBytes);
         std::vector<std::byte> snapshot(bytes);
-        ReadTextureSurface(resource, *keys, snapshot);
+        if (entry.slabs.has_value()) {
+            const GuestMemory::ReadSiteScope site(GuestMemory::ReadSite::TextureRead);
+            for (const auto& [guest, packedOffset, size] : slabRuns(*entry.slabs)) GuestMemory::ReadCommitted(resource.baseAddress + guest, std::span<std::byte>(snapshot).subspan(static_cast<std::size_t>(guest), static_cast<std::size_t>(size)));
+        } else {
+            ReadTextureSurface(resource, *keys, snapshot);
+        }
         if (!pending) entry.untracked = untracked;
         static const bool traceTextures = std::getenv("APS5_TRACE_TEXTURES") != nullptr;
         if (traceTextures) {

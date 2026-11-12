@@ -313,8 +313,11 @@ void VramIntegratedKeepsPool() {
     mock.heapBudget = HeapBytes;
     mock.otherUsage = HeapTarget;
     auto context = budgetContext(true);
-    releaseFour(context);
-    Expect(mock.budgetQueries == 5 && mock.frees == 0 && mock.liveBytes == 256 * MiB, "an integrated GPU's pool followed the device-local heap's budget");
+    {
+        std::vector<std::unique_ptr<DeviceBuffer>> live;
+        for (int i = 0; i < 2; ++i) live.push_back(std::make_unique<DeviceBuffer>(context, 64 * MiB, BudgetUsage));
+    }
+    Expect(mock.budgetQueries == 3 && mock.frees == 0 && mock.liveBytes == 128 * MiB, "an integrated GPU's pool followed the device-local heap's budget");
 }
 
 std::uint64_t diagnosticBudgetQueries = 0;
