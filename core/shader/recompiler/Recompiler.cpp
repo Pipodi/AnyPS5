@@ -753,6 +753,14 @@ void prepareInterface(const RecompileRequest& request, IrProgram& program) {
     }
 }
 
+bool SpecializedVertexModules() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("APS5_SPECIALIZED_VERTEX");
+        return value != nullptr && std::string_view(value) == "1";
+    }();
+    return enabled;
+}
+
 bool ComputeRegistrationEnabled() {
     static const bool enabled = [] {
         const char* value = std::getenv("APS5_COMPUTE_REGISTRATION");
@@ -792,7 +800,7 @@ std::uint32_t ComputeRegistrationFormMinWords() {
 CompiledVariant emitVariant(const RecompileRequest& request, IrProgram& program) {
     const auto inputInfo = RequestInputInfo(request);
     constexpr BindingAllocator bindingAllocator;
-    bool registration = request.target.registrationModules && (request.shader.stage == ShaderStage::Vertex || request.shader.stage == ShaderStage::Fragment || (request.shader.stage == ShaderStage::Compute && ComputeRegistrationEnabled() && program.Info().images.empty() && program.Info().samplers.empty()));
+    bool registration = request.target.registrationModules && ((request.shader.stage == ShaderStage::Vertex && !SpecializedVertexModules()) || request.shader.stage == ShaderStage::Fragment || (request.shader.stage == ShaderStage::Compute && ComputeRegistrationEnabled() && program.Info().images.empty() && program.Info().samplers.empty()));
     program.Metadata().bindingLayoutComplete = false;
     const bool stencilReplay = request.shader.stage == ShaderStage::Fragment && std::ranges::any_of(program.Info().outputs, [](const StageOutput& output) { return output.kind == StageOutputKind::StencilRef; }) && std::ranges::find(request.target.supportedCapabilities, static_cast<std::uint32_t>(spv::CapabilityStencilExportEXT)) == request.target.supportedCapabilities.end();
     auto bindings = bindingAllocator.Allocate(program, request.layout, registration, stencilReplay);

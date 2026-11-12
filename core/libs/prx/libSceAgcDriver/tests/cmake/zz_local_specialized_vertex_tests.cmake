@@ -1,0 +1,7 @@
+if(BUILD_TESTING)
+    foreach(specializedVertexTest agc_driver_vertex_fetch agc_driver_zero_stride_vertex_fetch agc_driver_gcn_buffer_format_lookup agc_driver_prepared_graphics agc_driver_prepared_graphics_prebuild_0 agc_driver_prepared_graphics_prebuild_unset agc_driver_image_gather_volume)
+        if(TEST ${specializedVertexTest})
+            set_property(TEST ${specializedVertexTest} APPEND PROPERTY ENVIRONMENT "APS5_SPECIALIZED_VERTEX=1")
+        endif()
+    endforeach()
+endif()
