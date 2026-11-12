@@ -2432,15 +2432,18 @@ private:
 
     void AssignTables() {
         std::uint32_t next = 0;
+        static const bool refuseStoreModes = std::getenv("APS5_NO_TABLE_STORE_MODES") != nullptr;
         for (auto& image : m_info.images) {
             if (!TableSource(image.source)) {
                 continue;
             }
             image.table = next++;
-            const bool storage = image.resourceClass == ImageResourceClass::Storage || image.written || image.atomic;
-            const bool store2D = image.resourceClass == ImageResourceClass::Storage && image.written && !image.read && !image.atomic && image.dimension == RdnaImageDimension::Dim2D && image.mipMode == ImageMipMode::None;
-            if ((storage && !store2D) || (store2D && (image.packed || image.byElements != 0u))) {
-                image.tableOperation = TableOperation::Unsupported;
+            if (refuseStoreModes) {
+                const bool storage = image.resourceClass == ImageResourceClass::Storage || image.written || image.atomic;
+                const bool store2D = image.resourceClass == ImageResourceClass::Storage && image.written && !image.read && !image.atomic && image.dimension == RdnaImageDimension::Dim2D && image.mipMode == ImageMipMode::None;
+                if ((storage && !store2D) || (store2D && (image.packed || image.byElements != 0u))) {
+                    image.tableOperation = TableOperation::Unsupported;
+                }
             }
         }
         for (auto& sampler : m_info.samplers) {
