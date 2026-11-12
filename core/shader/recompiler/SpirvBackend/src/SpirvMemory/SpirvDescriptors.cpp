@@ -274,7 +274,7 @@ void EmitStorageImageWrite(SpirvEmitterState& state, std::uint32_t resource, std
         state.module.EmitCapability(spv::CapabilityStorageImageWriteWithoutFormat);
     }
     if (image.table != NoTable) {
-        if (image.atomic || image.dimension != RdnaImageDimension::Dim2D || image.mipMode != ImageMipMode::None) FailEmit("unsupported storage image table write");
+        if (RdnaImageDimensionInfoFor(image.dimension).multisampled != 0u || image.mipMode == ImageMipMode::DynamicStorage) FailEmit("an image table store to a multisampled image or through dynamic mips is not implemented");
         const auto descriptor = state.module.AllocateId();
         const auto pointer = StorageImageDescriptorPointer(state, resource);
         state.module.AddFunction(spv::OpLoad, ImageType(state, image), descriptor, pointer);
