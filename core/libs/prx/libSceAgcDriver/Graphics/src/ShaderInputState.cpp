@@ -104,6 +104,7 @@ ShaderRecompiler::ShaderComputeStageInfo DecodeComputeStageInfo(const Registers&
         ((rsrc2 >> 11u) & 0x3u) + 1u,
         {},
         scratchDwords,
+        false,
         granulatedVgprCount,
         sharedVgprBlocks
     };

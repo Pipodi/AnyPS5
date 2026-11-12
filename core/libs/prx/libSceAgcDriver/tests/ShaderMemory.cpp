@@ -9127,6 +9127,7 @@ void verifyVertexInfoVersion19() {
     require(serializer.Deserialize(serializer.Serialize(merging)).request.context.pixel->targetMerges == merging.context.pixel->targetMerges, "a serialized request lost its color target merge");
     auto version54 = mergingBytes;
     version54.erase(version54.begin() + mergeOffset + 40, version54.begin() + mergeOffset + static_cast<std::ptrdiff_t>(mergeBytes));
+    version54.erase(version54.begin() + static_cast<std::ptrdiff_t>(blendOffset + 4u), version54.begin() + static_cast<std::ptrdiff_t>(blendOffset + 4u + blendBytes));
     version54[4] = 54u;
     auto version53 = version54;
     version53.resize(version53.size() - 2u);
@@ -9143,7 +9144,7 @@ void verifyVertexInfoVersion19() {
     require(serializer.Deserialize(encodeBase64(version49)).request.context.pixel->targetMerges == std::vector{mergeAt49}, "a version 49 color target merge was not read as a single-slice 4_4_4_4 merge without blending");
     require(serializer.Deserialize(encodeBase64(version54)).request.context.pixel->targetMerges == std::vector{mergeAt49}, "a version 54 color target merge, as main writes it, was not read as a single-slice 4_4_4_4 merge without blending");
     require(serializer.Deserialize(encodeBase64(version53)).request.context.pixel->targetMerges == std::vector{mergeAt49}, "a version 53 color target merge, as main writes it, was not read as a single-slice 4_4_4_4 merge without blending");
-    version49[static_cast<std::size_t>(mergeOffset) + 4u] = 1u;
+    version49[static_cast<std::size_t>(mergeOffset) - blendBytes + 4u] = 1u;
     expectFailure([&] { static_cast<void>(serializer.Deserialize(encodeBase64(version49))); }, "target merge mask", "a version 49 color target merge word with a bit above the blend flag and the further merge count was accepted");
     auto wideMerging = merging;
     wideMerging.context.pixel->targetMerges.front().mask = 0xffe003ffu;
@@ -9164,6 +9165,7 @@ void verifyVertexInfoVersion19() {
     auto blendVersion49 = blendMergingBytes;
     blendRecordToVersion49(blendVersion49, mergeOffset);
     blendVersion49.resize(blendVersion49.size() - 5u);
+    blendVersion49.erase(blendVersion49.begin() + static_cast<std::ptrdiff_t>(blendOffset + 4u), blendVersion49.begin() + static_cast<std::ptrdiff_t>(blendOffset + 4u + blendBytes));
     blendVersion49[4] = 49u;
     require(serializer.Deserialize(encodeBase64(blendVersion49)).request.context.pixel->targetMerges == blendMerging.context.pixel->targetMerges, "a version 49 color target blend flagged in the merge mask word was not read as an unpacked blend");
     auto twoMerging = blendMerging;
@@ -9176,6 +9178,7 @@ void verifyVertexInfoVersion19() {
     blendRecordToVersion49(twoVersion49, mergeOffset + static_cast<std::ptrdiff_t>(mergeBytes + blendPayloadBytes));
     blendRecordToVersion49(twoVersion49, mergeOffset);
     twoVersion49.resize(twoVersion49.size() - 5u);
+    twoVersion49.erase(twoVersion49.begin() + static_cast<std::ptrdiff_t>(blendOffset + 4u), twoVersion49.begin() + static_cast<std::ptrdiff_t>(blendOffset + 4u + blendBytes));
     twoVersion49[4] = 49u;
     require(serializer.Deserialize(encodeBase64(twoVersion49)).request.context.pixel->targetMerges == twoMerging.context.pixel->targetMerges, "a version 49 request with a second color target merge counted in the first merge word was not read as two unpacked blends");
     auto unmasked = twoMergingBytes;

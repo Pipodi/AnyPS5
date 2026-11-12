@@ -2329,8 +2329,7 @@ DrawPlan planDraw(const Context& context, const State& state, const Pm4::DrawPar
         plan.retainedVertexInput = ahead->vertexInput;
         aheadDrawUses.fetch_add(1, std::memory_order_relaxed);
     } else if (!attributes.empty()) {
-        if (context.vertexInputs != nullptr) plan.retainedVertexInput = context.vertexInputs->TryGet(shaders.front().program->variantId, attributes);
-        plan.buildVertexInput = plan.retainedVertexInput == nullptr;
+        plan.buildVertexInput = true;
     }
     timer.charge(PhaseVertex, layoutStart);
     static const bool noDrawResourceCache = std::getenv("APS5_NO_DRAW_RESOURCE_CACHE") != nullptr;
@@ -2643,7 +2642,8 @@ DrawInputs prepareDrawInputs(const Context& context, const State& state, const P
     const auto& attributes = shaders.front().program->vertexAttributes;
     if (drawPlan.buildVertexInput) {
         const auto layoutStart = timer.profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-        inputs.vertexInput = BuildVertexInputLayout(context, attributes);
+        if (context.vertexInputs != nullptr) inputs.retainedVertexInput = context.vertexInputs->TryGet(shaders.front().program->variantId, attributes);
+        if (inputs.retainedVertexInput == nullptr) inputs.vertexInput = BuildVertexInputLayout(context, attributes);
         timer.charge(PhaseVertex, layoutStart);
     }
     inputs.vertexOffsets.assign(attributes.size(), 0);

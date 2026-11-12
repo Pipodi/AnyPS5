@@ -779,7 +779,7 @@ int main() {
         Require(replay.request.context.compute.has_value() && replay.request.context.compute->granulatedVgprCount == 13u && replay.request.context.compute->sharedVgprBlocks == 2u);
         auto version55 = DecodeBase64(encoded);
         Require(version55.size() > 16u && version55[4] == 156u);
-        version55.resize(version55.size() - 2u * sizeof(std::uint32_t));
+        version55.resize(version55.size() - 2u * sizeof(std::uint32_t) - 1u);
         version55[4] = 55u;
         const auto replay55 = serializer.Deserialize(EncodeBase64(version55));
         Require(replay55.request.context.compute.has_value() && replay55.request.context.compute->scratchDwords == 24u && replay55.request.context.compute->granulatedVgprCount == 0u && replay55.request.context.compute->sharedVgprBlocks == 0u);
@@ -1120,6 +1120,8 @@ int main() {
             auto version53 = bytes;
             EraseTargetMergeVersion55Fields(version53, ditherMerge);
             version53.resize(version53.size() - 2u);
+            const auto blend53 = std::search(version53.begin(), version53.end(), pixel.sampleLocations.begin(), pixel.sampleLocations.begin() + 4) - 42;
+            version53.erase(blend53, blend53 + 40);
             version53[4] = 53u;
             const auto replay53 = serializer.Deserialize(EncodeBase64(version53));
             Require(!replay53.request.target.float16WidenNans && !replay53.request.target.float16NarrowNans);
