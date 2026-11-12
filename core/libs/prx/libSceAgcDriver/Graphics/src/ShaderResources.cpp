@@ -7858,7 +7858,7 @@ void ShaderResources::resolveStorageImageTables() {
                 const auto guestBytes = DescribeSurface(resource).guestBytes;
                 CompletePendingCpuWrites(context, resource.baseAddress, static_cast<std::size_t>(guestBytes));
                 if (resource.dccAddress != 0) CompletePendingCpuWrites(context, resource.dccAddress, DccKeyBytes(guestBytes));
-                auto texture = cachedStorageTexture(context, words, resource, mip, guestBytes);
+                auto texture = cachedStorageTexture(context, words, resource, mip, guestBytes, true);
                 const bool uintStorage = element < binding.imageUintStorage.size() && binding.imageUintStorage[element];
                 if (uintStorage && texture != nullptr) texture->StorageView(mip, false, true);
                 if (texture != nullptr && DepthSurfaceAt(texture->Descriptor().baseAddress)) {
