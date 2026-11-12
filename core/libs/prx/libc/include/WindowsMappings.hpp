@@ -996,8 +996,8 @@ public:
                 }
                 const auto allocationEnd = privateAllocationEnd(cursor);
                 if (allocationEnd == 0) return false;
+                const auto stop = std::min(end, allocationEnd);
                 if (capacity == *count) return true;
-                const auto stop = ownedPending.empty() ? std::min(end, allocationEnd) : std::min({end, allocationEnd, (cursor & ~std::uintptr_t{4095}) + (capacity - *count) * 4096});
                 const auto touched = (((stop + 4095) & ~static_cast<std::uintptr_t>(4095)) - (cursor & ~static_cast<std::uintptr_t>(4095))) / 4096;
                 const auto room = std::min<ULONG_PTR>(capacity - *count, touched);
                 ULONG_PTR available = room;

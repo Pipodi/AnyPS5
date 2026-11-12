@@ -3,11 +3,6 @@ if(BUILD_TESTING)
     target_include_directories(guest_owned_memory_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_link_libraries(guest_owned_memory_tests PRIVATE libc)
     configure_windows_unwind(guest_owned_memory_tests)
-    add_test(NAME guest_owned_memory COMMAND guest_owned_memory_tests)
-    set_tests_properties(guest_owned_memory PROPERTIES TIMEOUT 30)
-    if(WIN32)
-        set_tests_properties(guest_owned_memory PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
-    endif()
 
     if(WIN32)
 

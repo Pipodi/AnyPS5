@@ -1367,7 +1367,7 @@ int usage() {
                          "  --bindless-in <f>   primes the bindless heap with the tables in <f> (a first replay's --bindless-out) before the frames\n"
                          "  --bindless-out <f>  writes the bindless tables registered by the end of the first replayed frame to <f>\n"
                          "  --dedupe-prologue   skips prologue ABI resolutions identical to an earlier one with no registration or memory call between\n"
-                         "  the shader cache's Vulkan pipeline cache file is loaded as the title loads it (APS5_PIPELINE_CACHE_LOAD=0 starts empty)\n");
+                         "  the shader cache's Vulkan pipeline cache file is loaded as the title loads it (--cold-pipelines starts empty)\n");
     return 2;
 }
 
@@ -1961,12 +1961,12 @@ void configureEnvironment(const Options& options) {
 #ifdef _WIN32
     _putenv_s("APS5_FRAME_CAPTURE", "");
     _putenv_s("APS5_HEADLESS_PIPELINE_CACHE", options.coldPipelines ? "" : "1");
-    if (std::getenv("APS5_PIPELINE_CACHE_LOAD") == nullptr) _putenv_s("APS5_PIPELINE_CACHE_LOAD", "1");
+    if (options.coldPipelines) _putenv_s("APS5_PIPELINE_CACHE_LOAD", "");
 #else
     unsetenv("APS5_FRAME_CAPTURE");
     if (options.coldPipelines) unsetenv("APS5_HEADLESS_PIPELINE_CACHE");
     else setenv("APS5_HEADLESS_PIPELINE_CACHE", "1", 1);
-    setenv("APS5_PIPELINE_CACHE_LOAD", "1", 0);
+    if (options.coldPipelines) unsetenv("APS5_PIPELINE_CACHE_LOAD");
 #endif
 }
 

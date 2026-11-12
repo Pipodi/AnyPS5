@@ -1212,6 +1212,7 @@ private:
         comparedRuns.clear();
         comparedWords.clear();
         wordsIndex.Clear();
+        wordSlots.clear();
         records.records = std::min(records.records, ImageTableAbi::KeyRecords(column.maxKey, column.stride));
         records.keys = std::min(records.records, limit);
         records.outside = records.keys < records.records;

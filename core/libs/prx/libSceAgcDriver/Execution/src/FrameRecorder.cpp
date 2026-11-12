@@ -752,14 +752,13 @@ void FrameRecorder::writeDelta(std::span<Span> spans, std::span<const std::uint6
     const auto settle = [&] {
         blocked = false;
         if (completed >= accepted || !reads) return true;
-        const auto outcome = driver.WaitCompletedOrBlockedFor(std::chrono::seconds(10));
-        if (outcome == DriverDetail::Driver::CaptureSettle::TimedOut) {
-            stop("stopped: the GPU work submitted before a memory delta neither finished nor parked on a wait within 10 s");
+        if (!driver.WaitSettledFor(std::chrono::seconds(10))) {
+            stop("stopped: the GPU work submitted before a memory delta neither finished nor waited for the title within 10 s");
             return false;
         }
-        blocked = outcome == DriverDetail::Driver::CaptureSettle::Blocked;
         releases = driver.WaitReleases();
         std::tie(accepted, completed) = driver.SerialProgress();
+        blocked = completed < accepted;
         return true;
     };
     if (!settle()) return;
@@ -782,7 +781,7 @@ void FrameRecorder::writeDelta(std::span<Span> spans, std::span<const std::uint6
             if (!range.readable) continue;
             for (std::uint64_t at = 0; at < range.bytes;) {
                 bytes.resize(static_cast<std::size_t>(std::min<std::uint64_t>(FrameCaptureWriter::BlockBytes, range.bytes - at)));
-                readGuest(range.address + at, bytes, GuestMemory::ReadCommittedUnsynced);
+                readGuest(range.address + at, bytes, GuestMemory::ReadCommitted);
                 const bool zero = std::all_of(bytes.begin(), bytes.end(), [](std::byte value) { return value == std::byte{0}; });
                 if (!zero || pass != 0 || collected) {
                     writer->WriteDelta(group, completed, range.address + at, bytes);
@@ -813,7 +812,7 @@ void FrameRecorder::writeDelta(std::span<Span> spans, std::span<const std::uint6
         }
         for (const auto& [begin, end] : blocks) {
             bytes.resize(static_cast<std::size_t>(end - begin));
-            readGuest(begin, bytes, GuestMemory::ReadCommittedUnsynced);
+            readGuest(begin, bytes, GuestMemory::ReadCommitted);
             writer->WriteDelta(group, completed, begin, bytes);
             deltaBytes += bytes.size();
             any = true;

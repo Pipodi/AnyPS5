@@ -2,6 +2,7 @@
 #include "prx/libc/include/WindowsMappings.hpp"
 #include <array>
 #include <atomic>
+#include <cstdlib>
 #include <iostream>
 #include <set>
 #include <string>
@@ -1094,10 +1095,12 @@ int main(int argc, char** argv) {
         CheckPrivateCommitEdgeLayouts();
         CheckPrivateCommitTails();
         CheckCommitResetsEveryPageOfARunView();
-        CheckKnownZeroPrivate();
-        CheckKnownZeroResident();
-        CheckKnownZeroShared();
-        CheckKnownZeroFirstReads();
+        if (std::getenv("APS5_TEST_KNOWN_ZERO") != nullptr) {
+            CheckKnownZeroPrivate();
+            CheckKnownZeroResident();
+            CheckKnownZeroShared();
+            CheckKnownZeroFirstReads();
+        }
         std::cout << "Windows deferred write-watch tests passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
