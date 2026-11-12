@@ -4343,7 +4343,7 @@ void ShaderResources::noteReusable() {
     if (addressBased && std::any_of(tableStages.begin(), tableStages.end(), [](const TableStage& table) { return std::find(table.elementTextures.begin(), table.elementTextures.end(), std::numeric_limits<std::size_t>::max()) != table.elementTextures.end(); })) return refuse(TemplateOutcome::TableElement);
     if (std::any_of(textures.begin(), textures.end(), [](const std::shared_ptr<Texture>& texture) { return texture != nullptr && texture->RefreshedPerUse(); })) return refuse(TemplateOutcome::RefreshedPerUse);
     if (TemplateDataRefresh() && std::any_of(allocations.begin(), allocations.end(), [](const Allocation& allocation) { return allocation.buffer != nullptr && !allocation.guest && allocation.role != ShaderRecompiler::DescriptorRole::ImageTableMap && allocation.size > MaxRefreshBytes; })) return refuse(TemplateOutcome::DataSize);
-    const bool spaceReusable = drawBuild && usesBda && bdaReadOnly && !SpaceReuseDisabled() && guestMemory.SpaceOnly();
+    const bool spaceReusable = drawBuild && usesBda && bdaReadOnly && !BdaTemplatesOn() && !SpaceReuseDisabled() && guestMemory.SpaceOnly();
     if (spaceReusable) {
         spaceReuse = true;
         reusable = true;
@@ -8477,7 +8477,7 @@ std::optional<std::vector<ShaderResources::MovedBuffer>> ShaderResources::MovedR
             }
         }
     }
-    if (usesBda && !moved.empty() && !(bdaTemplate && BdaTemplatesOn())) return std::nullopt;
+    if (usesBda && !moved.empty() && !spaceReuse && !(bdaTemplate && BdaTemplatesOn())) return std::nullopt;
     return moved;
 }
 

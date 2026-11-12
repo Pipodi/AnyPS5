@@ -12346,6 +12346,7 @@ void unorm10_11_11BlendTests() {
         merge.target = 0u;
         merge.mask = 7u;
         merge.samples = 1u;
+        merge.packing = ShaderRecompiler::ColorExportPacking::Unorm4_4_4_4;
         expectFailure([&] { static_cast<void>(ShaderRecompiler::Recompile(both)); }, "is both blended through its storage image and merged in the pixel shader");
     }
     const ShaderRecompiler::RequestSerializer serializer;

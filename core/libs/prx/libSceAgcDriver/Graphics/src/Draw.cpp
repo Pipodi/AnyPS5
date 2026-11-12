@@ -2241,6 +2241,7 @@ struct DrawPlan {
     std::uint32_t meshLayerStride = 0;
     VertexInputLayout vertexInput;
     std::shared_ptr<const VertexInputLayout> retainedVertexInput;
+    bool buildVertexInput = false;
     bool candidate = false;
     bool keyed = false;
     ResourceCache::Key contentKey;
@@ -2329,7 +2330,7 @@ DrawPlan planDraw(const Context& context, const State& state, const Pm4::DrawPar
         aheadDrawUses.fetch_add(1, std::memory_order_relaxed);
     } else if (!attributes.empty()) {
         if (context.vertexInputs != nullptr) plan.retainedVertexInput = context.vertexInputs->TryGet(shaders.front().program->variantId, attributes);
-        if (plan.retainedVertexInput == nullptr) plan.vertexInput = BuildVertexInputLayout(context, attributes);
+        plan.buildVertexInput = plan.retainedVertexInput == nullptr;
     }
     timer.charge(PhaseVertex, layoutStart);
     static const bool noDrawResourceCache = std::getenv("APS5_NO_DRAW_RESOURCE_CACHE") != nullptr;
@@ -2640,6 +2641,11 @@ DrawInputs prepareDrawInputs(const Context& context, const State& state, const P
     APS5_LOG_CHARS_OUT_DEBUG("Index validation OK");
     timing.Mark("index_upload");
     const auto& attributes = shaders.front().program->vertexAttributes;
+    if (drawPlan.buildVertexInput) {
+        const auto layoutStart = timer.profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        inputs.vertexInput = BuildVertexInputLayout(context, attributes);
+        timer.charge(PhaseVertex, layoutStart);
+    }
     inputs.vertexOffsets.assign(attributes.size(), 0);
     inputs.vertexHandles.reserve(attributes.size());
     // An indexed draw's vertex offset moves every fetch: the copy must reach the last one.
@@ -2911,7 +2917,14 @@ ResolvedResources resolveDrawResources(const Context& context, const State& stat
                     }
                 }
             }
-            const bool valid = spaceHeld && cached->Revalidate(shaders);
+            const bool addressBased = cached->ReusesAddressSpace();
+            if (addressBased && cached->InUse() && !cached->SharesUses()) {
+                inUse = true;
+                spaceHeld = false;
+                CountAddressReuse(AddressReuse::InUse);
+            }
+            const auto proofStart = addressBased && timer.profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+            const bool valid = spaceHeld && cached->Revalidate(shaders, nullptr, snapshots);
             if (counted && spaceHeld && !valid) reuse = AddressDrawReuse::Revalidation;
             auto* recorder = Recorder::Active();
             std::optional<std::vector<ShaderResources::MovedBuffer>> moved;
@@ -2927,8 +2940,13 @@ ResolvedResources resolveDrawResources(const Context& context, const State& stat
                 outcome.kind = KindTemplateHit;
                 countCache(&DrawProfile::cacheHits);
                 if (counted) reuse = AddressDrawReuse::Reused;
+                if (addressBased) CountAddressReuse(AddressReuse::Reused);
             } else if (valid || inUse) {
                 if (valid && cached->SpaceReuse()) static_cast<void>(cached->ReleaseSpace());
+                if (valid && addressBased) {
+                    CountAddressReuse(AddressReuse::Moved, timer.profile ? static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - proofStart).count()) : 0);
+                    cached->EndUse();
+                }
                 if (valid && counted) reuse = patched ? AddressDrawReuse::PatchedData : AddressDrawReuse::MovedBuffer;
                 countCache(&DrawProfile::cacheMisses);
             } else {
