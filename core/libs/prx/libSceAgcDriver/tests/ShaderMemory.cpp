@@ -5793,7 +5793,7 @@ void verifyImageTableRegistration() {
     auto atomic64Code = storeCode;
     atomic64Code[8] = 0xf0440308u;
     guest.heap[0] = TableT(texture.bytes.data(), TableFormat32_32UInt, TableType2D);
-    static constexpr std::array<std::uint32_t, 5> int64ImageCapabilities{29u, spv::CapabilityInt64, spv::CapabilityPhysicalStorageBufferAddresses, spv::CapabilityStorageBuffer8BitAccess, spv::CapabilityInt64ImageEXT};
+    static constexpr std::array<std::uint32_t, 8> int64ImageCapabilities{29u, spv::CapabilityInt64, spv::CapabilityPhysicalStorageBufferAddresses, spv::CapabilityStorageBuffer8BitAccess, spv::CapabilityStorageImageArrayDynamicIndexing, spv::CapabilityStorageImageWriteWithoutFormat, spv::CapabilityStorageImageArrayNonUniformIndexing, spv::CapabilityInt64ImageEXT};
     auto atomic64Request = TableRequest(atomic64Code, userData);
     atomic64Request.target.supportedCapabilities = int64ImageCapabilities;
     const auto atomic64 = CompileTable(atomic64Request);
