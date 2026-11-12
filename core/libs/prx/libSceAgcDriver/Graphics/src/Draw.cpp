@@ -2940,6 +2940,7 @@ ResolvedResources resolveDrawResources(const Context& context, const State& stat
                 outcome.kind = KindTemplateHit;
                 countCache(&DrawProfile::cacheHits);
                 if (counted) reuse = AddressDrawReuse::Reused;
+                else if (address == AddressStages::ReadOnly && !reuse.has_value()) reuse = AddressDrawReuse::NotSpaceOnly;
                 if (addressBased) CountAddressReuse(AddressReuse::Reused);
             } else if (valid || inUse) {
                 if (valid && cached->SpaceReuse()) static_cast<void>(cached->ReleaseSpace());
