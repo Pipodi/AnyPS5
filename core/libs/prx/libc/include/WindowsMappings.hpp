@@ -3,6 +3,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include "prx/libc/include/HostThreadLocal.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -1245,7 +1246,8 @@ private:
                 return;
             }
             const ResetWindow window(ownedResets, true);
-            thread_local std::vector<void*> taken;
+            struct TakenTag {};
+            auto& taken = HostThreadLocal<std::vector<void*>, TakenTag>();
             taken.resize((to - resetFrom + 4095) / 4096);
             ULONG_PTR reported = taken.size();
             DWORD granularity = 0;
@@ -1383,7 +1385,8 @@ private:
         const auto low = ownedPending.lower_bound(first & ~std::uintptr_t{subpageBytes - 1});
         const auto high = ownedPending.lower_bound(stop);
         if (low == high) return reported;
-        thread_local std::vector<std::uintptr_t> merged;
+        struct MergedTag {};
+        auto& merged = HostThreadLocal<std::vector<std::uintptr_t>, MergedTag>();
         merged.clear();
         std::size_t index = 0;
         for (auto it = low; index < reported || it != high;) {
@@ -1408,7 +1411,8 @@ private:
     bool blockWritten(std::uintptr_t block) {
         const auto found = ownedLayouts.find(block);
         if (found == ownedLayouts.end()) return true;
-        thread_local std::vector<OwnedRun> runs;
+        struct LayoutRunsTag {};
+        auto& runs = HostThreadLocal<std::vector<OwnedRun>, LayoutRunsTag>();
         runs.clear();
         appendRuns(runs, block, found->second, block, block + ownedBlockBytes);
         for (const auto& run : runs) {
@@ -1429,7 +1433,8 @@ private:
     // bit (a store after the arming, which reset the bits); Moved: a word moved or the range is not
     // armed; Unsure: a query failed while the words held.
     OwnedAnswer ownedQuery(std::uintptr_t address, std::size_t bytes, std::uintptr_t first, std::uintptr_t stop, const std::uint64_t* words) {
-        thread_local std::vector<OwnedRun> runs;
+        struct QueryRunsTag {};
+        auto& runs = HostThreadLocal<std::vector<OwnedRun>, QueryRunsTag>();
         runs.clear();
         const auto from = address & ~std::uintptr_t{subpageBytes - 1};
         const auto to = (address + bytes + subpageBytes - 1) & ~std::uintptr_t{subpageBytes - 1};
