@@ -5808,11 +5808,9 @@ void verifyImageTableRegistration() {
     static_cast<void>(requireSupportedStore(packedStore, "image_store_pck"));
     const std::array<std::uint64_t, 3> storageTableSpirvHashes{store.result->spirv.ContentHash().low, atomic.result->spirv.ContentHash().low, packedStore.result->spirv.ContentHash().low};
     static constexpr std::array<std::uint64_t, 3> recordedStorageTableSpirvHashes{0xaa7cab3b43c23977u, 0x4898c1b7129c40du, 0x783c0061a1e3001du};
-    static constexpr std::array<std::uint64_t, 3> recordedAtomicLoadStorageTableSpirvHashes{0x8ffca37a68c619d3u, 0x4898c1b7129c40du, 0x783c0061a1e3001du};
-    const auto& expectedStorageTableHashes = std::getenv("APS5_COHERENT_ATOMIC_LOADS") != nullptr ? recordedAtomicLoadStorageTableSpirvHashes : recordedStorageTableSpirvHashes;
     for (std::size_t index = 0; index < storageTableSpirvHashes.size(); ++index) {
         require(storageTableSpirvHashes[index] != 0u, "image table registration: a storage table program produced no SPIR-V");
-        require(expectedStorageTableHashes[index] == storageTableSpirvHashes[index], "image table registration: the SPIR-V of a storage table program changed");
+        require(recordedStorageTableSpirvHashes[index] == storageTableSpirvHashes[index], "image table registration: the SPIR-V of a storage table program changed");
     }
     auto swapCode = storeCode;
     swapCode[8] = (swapCode[8] & ~(0x7fu << 18u)) | (0x0fu << 18u);
