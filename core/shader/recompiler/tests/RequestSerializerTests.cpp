@@ -97,7 +97,7 @@ void VerifyMemoryView() {
     Require(copy.context.memory.data() == owned.data() && copy.context.memory.front().bytes.data() == bytes.data());
     request.context.memory = {owned.data(), owned.size()};
     const ShaderRecompiler::RequestSerializer serializer;
-    const auto replay = serializer.Deserialize(SerializeVersion156(request));
+    const auto replay = serializer.Deserialize(serializer.Serialize(request));
     Require(replay.request.context.memory.size() == 1u && replay.request.context.memory.front().guestAddress == 0x4000u);
     Require(std::ranges::equal(replay.request.context.memory.front().bytes, bytes));
     request.context.memory = {};

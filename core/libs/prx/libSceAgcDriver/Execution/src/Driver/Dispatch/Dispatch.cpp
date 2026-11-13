@@ -151,8 +151,7 @@ void ReportDispatchItems(bool profile) {
         drained += item;
     }
     if (itemMisses.load(std::memory_order_relaxed) + itemRecipeLess.load(std::memory_order_relaxed) + itemNotPlain.load(std::memory_order_relaxed) != 0)
-        std::fprintf(stderr, "[dispatch-item] main miss items: %llu queued after a cache miss, %llu queued without a recipe, %llu cached ones kept off the queue as not plain
-", static_cast<unsigned long long>(itemMisses.load(std::memory_order_relaxed)), static_cast<unsigned long long>(itemRecipeLess.load(std::memory_order_relaxed)), static_cast<unsigned long long>(itemNotPlain.load(std::memory_order_relaxed)));
+        std::fprintf(stderr, "[dispatch-item] main miss items: %llu queued after a cache miss, %llu queued without a recipe, %llu cached ones kept off the queue as not plain\n", static_cast<unsigned long long>(itemMisses.load(std::memory_order_relaxed)), static_cast<unsigned long long>(itemRecipeLess.load(std::memory_order_relaxed)), static_cast<unsigned long long>(itemNotPlain.load(std::memory_order_relaxed)));
     std::fprintf(stderr, "[dispatch-item] %llu commit items (%llu recipes rebuilt on the committer), %llu miss items (%llu refused on the committer); drained instead, cumulative:%s\n", static_cast<unsigned long long>(itemCommits.load(std::memory_order_relaxed)), static_cast<unsigned long long>(itemRebuilds.load(std::memory_order_relaxed)), static_cast<unsigned long long>(missItemCommits.load(std::memory_order_relaxed)), static_cast<unsigned long long>(missItemRefusals.load(std::memory_order_relaxed)), drained.c_str());
 }
 
