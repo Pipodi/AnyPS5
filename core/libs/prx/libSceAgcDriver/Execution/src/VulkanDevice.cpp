@@ -6980,7 +6980,7 @@ PlannedComputeLayout planComputeLayout(const Graphics::Context& context, const S
         switch (binding.role) {
             case Role::ImageTable: {
                 const bool storage = binding.kind == Kind::StorageImage;
-                Graphics::Require((storage || binding.kind == Kind::SampledImage) && binding.binding == (storage ? ShaderRecompiler::RuntimeAbi::StorageImageTableBinding : ShaderRecompiler::RuntimeAbi::ImageTableBinding), "pipeline-only: unsupported descriptor layout");
+                Graphics::Require((storage || binding.kind == Kind::SampledImage) && binding.binding == (storage ? ShaderRecompiler::RuntimeAbi::ImageStorageTableBinding : ShaderRecompiler::RuntimeAbi::ImageTableBinding), "pipeline-only: unsupported descriptor layout");
                 (storage ? storageTable : sampledTable) = &binding;
                 break;
             }
@@ -7021,7 +7021,7 @@ PlannedComputeLayout planComputeLayout(const Graphics::Context& context, const S
     if (storageTable != nullptr) {
         storageTableDescriptors = Graphics::StorageImageTableDescriptorCount(context, elements, sampledTable != nullptr);
         Graphics::Require(storageTableDescriptors != 0, "pipeline-only: storage image tables exceed device descriptor limits");
-        append(ShaderRecompiler::RuntimeAbi::StorageImageTableBinding, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, storageTableDescriptors, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+        append(ShaderRecompiler::RuntimeAbi::ImageStorageTableBinding, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, storageTableDescriptors, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
     }
     if (sampledTable != nullptr) {
         const auto capacity = storageTableDescriptors == 0 ? context.imageTableCapacity : std::min(context.imageTableCapacity, Graphics::ImageTableCapacity(context, storageTableDescriptors));

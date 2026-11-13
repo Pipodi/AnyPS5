@@ -5772,7 +5772,7 @@ void verifyImageTableRegistration() {
     const auto storeFault = storeMap[Abi::TableHeader(0) + Abi::TableFault];
     require(storeFault == 0u, "image table registration: an ordinary store has a whole-table fault");
     const auto* stores = TableBinding(*store.result, DescriptorRole::ImageTable);
-    require(stores != nullptr && stores->kind == DescriptorKind::StorageImage && !stores->readOnly && stores->binding == RuntimeAbi::StorageImageTableBinding && stores->count == 2u && std::all_of(stores->imageWritten.begin(), stores->imageWritten.end(), [](bool written) { return written; }), "image table registration: storage elements lack their writable binding");
+    require(stores != nullptr && stores->kind == DescriptorKind::StorageImage && !stores->readOnly && stores->binding == RuntimeAbi::ImageStorageTableBinding && stores->count == 2u && std::all_of(stores->imageWritten.begin(), stores->imageWritten.end(), [](bool written) { return written; }), "image table registration: storage elements lack their writable binding");
     const auto storageTable = [&](const auto& compiled) {
         const auto* binding = TableBinding(*compiled.result, DescriptorRole::ImageTable);
         return binding != nullptr && binding->kind == DescriptorKind::StorageImage ? binding : nullptr;
@@ -12303,7 +12303,7 @@ void verifyRuntimeImageSwitchDeduplication() {
             program.Metadata().bindings.descriptors = {
                 {DescriptorBindingKind::FaultBuffer, {}},
                 {DescriptorBindingKind::ImageTableMap, {}},
-                {DescriptorBindingKind::StorageImageTable, {}},
+                {DescriptorBindingKind::ImageStorageTable, {}},
             };
         }
         program.Info().images.push_back(image);

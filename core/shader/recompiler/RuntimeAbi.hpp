@@ -32,7 +32,7 @@ enum class Binding : std::uint32_t {
     ImageTableMap = 64u,
     Count = 65u,
     ImageTable = 256u,
-    StorageImageTable = 257u
+    ImageStorageTable = 257u
 };
 
 enum class Stage : std::uint32_t { Main, Fragment, TessellationControl, TessellationEvaluation };
@@ -100,12 +100,12 @@ inline void RequireVersion(std::uint32_t version) {
     if (version != Version) throw std::runtime_error("Shader runtime ABI: incompatible version");
 }
 
-inline constexpr std::uint32_t StorageImageTableBinding = StageCount * static_cast<std::uint32_t>(Binding::Count);
-inline constexpr std::uint32_t ImageTableBinding = StorageImageTableBinding + 1u;
+inline constexpr std::uint32_t ImageStorageTableBinding = StageCount * static_cast<std::uint32_t>(Binding::Count);
+inline constexpr std::uint32_t ImageTableBinding = ImageStorageTableBinding + 1u;
 
 inline std::uint32_t BindingNumber(Stage stage, Binding binding) {
     if (binding == Binding::ImageTable) return ImageTableBinding;
-    if (binding == Binding::StorageImageTable) return StorageImageTableBinding;
+    if (binding == Binding::ImageStorageTable) return ImageStorageTableBinding;
     const auto group = static_cast<std::uint32_t>(stage);
     const auto index = static_cast<std::uint32_t>(binding);
     const auto count = static_cast<std::uint32_t>(Binding::Count);
@@ -121,7 +121,7 @@ inline bool UintStorageImageBinding(std::uint32_t number) {
 }
 
 static_assert(FirstImageBinding + ImageBindingCount == static_cast<std::uint32_t>(Binding::Samplers));
-static_assert(static_cast<std::uint32_t>(Binding::ImageTable) > static_cast<std::uint32_t>(Binding::Count) && StorageImageTableBinding == 260u && ImageTableBinding == 261u);
+static_assert(static_cast<std::uint32_t>(Binding::ImageTable) > static_cast<std::uint32_t>(Binding::Count) && ImageStorageTableBinding == 260u && ImageTableBinding == 261u);
 
 }
 

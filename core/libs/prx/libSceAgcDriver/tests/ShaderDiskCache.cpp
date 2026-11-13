@@ -281,7 +281,7 @@ RecompileResult sampleResult() {
     DescriptorBinding stores{};
     stores.kind = DescriptorKind::StorageImage;
     stores.role = DescriptorRole::ImageTable;
-    stores.binding = RuntimeAbi::StorageImageTableBinding;
+    stores.binding = RuntimeAbi::ImageStorageTableBinding;
     stores.count = 2u;
     stores.guestDescriptor = {0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0x123400u, 13u << 20u, 0u, 0x9000024cu, 0u, 0u, 0u, 0u};
     stores.imageShapes = {DescriptorImageShape::Image2D, DescriptorImageShape::Image2D};
@@ -426,7 +426,7 @@ CompiledVariant sampleVariant() {
     info.bindings.memoryOffsetCount = 5;
     info.bindings.stencilReferenceDword = 23u;
     info.bindings.userDataRegisters = {4, 5, 9};
-    info.bindings.descriptors = {{DescriptorBindingKind::Buffers, {0, 1}}, {DescriptorBindingKind::FlattenedSrt, {}}, {DescriptorBindingKind::StorageImageTable, {}}};
+    info.bindings.descriptors = {{DescriptorBindingKind::Buffers, {0, 1}}, {DescriptorBindingKind::FlattenedSrt, {}}, {DescriptorBindingKind::ImageStorageTable, {}}};
     variant.bindings.layout = info.bindings;
     variant.bindings.pushConstantOffsetBytes = 16;
     variant.bindings.pushConstantSizeBytes = 112;

@@ -7753,7 +7753,7 @@ void storageImageTableSizeClassTests() {
         map.guestDescriptor[Abi::HeaderSamplerFaults] = Abi::HeaderWords + count;
         program.bindings.push_back(std::move(map));
         for (const bool storage : {false, true}) {
-            auto images = makeBinding(Role::ImageTable, storage ? Runtime::StorageImageTableBinding : Runtime::ImageTableBinding, count, std::vector<std::uint32_t>(count * 8u));
+            auto images = makeBinding(Role::ImageTable, storage ? Runtime::ImageStorageTableBinding : Runtime::ImageTableBinding, count, std::vector<std::uint32_t>(count * 8u));
             images.kind = storage ? Kind::StorageImage : Kind::SampledImage;
             images.imageShapes.resize(count, ShaderRecompiler::DescriptorImageShape::Image2D);
             images.imageDepthCompare.resize(count);
@@ -7777,7 +7777,7 @@ void storageImageTableSizeClassTests() {
                 const AgcDriver::Graphics::CompiledShader shader{ShaderRecompiler::ShaderStage::Compute, &program, 0};
                 AgcDriver::Graphics::ShaderResources resources(allocationContext, shader, {}, true);
                 const auto expected = count <= 512u ? 512u : 1024u;
-                Require(findLayoutBinding(Runtime::StorageImageTableBinding).descriptorCount == expected, "storage allocation did not use the bounded size class");
+                Require(findLayoutBinding(Runtime::ImageStorageTableBinding).descriptorCount == expected, "storage allocation did not use the bounded size class");
                 Require(findLayoutBinding(Runtime::ImageTableBinding).descriptorCount == 1024u && mock.variableDescriptorCount == count, "storage padding changed sampled capacity or the actual variable allocation");
                 if (count == 200u) { firstKey = resources.LayoutKey(); firstLayout = resources.Layout(); }
                 Require((resources.LayoutKey() == firstKey) == (count <= 512u), "different storage counts did not share exactly their layout class");
@@ -7806,7 +7806,7 @@ void storageImageTableSizeClassTests() {
         const auto program = programFor(200u);
         const AgcDriver::Graphics::CompiledShader shader{ShaderRecompiler::ShaderStage::Compute, &program, 0};
         AgcDriver::Graphics::ShaderResources resources(limited, shader, {}, true);
-        Require(findLayoutBinding(Runtime::StorageImageTableBinding).descriptorCount == 200u && findLayoutBinding(Runtime::ImageTableBinding).descriptorCount == 200u, "storage padding stole previously available sampled descriptors");
+        Require(findLayoutBinding(Runtime::ImageStorageTableBinding).descriptorCount == 200u && findLayoutBinding(Runtime::ImageTableBinding).descriptorCount == 200u, "storage padding stole previously available sampled descriptors");
         resources.Complete();
     }
     Require(mock.live == 0, "joint-budget storage class leaked Vulkan objects");
@@ -7817,7 +7817,7 @@ void storageImageTableSizeClassTests() {
         vertex.bindings.front().binding = Runtime::BindingNumber(Runtime::Stage::Main, Runtime::Binding::ImageTableMap);
         fragment.bindings.front().binding = Runtime::BindingNumber(Runtime::Stage::Fragment, Runtime::Binding::ImageTableMap);
         AgcDriver::Graphics::ShaderResources resources(context, vertex, fragment, {}, 0, 0);
-        Require(findLayoutBinding(Runtime::StorageImageTableBinding).descriptorCount == 512u && mock.variableDescriptorCount == 470u, "graphics stages were padded separately instead of sharing their exact aggregate domain");
+        Require(findLayoutBinding(Runtime::ImageStorageTableBinding).descriptorCount == 512u && mock.variableDescriptorCount == 470u, "graphics stages were padded separately instead of sharing their exact aggregate domain");
         for (const auto& [program, count, base] : {std::tuple{&vertex, 200u, 0u}, {&fragment, 270u, 200u}}) {
             const auto& bytes = bufferBytes(findWrite(program->bindings.front().binding).buffers.at(0).buffer);
             std::vector<std::uint32_t> map(bytes.size() / sizeof(std::uint32_t));
@@ -7853,7 +7853,7 @@ void storageImageTableAllocationTests() {
             map.guestDescriptor[Abi::HeaderSamplerFaults] = Abi::HeaderWords + count;
             program.bindings.push_back(map);
             for (const bool storage : {storageFirst, !storageFirst}) {
-                auto images = makeBinding(Role::ImageTable, storage ? Runtime::StorageImageTableBinding : Runtime::ImageTableBinding, count, std::vector<std::uint32_t>(count * 8u));
+                auto images = makeBinding(Role::ImageTable, storage ? Runtime::ImageStorageTableBinding : Runtime::ImageTableBinding, count, std::vector<std::uint32_t>(count * 8u));
                 images.kind = storage ? Kind::StorageImage : Kind::SampledImage;
                 images.imageShapes.resize(count, ShaderRecompiler::DescriptorImageShape::Image2D);
                 images.imageDepthCompare.resize(count);
@@ -7870,7 +7870,7 @@ void storageImageTableAllocationTests() {
                 const AgcDriver::Graphics::CompiledShader shader{ShaderRecompiler::ShaderStage::Compute, &program, 0};
                 AgcDriver::Graphics::ShaderResources resources(context, shader, {}, true);
                 const auto storageCount = std::max(1u, std::min(count, 2u));
-                const auto& storage = findLayoutBinding(Runtime::StorageImageTableBinding);
+                const auto& storage = findLayoutBinding(Runtime::ImageStorageTableBinding);
                 const auto& sampled = findLayoutBinding(Runtime::ImageTableBinding);
                 Require(storage.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE && storage.descriptorCount == storageCount && sampled.descriptorCount == std::min(2u, 3u - storageCount), "mixed image tables exceeded their combined resource budget");
                 const auto pool = std::find_if(mock.poolSizes.begin(), mock.poolSizes.end(), [](const auto& size) { return size.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; });

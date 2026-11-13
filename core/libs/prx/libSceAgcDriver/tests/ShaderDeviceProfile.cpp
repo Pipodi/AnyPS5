@@ -207,7 +207,7 @@ void CheckAbi() {
             Require(ShaderRecompiler::RuntimeAbi::UintStorageImageBinding(BindingNumber(static_cast<Stage>(stage), static_cast<Binding>(binding))) == uint, "stage " + std::to_string(stage) + " binding " + std::to_string(binding) + " is not classified by its stage-local uint storage image slot");
         }
     }
-    Require(!ShaderRecompiler::RuntimeAbi::UintStorageImageBinding(ShaderRecompiler::RuntimeAbi::StorageImageTableBinding) && !ShaderRecompiler::RuntimeAbi::UintStorageImageBinding(ShaderRecompiler::RuntimeAbi::ImageTableBinding), "an image table binding is classified as a uint storage image slot");
+    Require(!ShaderRecompiler::RuntimeAbi::UintStorageImageBinding(ShaderRecompiler::RuntimeAbi::ImageStorageTableBinding) && !ShaderRecompiler::RuntimeAbi::UintStorageImageBinding(ShaderRecompiler::RuntimeAbi::ImageTableBinding), "an image table binding is classified as a uint storage image slot");
     Reject([] { BindingNumber(static_cast<Stage>(4u), Binding::Buffers); }, "invalid stage or binding");
     Reject([] { BindingNumber(Stage::Main, Binding::Count); }, "invalid stage or binding");
     Reject([] { ShaderRecompiler::RuntimeAbi::RequireVersion(0u); }, "incompatible version");
