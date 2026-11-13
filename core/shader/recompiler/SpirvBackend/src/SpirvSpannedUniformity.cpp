@@ -540,6 +540,10 @@ private:
 
 }
 
+bool SpannedSnapshotLoadsEnabled(const char* optOut) {
+    return optOut == nullptr;
+}
+
 std::optional<std::string> SpannedBarrierInDivergentFlow(std::span<const std::uint32_t> words, std::span<const std::uint32_t> snapshotVariables) {
     bool barrier = false;
     for (std::size_t cursor = 5u; !barrier && cursor < words.size(); cursor += std::max(words[cursor] >> 16u, 1u)) barrier = (words[cursor] & 0xffffu) == spv::OpControlBarrier;

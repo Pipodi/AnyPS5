@@ -8,6 +8,8 @@
 
 namespace ShaderRecompiler {
 
+[[nodiscard]] bool SpannedSnapshotLoadsEnabled(const char* optOut);
+
 [[nodiscard]] std::optional<std::string> SpannedBarrierInDivergentFlow(std::span<const std::uint32_t> words, std::span<const std::uint32_t> snapshotVariables = {});
 
 }

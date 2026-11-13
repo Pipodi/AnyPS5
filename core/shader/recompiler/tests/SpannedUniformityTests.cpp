@@ -337,5 +337,10 @@ int main() {
         module.emit(spv::OpLoad, {Uint, First + 6u, First + 5u});
         module.emit(spv::OpIEqual, {Bool, First + 8u, First + 6u, Two});
     }), true, listedSnapshot);
+    const auto snapshotsFor = [&](const char* optOut) {
+        return ShaderRecompiler::SpannedSnapshotLoadsEnabled(optOut) ? std::span<const std::uint32_t>(listedSnapshot) : std::span<const std::uint32_t>();
+    };
+    expect("a barrier under a snapshot word read at a uniform index with the default", joined(snapshotRead(Snapshot)), false, snapshotsFor(nullptr));
+    expect("a barrier under a snapshot word read at a uniform index with the opt-out set", joined(snapshotRead(Snapshot)), true, snapshotsFor("1"));
     return failed ? EXIT_FAILURE : EXIT_SUCCESS;
 }
