@@ -505,6 +505,7 @@ void CachedLookupFollowsTheImportTable() {
     HostImportLookupCache removed;
     static_cast<void>(HostImportForCached(context, heap.Address(), 4096, removed));
     heap.Grow();
+    PromoteThroughBuild(context);
     const auto* grown = HostImportForCached(context, heap.Address(), 4096, removed);
     Expect(grown != nullptr && grown == HostImportFor(context, heap.Address(), 4096) && grown->buffer != firstBuffer && grown->bytes == 2 * RangeBytes, "a dropped import was still answered from the cache");
     Expect(removed.import == grown && HostImportForCached(context, heap.Address(), 4096, removed) == grown, "the cache did not refill after the import was dropped");
