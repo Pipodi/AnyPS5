@@ -495,7 +495,7 @@ struct ComputePipelineKey {
         auto identity = shader.Identity();
         static const bool exactCounts = std::getenv("APS5_TABLE_COUNT_NEUTRAL_PIPELINES") == nullptr;
         if (identity.Empty() || exactCounts) return {identity, pushConstants};
-        const bool storageTable = std::any_of(shader.bindings.begin(), shader.bindings.end(), [](const ShaderRecompiler::DescriptorBinding& binding) { return binding.role == Role::ImageTable && binding.kind == Kind::StorageImage; });
+        const bool storageTable = std::any_of(shader.bindings.begin(), shader.bindings.end(), [](const ShaderRecompiler::DescriptorBinding& binding) { return binding.role == Role::ImageStorageTable; });
         if (storageTable) return {identity, pushConstants};
         const auto hash = shader.spirv.ContentHash();
         identity = {hash.low, hash.high};
@@ -6978,7 +6978,8 @@ PlannedComputeLayout planComputeLayout(const Graphics::Context& context, const S
     for (const auto& binding : shader.bindings) {
         Graphics::Require(binding.descriptorSet == 0 && occupied.insert(binding.binding).second, "pipeline-only: unsupported descriptor layout");
         switch (binding.role) {
-            case Role::ImageTable: {
+            case Role::ImageTable:
+            case Role::ImageStorageTable: {
                 const bool storage = binding.kind == Kind::StorageImage;
                 Graphics::Require((storage || binding.kind == Kind::SampledImage) && binding.binding == (storage ? ShaderRecompiler::RuntimeAbi::ImageStorageTableBinding : ShaderRecompiler::RuntimeAbi::ImageTableBinding), "pipeline-only: unsupported descriptor layout");
                 (storage ? storageTable : sampledTable) = &binding;

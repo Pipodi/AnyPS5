@@ -3085,6 +3085,7 @@ const char* roleName(ShaderRecompiler::DescriptorRole role) {
         case ShaderRecompiler::DescriptorRole::FlattenedSrt: return "FlattenedSrt";
         case ShaderRecompiler::DescriptorRole::ShaderData: return "ShaderData";
         case ShaderRecompiler::DescriptorRole::ImageTable: return "ImageTable";
+        case ShaderRecompiler::DescriptorRole::ImageStorageTable: return "ImageStorageTable";
         case ShaderRecompiler::DescriptorRole::SamplerTable: return "SamplerTable";
         case ShaderRecompiler::DescriptorRole::ImageTableMap: return "ImageTableMap";
     }
@@ -3675,7 +3676,7 @@ void ShaderResources::buildPrepare(std::span<const CompiledShader> shaders, cons
             };
             for (const auto& binding : shader.program->bindings) {
                 Require(binding.descriptorSet == ShaderRecompiler::RuntimeAbi::DescriptorSet || (shader.stage == ShaderRecompiler::ShaderStage::Fragment && binding.descriptorSet == ShaderRecompiler::RuntimeAbi::FragmentDescriptorSet), "unexpected descriptor set: a shader resource must use its stage's descriptor set");
-                if (binding.role == ShaderRecompiler::DescriptorRole::ImageTable) {
+                if (binding.role == ShaderRecompiler::DescriptorRole::ImageTable || binding.role == ShaderRecompiler::DescriptorRole::ImageStorageTable) {
                     const bool storage = binding.kind == ShaderRecompiler::DescriptorKind::StorageImage;
                     Require((storage || binding.kind == ShaderRecompiler::DescriptorKind::SampledImage) && binding.binding == (storage ? ShaderRecompiler::RuntimeAbi::ImageStorageTableBinding : ShaderRecompiler::RuntimeAbi::ImageTableBinding) && binding.guestDescriptor.size() == static_cast<std::size_t>(binding.count) * 8u && binding.imageShapes.size() == binding.count && binding.imageDepthCompare.size() == binding.count && binding.imageSamplers.size() == binding.count && (!storage || (!binding.readOnly && binding.imageWritten.size() == binding.count)), "image table binding is malformed");
                     auto& table = tableStage(shader);
@@ -3987,7 +3988,7 @@ DescribedSetLayouts DescribeSetLayouts(const Context& context, std::span<const C
         std::size_t tableSet = 0;
         for (const auto& binding : shader.program->bindings) {
             const auto set = binding.descriptorSet == ShaderRecompiler::RuntimeAbi::FragmentDescriptorSet ? 1 : 0;
-            if (binding.role == ShaderRecompiler::DescriptorRole::ImageTable) {
+            if (binding.role == ShaderRecompiler::DescriptorRole::ImageTable || binding.role == ShaderRecompiler::DescriptorRole::ImageStorageTable) {
                 tableSet = static_cast<std::size_t>(set);
                 (binding.kind == ShaderRecompiler::DescriptorKind::StorageImage ? storageTableFlags : tableFlags)[tableSet] |= flags;
                 stageTableElements = std::max(stageTableElements, binding.count);
@@ -4531,7 +4532,7 @@ void VisitContentKey(const CompiledShader& shader, bool dataWords, bool movableB
     };
     for (const auto& binding : program.bindings) {
         for (const auto word : {static_cast<std::uint32_t>(binding.kind), static_cast<std::uint32_t>(binding.role), binding.descriptorSet, binding.binding, binding.count, binding.readOnly ? 1u : 0u, binding.imageShape.has_value() ? static_cast<std::uint32_t>(*binding.imageShape) + 1u : 0u, static_cast<std::uint32_t>(binding.guestDescriptor.size())}) visit(word);
-        if (binding.role == ShaderRecompiler::DescriptorRole::ImageTable && binding.guestDescriptor.size() > CompactTableKeyWords) {
+        if ((binding.role == ShaderRecompiler::DescriptorRole::ImageTable || binding.role == ShaderRecompiler::DescriptorRole::ImageStorageTable) && binding.guestDescriptor.size() > CompactTableKeyWords) {
             TableKeyHash hash;
             hash.bytes(binding.guestDescriptor.data(), binding.guestDescriptor.size() * sizeof(std::uint32_t));
             hash.bytes(binding.imageSamplers.data(), binding.imageSamplers.size() * sizeof(binding.imageSamplers[0]));
@@ -4662,7 +4663,7 @@ void ShaderResources::AppendContentKey(const CompiledShader& shader, bool dataWo
     };
     for (const auto& binding : shader.program->bindings) {
         addWords(20);
-        if (binding.role == ShaderRecompiler::DescriptorRole::ImageTable && binding.guestDescriptor.size() > CompactTableKeyWords) continue;
+        if ((binding.role == ShaderRecompiler::DescriptorRole::ImageTable || binding.role == ShaderRecompiler::DescriptorRole::ImageStorageTable) && binding.guestDescriptor.size() > CompactTableKeyWords) continue;
         addWords(binding.imageSamplers.size() * 2u);
         addWords(binding.imageShapes.size());
         if (binding.role == ShaderRecompiler::DescriptorRole::ImageTableMap && binding.guestDescriptor.size() > CompactTableKeyWords) addWords(5);
@@ -4704,7 +4705,7 @@ bool LabelShaderKey(std::span<const std::uint32_t> key, std::size_t at, std::siz
         for (std::uint32_t i = 0; i < words; ++i) {
             auto component = Component::Other;
             if (role == ShaderRecompiler::DescriptorRole::GuestBuffers) component = static_cast<Component>(static_cast<std::size_t>(Component::BufferWord0) + i % 4u);
-            else if (role == ShaderRecompiler::DescriptorRole::GuestImages || role == ShaderRecompiler::DescriptorRole::ImageTable) component = Component::Image;
+            else if (role == ShaderRecompiler::DescriptorRole::GuestImages || role == ShaderRecompiler::DescriptorRole::ImageTable || role == ShaderRecompiler::DescriptorRole::ImageStorageTable) component = Component::Image;
             else if (role == ShaderRecompiler::DescriptorRole::GuestSamplers || role == ShaderRecompiler::DescriptorRole::SamplerTable) component = Component::Sampler;
             else if (DataRole(role)) component = Component::ShaderData;
             labels[at + i] = static_cast<std::uint8_t>(component);
@@ -8344,7 +8345,7 @@ std::vector<PresyncSurface> ShaderResources::PresyncSurfaces() const {
         considerKeys(resource.dccAddress, guestBytes);
     });
     for (const auto& binding : deferredCompute.program->bindings) {
-        if (binding.role != ShaderRecompiler::DescriptorRole::ImageTable) continue;
+        if (binding.role != ShaderRecompiler::DescriptorRole::ImageTable && binding.role != ShaderRecompiler::DescriptorRole::ImageStorageTable) continue;
         for (std::size_t element = 0; element < binding.guestDescriptor.size() / 8u; ++element) {
             try {
                 const auto resource = DecodeTextureResource(std::span<const std::uint32_t>(binding.guestDescriptor).subspan(element * 8u, 8u));

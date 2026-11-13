@@ -280,7 +280,7 @@ RecompileResult sampleResult() {
     result.bindings[1].imageShape.reset();
     DescriptorBinding stores{};
     stores.kind = DescriptorKind::StorageImage;
-    stores.role = DescriptorRole::ImageTable;
+    stores.role = DescriptorRole::ImageStorageTable;
     stores.binding = RuntimeAbi::ImageStorageTableBinding;
     stores.count = 2u;
     stores.guestDescriptor = {0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0x123400u, 13u << 20u, 0u, 0x9000024cu, 0u, 0u, 0u, 0u};

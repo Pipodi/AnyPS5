@@ -7753,7 +7753,7 @@ void storageImageTableSizeClassTests() {
         map.guestDescriptor[Abi::HeaderSamplerFaults] = Abi::HeaderWords + count;
         program.bindings.push_back(std::move(map));
         for (const bool storage : {false, true}) {
-            auto images = makeBinding(Role::ImageTable, storage ? Runtime::ImageStorageTableBinding : Runtime::ImageTableBinding, count, std::vector<std::uint32_t>(count * 8u));
+            auto images = makeBinding(storage ? Role::ImageStorageTable : Role::ImageTable, storage ? Runtime::ImageStorageTableBinding : Runtime::ImageTableBinding, count, std::vector<std::uint32_t>(count * 8u));
             images.kind = storage ? Kind::StorageImage : Kind::SampledImage;
             images.imageShapes.resize(count, ShaderRecompiler::DescriptorImageShape::Image2D);
             images.imageDepthCompare.resize(count);
@@ -7853,7 +7853,7 @@ void storageImageTableAllocationTests() {
             map.guestDescriptor[Abi::HeaderSamplerFaults] = Abi::HeaderWords + count;
             program.bindings.push_back(map);
             for (const bool storage : {storageFirst, !storageFirst}) {
-                auto images = makeBinding(Role::ImageTable, storage ? Runtime::ImageStorageTableBinding : Runtime::ImageTableBinding, count, std::vector<std::uint32_t>(count * 8u));
+                auto images = makeBinding(storage ? Role::ImageStorageTable : Role::ImageTable, storage ? Runtime::ImageStorageTableBinding : Runtime::ImageTableBinding, count, std::vector<std::uint32_t>(count * 8u));
                 images.kind = storage ? Kind::StorageImage : Kind::SampledImage;
                 images.imageShapes.resize(count, ShaderRecompiler::DescriptorImageShape::Image2D);
                 images.imageDepthCompare.resize(count);

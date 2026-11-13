@@ -532,7 +532,7 @@ Outcome Execute(AgcDriver::VulkanDevice& device, std::span<const std::uint32_t> 
         }
         if (outcome.sampledTableBinding && outcome.storageTableBinding) {
             auto invalid = result;
-            for (auto& binding : invalid.bindings) if (binding.role == ShaderRecompiler::DescriptorRole::ImageTable && binding.kind == ShaderRecompiler::DescriptorKind::StorageImage) ++binding.count;
+            for (auto& binding : invalid.bindings) if (binding.role == ShaderRecompiler::DescriptorRole::ImageStorageTable) ++binding.count;
             std::string reason;
             try { static_cast<void>(device.WarmComputePipeline(invalid)); }
             catch (const std::exception& error) { reason = error.what(); }

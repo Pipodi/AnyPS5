@@ -4594,7 +4594,7 @@ bool prepareDraw(const Context& context, const State& state, const Pm4::DrawPara
             Require(!resources->ReadsOverlap(state.depth->address, bytes) && !resources->ReadsOverlap(state.depth->stencilAddress, bytes) && !inputOverlaps(state.depth->address, bytes) && !inputOverlaps(state.depth->stencilAddress, bytes), "stencil replay refuses depth or stencil feedback reads");
             for (const auto& shader : shaders) {
                 for (const auto& binding : shader.program->bindings) {
-                    if (binding.role != ShaderRecompiler::DescriptorRole::GuestImages && binding.role != ShaderRecompiler::DescriptorRole::ImageTable) continue;
+                    if (binding.role != ShaderRecompiler::DescriptorRole::GuestImages && binding.role != ShaderRecompiler::DescriptorRole::ImageTable && binding.role != ShaderRecompiler::DescriptorRole::ImageStorageTable) continue;
                     for (std::size_t offset = 0; offset + 8u <= binding.guestDescriptor.size(); offset += 8u) {
                         const auto words = std::span<const std::uint32_t>(binding.guestDescriptor).subspan(offset, 8u);
                         if (words[0] == 0u && (words[1] & 0xffu) == 0u) continue;

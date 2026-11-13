@@ -5771,10 +5771,10 @@ void verifyImageTableRegistration() {
     const auto& storeMap = TableMap(*store.result);
     const auto storeFault = storeMap[Abi::TableHeader(0) + Abi::TableFault];
     require(storeFault == 0u, "image table registration: an ordinary store has a whole-table fault");
-    const auto* stores = TableBinding(*store.result, DescriptorRole::ImageTable);
-    require(stores != nullptr && stores->kind == DescriptorKind::StorageImage && !stores->readOnly && stores->binding == RuntimeAbi::ImageStorageTableBinding && stores->count == 2u && std::all_of(stores->imageWritten.begin(), stores->imageWritten.end(), [](bool written) { return written; }), "image table registration: storage elements lack their writable binding");
+    const auto* stores = TableBinding(*store.result, DescriptorRole::ImageStorageTable);
+    require(stores != nullptr && stores->role == DescriptorRole::ImageStorageTable && stores->kind == DescriptorKind::StorageImage && !stores->readOnly && stores->binding == RuntimeAbi::ImageStorageTableBinding && stores->binding == 260u && stores->count == 2u && std::all_of(stores->imageWritten.begin(), stores->imageWritten.end(), [](bool written) { return written; }), "image table registration: storage elements lack their writable binding");
     const auto storageTable = [&](const auto& compiled) {
-        const auto* binding = TableBinding(*compiled.result, DescriptorRole::ImageTable);
+        const auto* binding = TableBinding(*compiled.result, DescriptorRole::ImageStorageTable);
         return binding != nullptr && binding->kind == DescriptorKind::StorageImage ? binding : nullptr;
     };
     const auto requireSupportedStore = [&](const auto& compiled, const char* name) {
@@ -5783,6 +5783,8 @@ void verifyImageTableRegistration() {
         const auto fault = TableMap(*compiled.result)[Abi::TableHeader(0) + Abi::TableFault];
         const auto* binding = storageTable(compiled);
         require((fault & Abi::PoisonFlag) == 0u && binding != nullptr && binding->count != 0u && std::all_of(binding->imageWritten.begin(), binding->imageWritten.end(), [](bool written) { return written; }), (std::string("image table registration: the ") + name + " table was not bound as written storage elements").c_str());
+        const auto* sampled = TableBinding(*compiled.result, DescriptorRole::ImageTable);
+        require(sampled == nullptr || sampled->count == 0u, (std::string("image table registration: the ") + name + " table bound sampled elements").c_str());
         return binding;
     };
     auto atomicCode = storeCode;
@@ -5804,6 +5806,14 @@ void verifyImageTableRegistration() {
     packedStoreCode[8] = 0xf0280f08u;
     const auto packedStore = CompileTable(TableRequest(packedStoreCode, userData));
     static_cast<void>(requireSupportedStore(packedStore, "image_store_pck"));
+    const std::array<std::uint64_t, 3> storageTableSpirvHashes{store.result->spirv.ContentHash().low, atomic.result->spirv.ContentHash().low, packedStore.result->spirv.ContentHash().low};
+    static constexpr std::array<std::uint64_t, 3> recordedStorageTableSpirvHashes{0u, 0u, 0u};
+    for (std::size_t index = 0; index < storageTableSpirvHashes.size(); ++index) {
+        require(storageTableSpirvHashes[index] != 0u, "image table registration: a storage table program produced no SPIR-V");
+        if (recordedStorageTableSpirvHashes[index] == 0u) std::cerr << "[storage-table-spirv] program " << index << " hash " << std::hex << storageTableSpirvHashes[index] << std::dec << '
+';
+        else require(recordedStorageTableSpirvHashes[index] == storageTableSpirvHashes[index], "image table registration: the SPIR-V of a storage table program changed");
+    }
     auto swapCode = storeCode;
     swapCode[8] = (swapCode[8] & ~(0x7fu << 18u)) | (0x0fu << 18u);
     swapCode[8] = (swapCode[8] & ~0xf00u) | 0x100u;
@@ -6467,7 +6477,7 @@ void verifyImageTableUintStorage() {
     FillTableSrt(guest, guest.heap.data(), 32u, static_cast<std::uint32_t>(formats.size()));
     const auto userData = TableUserData(guest);
     const auto compiled = CompileTable(TableRequest(WithImageOperation(TableWholeCode, 0xf0200f08u, false), userData));
-    const auto* binding = TableBinding(*compiled.result, DescriptorRole::ImageTable);
+    const auto* binding = TableBinding(*compiled.result, DescriptorRole::ImageStorageTable);
     require(binding != nullptr && binding->kind == DescriptorKind::StorageImage && binding->count == formats.size() && binding->imageUintStorage.size() == formats.size(), "image table uint storage: the storage table does not hold one flag per element");
     for (std::size_t index = 0; index < formats.size(); ++index) {
         std::size_t found = formats.size();

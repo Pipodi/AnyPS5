@@ -367,7 +367,7 @@ std::string MixedMarkPlane(AgcDriver::VulkanDevice& device, std::uint64_t addres
     bool tableWritten = false;
     for (const auto& binding : result.bindings) {
         for (std::size_t element = 0; element < binding.count && (element + 1u) * 8u <= binding.guestDescriptor.size(); ++element) {
-            if (binding.role == ShaderRecompiler::DescriptorRole::ImageTable && binding.kind == ShaderRecompiler::DescriptorKind::StorageImage && element < binding.imageWritten.size() && binding.imageWritten[element] && std::equal(tablePlane.begin(), tablePlane.end(), binding.guestDescriptor.begin() + element * 8u)) tableWritten = true;
+            if (binding.role == ShaderRecompiler::DescriptorRole::ImageStorageTable && binding.kind == ShaderRecompiler::DescriptorKind::StorageImage && element < binding.imageWritten.size() && binding.imageWritten[element] && std::equal(tablePlane.begin(), tablePlane.end(), binding.guestDescriptor.begin() + element * 8u)) tableWritten = true;
             if (!std::equal(plane.begin(), plane.end(), binding.guestDescriptor.begin() + element * 8u)) continue;
             if (binding.role == ShaderRecompiler::DescriptorRole::GuestImages && binding.kind == ShaderRecompiler::DescriptorKind::StorageImage && element < binding.imageWritten.size() && binding.imageWritten[element]) directWritten = true;
             if (binding.role == ShaderRecompiler::DescriptorRole::ImageTable && binding.kind == ShaderRecompiler::DescriptorKind::SampledImage) sampledAlias = true;

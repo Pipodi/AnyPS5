@@ -598,10 +598,10 @@ Module Inspect(const CompiledShader& compiled, const State& state, const VkPhysi
             }
             const auto key = std::make_pair(*decoration.set, *decoration.binding);
             const auto binding = std::find_if(shader.bindings.begin(), shader.bindings.end(), [&](const auto& item) { return item.descriptorSet == key.first && item.binding == key.second; });
-            Require(descriptors.insert(key).second || (binding != shader.bindings.end() && binding->role == ShaderRecompiler::DescriptorRole::ImageTable), "duplicate SPIR-V resource binding");
+            Require(descriptors.insert(key).second || (binding != shader.bindings.end() && (binding->role == ShaderRecompiler::DescriptorRole::ImageTable || binding->role == ShaderRecompiler::DescriptorRole::ImageStorageTable)), "duplicate SPIR-V resource binding");
             Require(binding != shader.bindings.end(), "SPIR-V resource is absent from recompiler binding metadata");
             Require(binding->kind == ShaderRecompiler::DescriptorKind::Sampler || binding->kind == ShaderRecompiler::DescriptorKind::SampledImage || binding->kind == ShaderRecompiler::DescriptorKind::StorageImage, "SPIR-V descriptor type disagrees with recompiler binding metadata");
-            if (binding->role == ShaderRecompiler::DescriptorRole::ImageTable || binding->role == ShaderRecompiler::DescriptorRole::SamplerTable) {
+            if (binding->role == ShaderRecompiler::DescriptorRole::ImageTable || binding->role == ShaderRecompiler::DescriptorRole::ImageStorageTable || binding->role == ShaderRecompiler::DescriptorRole::SamplerTable) {
                 Require(type.size() == 3 && (type[0] & 0xffffu) == spv::OpTypeRuntimeArray, "image table must be declared as a runtime descriptor array");
                 continue;
             }

@@ -51,7 +51,7 @@ bool DispatchUsesImages(const ShaderRecompiler::RecompileResult& compiled) {
     using Role = ShaderRecompiler::DescriptorRole;
     for (const auto& binding : compiled.bindings) {
         switch (binding.role) {
-            case Role::GuestImages: case Role::GuestSamplers: case Role::ImageTable: case Role::SamplerTable: case Role::ImageTableMap: return true;
+            case Role::GuestImages: case Role::GuestSamplers: case Role::ImageTable: case Role::ImageStorageTable: case Role::SamplerTable: case Role::ImageTableMap: return true;
             default: break;
         }
     }

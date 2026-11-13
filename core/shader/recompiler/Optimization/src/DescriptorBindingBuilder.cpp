@@ -125,8 +125,11 @@ DescriptorRole RoleFor(DescriptorBindingKind kind) {
     if (kind == DescriptorBindingKind::ShaderData) {
         return DescriptorRole::ShaderData;
     }
-    if (kind == DescriptorBindingKind::ImageTable || kind == DescriptorBindingKind::ImageStorageTable) {
+    if (kind == DescriptorBindingKind::ImageTable) {
         return DescriptorRole::ImageTable;
+    }
+    if (kind == DescriptorBindingKind::ImageStorageTable) {
+        return DescriptorRole::ImageStorageTable;
     }
     if (kind == DescriptorBindingKind::SamplerTable) {
         return DescriptorRole::SamplerTable;
