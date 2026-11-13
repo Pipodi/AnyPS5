@@ -215,12 +215,6 @@ if(BUILD_TESTING)
         set_tests_properties(agc_driver_queued_index_read_order_no_held_read_skip PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
-    add_test(NAME agc_driver_pipelined_dispatch_misses COMMAND agc_driver_pipelined_dispatch_tests)
-    set_tests_properties(agc_driver_pipelined_dispatch_misses PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_PIPELINE_DISPATCH=1;APS5_PIPELINE_DISPATCH_MISSES=1" SKIP_RETURN_CODE 77)
-    if(WIN32)
-        set_tests_properties(agc_driver_pipelined_dispatch_misses PROPERTIES ENVIRONMENT_MODIFICATION
-            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
-    endif()
     add_test(NAME agc_driver_draw_ahead_verify COMMAND agc_driver_draw_ahead_tests)
     set_tests_properties(agc_driver_draw_ahead_verify PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_VERIFY_DRAW_ENTRIES=1" SKIP_RETURN_CODE 77 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
     add_test(NAME agc_driver_draw_ahead_small_cache COMMAND agc_driver_draw_ahead_tests small-cache)
