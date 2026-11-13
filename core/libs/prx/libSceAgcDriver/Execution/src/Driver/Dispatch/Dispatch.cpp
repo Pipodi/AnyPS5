@@ -870,7 +870,8 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
     phaseTiming.Phase(PhaseSnapshots);
 
     bool plain = false;
-    if ((pipelined && mainMissItems) || lateItem || recipeLess) {
+    const bool filterPlain = mainMissItems || missItemsOn;
+    if ((pipelined && filterPlain) || missItem || lateItem || recipeLess) {
         plain = compiledResult != nullptr && !htileClearCompletion.has_value() && htileMask.bytes == 0u;
         if (plain && !partialLastGroup && MatchSgprPatternFill(packet, std::span(snapshot.code).subspan(codeOffset), userData, compute)) plain = false;
         if (plain && !partialLastGroup) {
@@ -880,8 +881,14 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
             }
         }
     }
-    if (pipelined && mainMissItems && !plain) {
+    if (pipelined && filterPlain && !plain) {
         pipelined = false;
+        itemWrites.clear();
+        itemNotPlain.fetch_add(1, std::memory_order_relaxed);
+        if (DrawPipeline::Queue0().Busy()) DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Packet, 0x15);
+    }
+    if (missItem && !plain) {
+        missItem = false;
         itemWrites.clear();
         itemNotPlain.fetch_add(1, std::memory_order_relaxed);
         if (DrawPipeline::Queue0().Busy()) DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Packet, 0x15);
