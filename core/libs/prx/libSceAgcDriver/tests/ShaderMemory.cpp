@@ -5810,8 +5810,7 @@ void verifyImageTableRegistration() {
     static constexpr std::array<std::uint64_t, 3> recordedStorageTableSpirvHashes{0u, 0u, 0u};
     for (std::size_t index = 0; index < storageTableSpirvHashes.size(); ++index) {
         require(storageTableSpirvHashes[index] != 0u, "image table registration: a storage table program produced no SPIR-V");
-        if (recordedStorageTableSpirvHashes[index] == 0u) std::cerr << "[storage-table-spirv] program " << index << " hash " << std::hex << storageTableSpirvHashes[index] << std::dec << '
-';
+        if (recordedStorageTableSpirvHashes[index] == 0u) std::cerr << "[storage-table-spirv] program " << index << " hash " << std::hex << storageTableSpirvHashes[index] << std::dec << '\n';
         else require(recordedStorageTableSpirvHashes[index] == storageTableSpirvHashes[index], "image table registration: the SPIR-V of a storage table program changed");
     }
     auto swapCode = storeCode;
