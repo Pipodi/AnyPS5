@@ -14460,6 +14460,7 @@ int main(int argc, char** argv) {
                 {},
                 {},
                 [] { return mock.allocationAttempts; },
+                {},
                 [](std::optional<VkDeviceSize> limit) { mock.importLimit = limit; },
                 [](std::optional<VkDeviceSize> limit) { mock.importTotalLimit = limit; }
             });
@@ -14762,7 +14763,8 @@ int main(int argc, char** argv) {
             },
             [] { return mock.allocationAttempts; },
             [](VkResult result) { mock.submitResult = result; },
-            [](std::optional<VkDeviceSize> limit) { mock.importLimit = limit; }
+            [](std::optional<VkDeviceSize> limit) { mock.importLimit = limit; },
+            [](std::optional<VkDeviceSize> limit) { mock.importTotalLimit = limit; }
         });
         Require(mock.live == 0, "BDA resources leaked Vulkan objects");
         RunGuestAllocationTests();
