@@ -43,6 +43,7 @@ std::optional<Graphics::IndirectDrawPath> Driver::ClassifyIndirectDraw(const Sha
     if ((graphics.stages.path != Graphics::ShaderPath::Vertex || (graphics.rectList && !rectListGpuSide)) && !meshGpuSide) fail(Path::NonVertexPath);
     if (indirect.drawIndexEnabled && indirect.drawIndexSgpr >= 0) fail(Path::DrawIndex);
     if (indirect.countIndirect && !support.count) fail(Path::FeatureGap);
+    if (graphics.rectList && drawParameters.indexed && !support.indexedPatches) fail(Path::FeatureGap);
     if (indirect.countIndirect && indirect.count > 1 && !support.multi) fail(Path::FeatureGap);
     // With GPU-side draw parameters (the stage reads the CP-written SGPR from BaseVertex /
     // BaseInstance and its index VGPR is the raw index), other uses of the SGPR need no CPU value;

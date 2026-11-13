@@ -1432,7 +1432,9 @@ TextureCacheBudgets readBudgets(const Context& context, bool reread) {
     const TextureMemoryUse use{SampledTextureMemory(), SampledCachedBytes().load(std::memory_order_relaxed), storageCacheBytes(), SampledTextureOverflowMemory()};
     const bool fresh = state.device != context.physical;
     const auto budgets = TextureCacheBudgetsFor(context.memory, &reported, use, fresh ? 0u : state.budgets.target);
-    MemoryAccounting::Report(context, reported, use.sampled, use.storageCached, budgets.storage);
+    auto storageSnapshot = CalculateStorageTextureBudget(context.memory, &reported, use.sampled, use.storageCached);
+    storageSnapshot.selectedBudget = budgets.storage;
+    MemoryAccounting::Report(context, reported, storageSnapshot);
     if (const auto heap = largestDeviceLocalHeap(context.memory); heap && (fresh || SampledBudgetReportDue(state.reportedBudget, budgets.sampled, now - state.reportedAt))) {
         char was[48] = "";
         if (!fresh) std::snprintf(was, sizeof(was), " (was %llu MiB)", static_cast<unsigned long long>(state.reportedBudget >> 20u));
@@ -2604,18 +2606,29 @@ std::uint64_t TextureCacheBudget(const VkPhysicalDeviceMemoryProperties& memory)
 }
 
 std::uint64_t StorageTextureCeiling(const VkPhysicalDeviceMemoryProperties& memory, const VkPhysicalDeviceMemoryBudgetPropertiesEXT* reported) {
-    const auto heap = largestDeviceLocalHeap(memory);
-    if (reported == nullptr || !heap || reported->heapBudget[*heap] == 0) return TextureCacheBudget(memory);
-    return std::max<std::uint64_t>(512ull << 20u, std::min<std::uint64_t>(memory.memoryHeaps[*heap].size / 2u, reported->heapBudget[*heap] / 2u));
+    return CalculateStorageTextureBudget(memory, reported, 0, 0).ceiling;
 }
 
 std::uint64_t StorageTextureBudget(const VkPhysicalDeviceMemoryProperties& memory, const VkPhysicalDeviceMemoryBudgetPropertiesEXT* reported, std::uint64_t sampledBytes, std::uint64_t storageBytes) {
+    return CalculateStorageTextureBudget(memory, reported, sampledBytes, storageBytes).selectedBudget;
+}
+
+StorageTextureBudgetSnapshot CalculateStorageTextureBudget(const VkPhysicalDeviceMemoryProperties& memory, const VkPhysicalDeviceMemoryBudgetPropertiesEXT* reported, std::uint64_t sampledBytes, std::uint64_t storageBytes) {
+    StorageTextureBudgetSnapshot snapshot;
+    snapshot.sampledBytes = sampledBytes;
+    snapshot.storageBytes = storageBytes;
+    snapshot.ceiling = TextureCacheBudget(memory);
+    snapshot.selectedBudget = snapshot.ceiling;
     const auto heap = largestDeviceLocalHeap(memory);
-    if (reported == nullptr || !heap || reported->heapBudget[*heap] == 0) return TextureCacheBudget(memory);
-    const auto budget = reported->heapBudget[*heap];
+    if (reported == nullptr || !heap || reported->heapBudget[*heap] == 0) return snapshot;
+    snapshot.heap = heap;
+    const auto heapBudget = reported->heapBudget[*heap];
     const auto usage = reported->heapUsage[*heap];
-    const auto reserved = usage - std::min<std::uint64_t>(usage, sampledBytes + storageBytes) + sampledBytes + budget / 8u;
-    return std::min<std::uint64_t>(StorageTextureCeiling(memory, reported), std::max<std::uint64_t>(512ull << 20u, budget > reserved ? budget - reserved : 0u));
+    snapshot.reserved = usage - std::min<std::uint64_t>(usage, sampledBytes + storageBytes) + sampledBytes + heapBudget / 8u;
+    snapshot.available = heapBudget > snapshot.reserved ? heapBudget - snapshot.reserved : 0u;
+    snapshot.ceiling = std::max<std::uint64_t>(512ull << 20u, std::min<std::uint64_t>(memory.memoryHeaps[*heap].size / 2u, heapBudget / 2u));
+    snapshot.selectedBudget = std::min<std::uint64_t>(snapshot.ceiling, std::max<std::uint64_t>(512ull << 20u, snapshot.available));
+    return snapshot;
 }
 
 TextureCacheBudgets TextureCacheBudgetsFor(const VkPhysicalDeviceMemoryProperties& memory, const VkPhysicalDeviceMemoryBudgetPropertiesEXT* reported, const TextureMemoryUse& use, std::uint64_t previousTarget) {
@@ -8030,6 +8043,7 @@ void ShaderResources::resolveImageTables() {
             GuestTextureResource resource{};
             std::uint64_t guestBytes = 0;
             bool firstLayer = false;
+            std::string rejected;
         };
         const auto decodeEntry = [&](std::uint32_t element, std::span<const std::uint32_t> words) {
             DecodedEntry decoded;
@@ -8039,9 +8053,15 @@ void ShaderResources::resolveImageTables() {
             const bool depthCompare = element < binding.imageDepthCompare.size() && binding.imageDepthCompare[element];
             decoded.firstLayer = shape == ShaderRecompiler::DescriptorImageShape::Image2D && (resource.dimension == TextureDimension::k2DArray || (depthCompare && resource.dimension == TextureDimension::k1DArray));
             const bool depth1D = depthCompare && ((shape == ShaderRecompiler::DescriptorImageShape::Image2D && resource.dimension == TextureDimension::k1D) || (shape == ShaderRecompiler::DescriptorImageShape::Image2DArray && resource.dimension == TextureDimension::k1DArray));
-            if (!decoded.firstLayer && !depth1D && !MatchesGuestDimension(shape, resource.dimension)) throw std::runtime_error("AGC graphics: guest texture dimension disagrees with the table entry's image shape (shape " + std::to_string(static_cast<int>(shape)) + ", dimension " + std::to_string(static_cast<int>(resource.dimension)) + ")");
+            if (!decoded.firstLayer && !depth1D && !MatchesGuestDimension(shape, resource.dimension)) {
+                decoded.rejected = "AGC graphics: guest texture dimension disagrees with the table entry's image shape (shape " + std::to_string(static_cast<int>(shape)) + ", dimension " + std::to_string(static_cast<int>(resource.dimension)) + ")";
+                return decoded;
+            }
             decoded.guestBytes = DescribeSurface(resource).guestBytes;
-            if (!GuestMemory::Accessible(reinterpret_cast<const void*>(resource.baseAddress), static_cast<std::size_t>(decoded.guestBytes)) && GuestMemory::CommittedRanges(resource.baseAddress, static_cast<std::size_t>(decoded.guestBytes), false).empty()) throw std::runtime_error("AGC graphics: the table entry's surface at 0x" + HexText(resource.baseAddress) + " (0x" + HexText(decoded.guestBytes) + " bytes) is not mapped");
+            if (!GuestMemory::Accessible(reinterpret_cast<const void*>(resource.baseAddress), static_cast<std::size_t>(decoded.guestBytes)) && GuestMemory::CommittedRanges(resource.baseAddress, static_cast<std::size_t>(decoded.guestBytes), false).empty()) {
+                decoded.rejected = "AGC graphics: the table entry's surface at 0x" + HexText(resource.baseAddress) + " (0x" + HexText(decoded.guestBytes) + " bytes) is not mapped";
+                return decoded;
+            }
             static_cast<void>(ResolveTextureFormat(resource.format));
             return decoded;
         };
@@ -8079,8 +8099,11 @@ void ShaderResources::resolveImageTables() {
             try {
                 decoded = decodeEntry(element, words);
             } catch (const std::runtime_error& error) {
-                table.map[faults + element] = rejectTableElement(table, words, error.what());
-                return error.what();
+                decoded.rejected = error.what();
+            }
+            if (!decoded.rejected.empty()) {
+                table.map[faults + element] = rejectTableElement(table, words, decoded.rejected);
+                return decoded.rejected;
             }
             const auto sampled = prepareSampled(element, words, decoded);
             std::shared_ptr<Texture> texture;
@@ -8168,8 +8191,11 @@ void ShaderResources::resolveImageTables() {
             try {
                 decoded = decodeEntry(element, words);
             } catch (const std::runtime_error& error) {
-                table.map[faults + element] = rejectTableElement(table, words, error.what());
-                if (reusable) fresh.elements.push_back({{}, {}, {}, 0, false, true, error.what()});
+                decoded.rejected = error.what();
+            }
+            if (!decoded.rejected.empty()) {
+                table.map[faults + element] = rejectTableElement(table, words, decoded.rejected);
+                if (reusable) fresh.elements.push_back({{}, {}, {}, 0, false, true, decoded.rejected});
                 continue;
             }
             const auto& resource = decoded.resource;

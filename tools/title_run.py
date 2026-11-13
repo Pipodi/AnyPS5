@@ -82,7 +82,10 @@ def load_titles(path):
         for key, value in entry.items():
             if key not in TITLE_FIELDS:
                 raise ValueError(f"{path}: {title_id}: unknown field {key}")
-            if not isinstance(value, TITLE_FIELDS[key]):
+            if key == "seconds":
+                if type(value) is not int or value < 1:
+                    raise ValueError(f"{path}: {title_id}: seconds must be a positive integer")
+            elif not isinstance(value, TITLE_FIELDS[key]):
                 raise ValueError(f"{path}: {title_id}: {key} must be {TITLE_FIELDS[key].__name__}")
             if key in ("pad", "files"):
                 try:
@@ -173,13 +176,19 @@ def take_report(work, run_dir):
 
 def frame_is_uniform(path, tolerance=8):
     data = path.read_bytes()
+    if data[:2] != b"BM":
+        return None
     try:
         offset = struct.unpack_from("<I", data, 10)[0]
+        header_size = struct.unpack_from("<I", data, 14)[0]
         width, height = struct.unpack_from("<ii", data, 18)
+        planes = struct.unpack_from("<H", data, 26)[0]
         bits = struct.unpack_from("<H", data, 28)[0]
+        compression = struct.unpack_from("<I", data, 30)[0]
     except struct.error:
         return None
-    if bits not in (24, 32):
+    if (header_size < 40 or offset < 14 + header_size or width <= 0 or height == 0 or
+            planes != 1 or compression != 0 or bits not in (24, 32)):
         return None
     channels = bits // 8
     stride = (width * channels + 3) & ~3
@@ -688,9 +697,10 @@ def run_title(executable, work, run_dir, seconds, extra_env, pad=None):
     run_dir.mkdir(parents=True)
     (work / REPORT_FILE).unlink(missing_ok=True)
     inherited = {key: value for key, value in os.environ.items() if key not in ("ANYPS5_SHADER_CACHE_DIR", "ANYPS5_NO_SHADER_CACHE", "APS5_PAD_INPUT_FILE")}
-    env = {**inherited, "SDL_AUDIODRIVER": "dummy", "SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN": "1",
+    env = {**inherited, "SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN": "1",
            "APS5_TRACE_SUMMARY_EVERY": "10", "APS5_TRACE_DIR": str(run_dir), **FRAME_ENV,
            "MESA_SHADER_CACHE_DIR": str(work / "driver-cache"), "__GL_SHADER_DISK_CACHE_PATH": str(work / "driver-cache"), **extra_env}
+    env.setdefault("SDL_AUDIODRIVER", "dummy")
     pad_file, queued = work / "pad-input.txt", None
     if pad:
         pad_file.unlink(missing_ok=True)

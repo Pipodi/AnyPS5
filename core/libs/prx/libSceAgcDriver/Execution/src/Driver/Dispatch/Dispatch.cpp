@@ -205,7 +205,7 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
     const bool missItemsOn = itemsOn && DispatchMissItemsEnabled();
     const auto address = (static_cast<std::uint64_t>(readRegister(queue.shader, 0x20c)) << 8u) | (static_cast<std::uint64_t>(readRegister(queue.shader, 0x20d) & 0xffu) << 40u);
     const bool preparingAhead = missAheadPlan() != nullptr;
-    if (SkippedShader(address)) {
+    if (SkippedShader(address) || RefusedDispatch(address)) {
         if (preparingAhead) missAheadPlan()->Note(MissAheadPlan::Skip::Listed);
         return;
     }
@@ -721,6 +721,8 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
                 const auto total = totalMs.fetch_add(elapsed, std::memory_order_relaxed) + elapsed;
                 if (elapsed > 200) std::fprintf(stderr, "[gpu] compute shader 0x%llx recompile took %.0f ms (%zu SPIR-V words, %zu captured regions, total %.1f s)\n", static_cast<unsigned long long>(address), elapsed, compiledResult->spirv.size(), captured.size(), total / 1000);
             }
+            if (const auto limit = MaxComputeSpirvWords(); limit != 0 && compiledResult->spirv.size() > limit)
+                throw std::runtime_error(std::to_string(compiledResult->spirv.size()) + " SPIR-V words, above APS5_MAX_COMPUTE_SPIRV_WORDS (" + std::to_string(limit) + ")");
             capturePipelineRequest(address, request, *compiledResult, shaderMemory->Probes(), *localDevice);
         } catch (const std::exception& error) {
             std::string dump;
@@ -736,6 +738,10 @@ void Driver::dispatchAttempt(QueueState& queue, std::span<const std::uint32_t> p
 
             std::string reason = error.what();
             if (const auto newline = reason.find('\n'); newline != std::string::npos) reason.resize(newline);
+            if (SkipRefusedDispatches()) {
+                ReportRefusedDispatch(address, reason);
+                return;
+            }
             char where[96];
             if (dump.empty()) std::snprintf(where, sizeof(where), "compute shader 0x%llx: ", static_cast<unsigned long long>(address));
             else std::snprintf(where, sizeof(where), "compute shader 0x%llx (%s): ", static_cast<unsigned long long>(address), dump.c_str());

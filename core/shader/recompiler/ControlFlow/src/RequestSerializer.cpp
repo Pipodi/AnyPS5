@@ -6,8 +6,9 @@ namespace ShaderRecompiler {
 
 namespace {
 
-constexpr std::uint32_t CurrentVersion = 156u;
-constexpr std::uint32_t MainLastVersion = 56u;
+constexpr std::uint32_t LocalFirstVersion = 156u;
+constexpr std::uint32_t CurrentVersion = 157u;
+constexpr std::uint32_t MainLastVersion = 57u;
 constexpr std::uint32_t MainSkippedVersion = 50u;
 constexpr std::uint32_t DrawParameterBlockTag = 0x31504447u;
 constexpr std::uint32_t LocalFeatures = 22u;
@@ -1009,15 +1010,20 @@ DeserializedRequest deserialize(std::string_view decoded, std::uint32_t version,
         result.request.context.compute->granulatedVgprCount = reader.ReadU32();
         result.request.context.compute->sharedVgprBlocks = reader.ReadU32();
     }
-    if (version >= CurrentVersion && result.request.context.compute.has_value()) {
+    if (version >= LocalFirstVersion && result.request.context.compute.has_value()) {
         const bool singleWorkgroup = reader.ReadBool();
         result.request.context.compute->singleWorkgroup = singleWorkgroup;
         if (result.compute.has_value()) result.compute->singleWorkgroup = singleWorkgroup;
     }
-    if (version >= 26u && reader.Remaining() == 12u && result.request.context.vertex.has_value()) {
+    const bool mainTail = version >= 57u && version != LocalFirstVersion;
+    if (version >= 26u && reader.Remaining() == (mainTail ? 17u : 12u) && result.request.context.vertex.has_value()) {
         if (reader.ReadU32() != DrawParameterBlockTag) throw std::runtime_error("RequestSerializer: unexpected trailing data");
         result.request.context.vertex->drawBaseVertexSgpr = reader.ReadI32();
         result.request.context.vertex->drawStartInstanceSgpr = reader.ReadI32();
+    }
+    if (mainTail) {
+        result.request.target.maxImageArrayLayers = reader.ReadU32();
+        result.request.target.fixedPushSlots = reader.ReadBool();
     }
     if (version >= 21u && reader.Remaining() != 0u) throw std::runtime_error("RequestSerializer: unexpected trailing data");
     if (exact && !reader.Done()) throw std::runtime_error("RequestSerializer: trailing data");
@@ -1089,6 +1095,8 @@ std::string RequestSerializer::Serialize(const RecompileRequest& request) const 
         writer.WriteI32(request.context.vertex->drawBaseVertexSgpr);
         writer.WriteI32(request.context.vertex->drawStartInstanceSgpr);
     }
+    writer.WriteU32(request.target.maxImageArrayLayers);
+    writer.WriteBool(request.target.fixedPushSlots);
     return base64Encode(buffer);
 }
 
@@ -1097,8 +1105,8 @@ DeserializedRequest RequestSerializer::Deserialize(std::string_view text) const 
     Reader reader(decoded);
     if (reader.ReadU32() != 0x41505335u) throw std::runtime_error("invalid recompile request signature");
     const auto version = reader.ReadU32();
-    if (version < 1u || version > CurrentVersion || version == MainSkippedVersion || (version > MainLastVersion && version != CurrentVersion)) throw std::runtime_error("unsupported recompile request serialization version");
-    if (version >= CurrentVersion) return deserialize(decoded, version, LocalFeatures, false);
+    if (version < 1u || version > CurrentVersion || version == MainSkippedVersion || (version > MainLastVersion && version < LocalFirstVersion)) throw std::runtime_error("unsupported recompile request serialization version");
+    if (version >= LocalFirstVersion) return deserialize(decoded, version, LocalFeatures, false);
     if (version == 24u || version == 26u || version == 30u) {
         try {
             return deserialize(decoded, version == 26u ? 25u : version == 30u ? 29u : version, LocalFeatures, true);

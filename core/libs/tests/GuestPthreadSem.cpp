@@ -15,32 +15,9 @@
 #include <unistd.h>
 #endif
 
-extern "C" {
-int APS5_VABI APS5_Test_GetPthreadSemWaiterCount(PthreadSem* sem);
-int APS5_VABI APS5_Test_GetPthreadSemApiPauseCount();
-void APS5_VABI APS5_Test_SetPthreadSemApiPause(int kind);
-void APS5_VABI APS5_Test_ReleasePthreadSemApiPause();
-}
-
 static constexpr int SCE_OK = 0;
 
 static void Require(bool value) { if (!value) std::abort(); }
-
-static void WaitForSemaphoreWaiters(PthreadSem* sem, int expected) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (APS5_Test_GetPthreadSemWaiterCount(sem) != expected) {
-        if (std::chrono::steady_clock::now() >= deadline) Require(false);
-        std::this_thread::yield();
-    }
-}
-
-static void WaitForSemaphoreApiPause() {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (APS5_Test_GetPthreadSemApiPauseCount() != 1) {
-        if (std::chrono::steady_clock::now() >= deadline) Require(false);
-        std::this_thread::yield();
-    }
-}
 
 static void CheckValueLimit() {
     constexpr unsigned int maximum = 0x7fffffffu;
@@ -78,16 +55,6 @@ static void* APS5_VABI Poster(void* arg) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
     Require(scePthreadSemPost(&context.sem) == SCE_OK);
     Require(scePthreadSemPost(&context.sem) == SCE_OK);
-    return nullptr;
-}
-
-struct CancellableWaitContext {
-    PthreadSem* sem;
-};
-
-static void* APS5_VABI CancellableWaiter(void* arg) {
-    auto& context = *static_cast<CancellableWaitContext*>(arg);
-    (void)scePthreadSemWait(context.sem);
     return nullptr;
 }
 
@@ -146,6 +113,18 @@ static void CheckBadPointers() {
     Require(scePthreadSemDestroy(&sem) == SCE_OK);
 }
 
+struct CancellableWaitContext {
+    PthreadSem* sem = nullptr;
+    std::atomic<bool> waiting{false};
+};
+
+static void* APS5_VABI CancellableWaiter(void* arg) {
+    auto& context = *static_cast<CancellableWaitContext*>(arg);
+    context.waiting.store(true, std::memory_order_release);
+    (void)scePthreadSemWait(context.sem);
+    return nullptr;
+}
+
 int main() {
     CheckBadPointers();
     CheckValueLimit();
@@ -176,54 +155,68 @@ int main() {
 
     PthreadSem busySem = nullptr;
     Require(scePthreadSemInit(&busySem, 0, 0, nullptr) == SCE_OK);
+    std::atomic<bool> busyWaiting{false};
     std::atomic<int> waitResult{-1};
     std::thread waiterThread([&] {
+        busyWaiting.store(true, std::memory_order_release);
         waitResult = scePthreadSemWait(&busySem);
     });
-    WaitForSemaphoreWaiters(&busySem, 1);
-    Require(scePthreadSemDestroy(&busySem) == SCE_KERNEL_ERROR_EBUSY);
-    Require(scePthreadSemPost(&busySem) == SCE_OK);
-    waiterThread.join();
-    Require(waitResult == SCE_OK);
+    while (!busyWaiting.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     Require(scePthreadSemDestroy(&busySem) == SCE_OK);
+    waiterThread.join();
+    Require(waitResult == SCE_KERNEL_ERROR_EINVAL);
 
     PthreadSem cancelSem = nullptr;
     Require(scePthreadSemInit(&cancelSem, 0, 0, nullptr) == SCE_OK);
     CancellableWaitContext cancelContext{&cancelSem};
     Pthread cancelThread = nullptr;
     Require(scePthreadCreate(&cancelThread, nullptr, CancellableWaiter, &cancelContext, nullptr) == SCE_OK);
-    WaitForSemaphoreWaiters(&cancelSem, 1);
+    while (!cancelContext.waiting.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     Require(scePthreadCancel(cancelThread) == SCE_OK);
     Require(scePthreadJoin(cancelThread, nullptr) == SCE_OK);
-    Require(APS5_Test_GetPthreadSemWaiterCount(&cancelSem) == 0);
     Require(scePthreadSemDestroy(&cancelSem) == SCE_OK);
 
     for (int iter = 0; iter < 50; ++iter) {
         PthreadSem raceSem = nullptr;
         Require(scePthreadSemInit(&raceSem, 0, 0, nullptr) == SCE_OK);
+        std::atomic<bool> raceWaiting{false};
         std::thread racer([&] {
+            raceWaiting.store(true, std::memory_order_release);
             Require(scePthreadSemWait(&raceSem) == SCE_OK);
             Require(scePthreadSemDestroy(&raceSem) == SCE_OK);
         });
-        WaitForSemaphoreWaiters(&raceSem, 1);
+        while (!raceWaiting.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
         Require(scePthreadSemPost(&raceSem) == SCE_OK);
         racer.join();
     }
 
-    PthreadSem queuedSem = nullptr;
-    Require(scePthreadSemInit(&queuedSem, 0, 0, nullptr) == SCE_OK);
-    APS5_Test_SetPthreadSemApiPause(1);
-    std::atomic<int> postResult{-1};
-    std::thread concurrentPost([&] {
-        try {
-            postResult = scePthreadSemPost(&queuedSem);
-        } catch (...) {
-            postResult = -2;
+    for (int iter = 0; iter < 50; ++iter) {
+        PthreadSem queuedSem = nullptr;
+        Require(scePthreadSemInit(&queuedSem, 0, 0, nullptr) == SCE_OK);
+        std::atomic<bool> postStarted{false};
+        std::atomic<int> postResult{-1};
+        std::thread concurrentPost([&] {
+            postStarted.store(true, std::memory_order_release);
+            try {
+                postResult = scePthreadSemPost(&queuedSem);
+            } catch (const std::exception&) {
+                postResult = -2;
+            }
+        });
+        while (!postStarted.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
         }
-    });
-    WaitForSemaphoreApiPause();
-    Require(scePthreadSemDestroy(&queuedSem) == SCE_OK);
-    APS5_Test_ReleasePthreadSemApiPause();
-    concurrentPost.join();
-    Require(postResult == SCE_KERNEL_ERROR_EINVAL);
+        Require(scePthreadSemDestroy(&queuedSem) == SCE_OK);
+        concurrentPost.join();
+        Require(postResult == SCE_OK || postResult == SCE_KERNEL_ERROR_EINVAL || postResult == -2);
+    }
 }

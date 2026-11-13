@@ -45,6 +45,17 @@ struct WriteIndexOutcomes {
 };
 WriteIndexOutcomes WriteIndexOutcomesCounted();
 std::uint64_t ReleaseTextureCaches(std::uint64_t bytes, bool newImage = false);
+struct StorageTextureBudgetSnapshot {
+    std::optional<std::uint32_t> heap;
+    std::uint64_t sampledBytes = 0;
+    std::uint64_t storageBytes = 0;
+    std::uint64_t reserved = 0;
+    std::uint64_t available = 0;
+    std::uint64_t ceiling = 0;
+    std::uint64_t selectedBudget = 0;
+};
+
+StorageTextureBudgetSnapshot CalculateStorageTextureBudget(const VkPhysicalDeviceMemoryProperties& memory, const VkPhysicalDeviceMemoryBudgetPropertiesEXT* reported, std::uint64_t sampledBytes, std::uint64_t storageBytes);
 std::uint64_t TextureCacheBudget(const VkPhysicalDeviceMemoryProperties& memory);
 // What the texture caches hold: every live sampled texture's own image (SampledTextureMemory), the
 // part of it the sampled cache's snapshot entries account, the storage image cache's bytes, and the
