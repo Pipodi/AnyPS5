@@ -888,7 +888,7 @@ SnapshotCompareCounters& SnapshotCompares() {
 
 bool CommittedProofEnabled() {
     static const bool disabled = std::getenv("APS5_NO_COMMITTED_PROOF") != nullptr;
-    return !disabled;
+    return !disabled && !RuntimeSwitches::Set(RuntimeSwitch::NoExtendedFastProofs);
 }
 
 bool BlockRevalidateEnabled() {
