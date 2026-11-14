@@ -2636,7 +2636,9 @@ std::vector<BindlessImageAbi::TableRegistration> ResourceMaterializer::BindlessT
 
 std::shared_ptr<const ResolvedImageTables> ResourceMaterializer::ResolveImageTablesShared(const ShaderInfo& info, const ResourceSnapshot& snapshot, std::uint64_t memoKey) {
     if (snapshot.tables.tables.empty()) {
-        static thread_local const auto none = std::make_shared<const ResolvedImageTables>();
+        struct EmptyTablesStorage {};
+        auto& none = HostThreadLocal<std::shared_ptr<const ResolvedImageTables>, EmptyTablesStorage>();
+        if (!none) none = std::make_shared<const ResolvedImageTables>();
         static_cast<void>(ResolveImageTables(info, snapshot, memoKey));
         return none;
     }
