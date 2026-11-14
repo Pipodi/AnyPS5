@@ -105,7 +105,6 @@ enum class RuntimeSwitch : std::size_t {
     NoOwnedDrawInputs,
     NoRawPointerReach,
     NoSizeOnlySurfaceBytes,
-    PipelineDispatchMisses,
     NoExtendedFastProofs,
     Count,
 };
