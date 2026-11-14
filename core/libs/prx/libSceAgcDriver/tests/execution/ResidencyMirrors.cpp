@@ -609,7 +609,7 @@ public:
         const auto count = pages * perPage;
         const ReadPush push{currentTable, results.DeviceAddress(), GuestBase, Address(firstPage), count, stride};
         auto commands = stream.Commands();
-        context.Function<PFN_vkCmdBindPipeline>("vkCmdBindPipeline")(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        context.ComputeBinding()(commands, pipeline);
         context.Function<PFN_vkCmdPushConstants>("vkCmdPushConstants")(commands, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
         context.Function<PFN_vkCmdDispatch>("vkCmdDispatch")(commands, (count + 63) / 64, 1, 1);
         const VkMemoryBarrier after{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};

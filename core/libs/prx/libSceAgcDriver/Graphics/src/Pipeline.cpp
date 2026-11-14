@@ -1569,6 +1569,7 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
         return nullptr;
     };
     std::shared_ptr<std::mutex> buildMutex;
+    const std::vector<std::byte> buildKey(key.begin(), key.end());
     {
         std::lock_guard lock(store.mutex);
         reportPipelines(store);
@@ -1585,10 +1586,10 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
             ++store.totals.uncached;
             return std::make_shared<Pipeline>(context, state, vertexInput, resources, shaders, attachmentLayout);
         }
-        if (const auto found = store.builds.find(key); found != store.builds.end()) buildMutex = found->second.lock();
+        if (const auto found = store.builds.find(buildKey); found != store.builds.end()) buildMutex = found->second.lock();
         if (!buildMutex) {
             buildMutex = std::make_shared<std::mutex>();
-            store.builds.insert_or_assign(key, buildMutex);
+            store.builds.insert_or_assign(buildKey, buildMutex);
         }
     }
     struct PipelineBuild {
@@ -1600,7 +1601,7 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
             std::lock_guard guard(store.mutex);
             if (mutex.use_count() == 1) store.builds.erase(key);
         }
-    } build{store, key, std::move(buildMutex), {}};
+    } build{store, buildKey, std::move(buildMutex), {}};
     build.lock = std::unique_lock(*build.mutex);
     {
         std::lock_guard lock(store.mutex);

@@ -385,7 +385,7 @@ public:
     LookupPipeline& operator=(const LookupPipeline&) = delete;
 
     void Record(VkCommandBuffer commands, DescriptorHeap& heap, const Push& push, std::uint32_t groups) const {
-        context.Function<PFN_vkCmdBindPipeline>("vkCmdBindPipeline")(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        context.ComputeBinding()(commands, pipeline);
         context.Function<PFN_vkCmdBindDescriptorSets>("vkCmdBindDescriptorSets")(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &directSet, 0, nullptr);
         heap.Bind(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT);
         context.Function<PFN_vkCmdPushConstants>("vkCmdPushConstants")(commands, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);

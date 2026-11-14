@@ -4043,7 +4043,7 @@ bool Recorder::RecordStagingDiff(VkCommandBuffer commands, VkDeviceAddress resul
         }
     }
     if (stagingDiffState < 0 || dwords == 0) return stagingDiffState > 0;
-    function(cmdBindPipeline, "vkCmdBindPipeline")(commands, VK_PIPELINE_BIND_POINT_COMPUTE, stagingDiffPipeline);
+    context.ComputeBinding()(commands, stagingDiffPipeline);
     const VkDeviceAddress counter = count && stagingDiffCounter != nullptr ? stagingDiffCounter->DeviceAddress() : 0;
     const auto perDispatch = static_cast<std::uint32_t>(std::min<std::uint64_t>(std::uint64_t{context.limits.maxComputeWorkGroupCount[0]} * GroupSize, std::uint64_t{1} << 30u));
     for (std::uint32_t done = 0; done < dwords;) {
