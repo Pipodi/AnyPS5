@@ -196,6 +196,14 @@ public:
         while (seen < serial && !lastUse.compare_exchange_weak(seen, serial, std::memory_order_acq_rel)) {
         }
     }
+    void SetReuseLookup(std::function<std::shared_ptr<Texture>()> lookup) { reuseLookup = std::move(lookup); }
+    bool HasReuseLookup() const { return static_cast<bool>(reuseLookup); }
+    bool ReuseLookupHolds() const;
+    struct ReuseLookupCounts {
+        std::uint64_t held;
+        std::uint64_t changed;
+    };
+    static ReuseLookupCounts TakeReuseLookupCounts();
     bool Released() const { return SampledCacheState() == CacheState::Released; }
     void MarkReleased() { SetSampledCacheState(CacheState::Released); }
 
@@ -238,6 +246,7 @@ private:
     std::shared_ptr<StorageTexture> storageSource;
     std::unique_ptr<CommandBatch> upload;
     PerUseCopy perUseCopy = PerUseCopy::None;
+    std::function<std::shared_ptr<Texture>()> reuseLookup;
     bool copiedOnce = false;
     bool srgbExpand = false;
     GuestTextureResource sourceDescriptor{};
@@ -576,6 +585,7 @@ public:
     VkImage Image() const { return image; }
     VkFormat StorageFormat() const { return storageFormat; }
     const GuestTextureResource& Descriptor() const { return descriptor; }
+    std::size_t GuestCopyCapacity() const { return original.capacity(); }
     std::uint32_t ImageLayers() const { return geometry.imageLayers; }
     std::uint32_t ImageDepth() const { return geometry.imageDepth; }
     VkFormat ImageFormat() const { return imageFormat; }
@@ -674,7 +684,7 @@ private:
     void storeTrappedOverlaps(const char* reason);
     bool unchangedSinceBaseline(std::uint64_t from, std::uint64_t to) const;
     bool cpuLeftUnchanged(std::uint32_t layer, std::uint64_t from, std::uint64_t to, bool edge) const;
-    void saveBeforeUnwatch();
+    void saveBeforeUnwatch(std::uint64_t address, std::size_t bytes);
     void forgetKeptAtUnwatch(std::uint32_t unit);
     bool keptAtUnwatchHolds(std::uint64_t from, std::uint32_t unit) const;
     bool keptForCpu(std::uint32_t unit) const;
@@ -690,6 +700,7 @@ private:
     void applyStoredSave(std::uint64_t ticket, const std::vector<std::uint32_t>& units);
     void cancelStoredSave(std::uint32_t unit);
     void cancelStoredSaves();
+    void releaseUnheldOriginal();
     // Lets the batches holding the saves of the units `layers` selects (every unit for none) complete.
     void awaitStoredSave(const std::vector<bool>* layers);
     bool guestBytesSettled() const;

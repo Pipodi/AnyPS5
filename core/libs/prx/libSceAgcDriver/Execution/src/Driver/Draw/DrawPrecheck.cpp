@@ -8,6 +8,8 @@
 #include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Synchronization/DeferredLabels.hpp"
 #include <cstdio>
+#include <algorithm>
+#include "prx/libSceAgcDriver/Graphics/include/DepthSurface.hpp"
 #include <cstdlib>
 #include <optional>
 #include <stdexcept>
@@ -15,6 +17,15 @@
 namespace AgcDriver::DriverDetail {
 
 namespace {
+
+bool indirectRecordsDraw(const Pm4::DrawParameters::IndirectDraw& indirect) {
+    const auto count = std::min(indirect.countIndirect ? Pm4::ReadDrawCount(indirect) : indirect.count, indirect.count);
+    for (std::uint32_t record = 0; record < count; ++record) {
+        const auto arguments = Pm4::ReadDrawArguments(indirect, record);
+        if (arguments.count != 0 && arguments.instances != 0) return true;
+    }
+    return false;
+}
 
 QueueState DepthCopyDraw(const QueueState& queue, const Graphics::DepthCopyPass& copy) {
     const bool multisampled = copy.source.samples != 1u;
@@ -45,11 +56,13 @@ bool precheckRejections() {
 }
 
 template <typename TRestart, typename TDepthControl, typename TReached>
-DrawPrecheckOutcome precheckState(const QueueState& queue, const Pm4::DrawParameters& drawParameters, std::string& rejected, std::optional<Graphics::ColorMetadataPass>& metadata, std::optional<Graphics::DepthCopyPass>& depthCopy, TRestart&& primitiveListRestart, TDepthControl&& depthControl, TReached&& reached) {
+DrawPrecheckOutcome precheckState(const QueueState& queue, const Pm4::DrawParameters& drawParameters, std::string& rejected, std::optional<Graphics::ColorMetadataPass>& metadata, std::optional<Graphics::DepthExpandPass>& expand, std::optional<Graphics::DepthCopyPass>& depthCopy, TRestart&& primitiveListRestart, TDepthControl&& depthControl, TReached&& reached) {
     if (!drawParameters.indirect && !drawParameters.indexed && (drawParameters.indexCount == 0 || drawParameters.instanceCount == 0)) return DrawPrecheckOutcome::Nothing;
-    if (auto pass = Graphics::DecodeColorMetadataPass(queue)) {
-        require(!drawParameters.indirect, "indirect CB metadata passes are unsupported");
-        metadata = std::move(pass);
+    metadata = Graphics::DecodeColorMetadataPass(queue);
+    if (!metadata) expand = Graphics::DecodeDepthExpandPass(queue);
+    if (metadata || expand) {
+        require(!metadata || !drawParameters.indirect, "indirect CB metadata passes are unsupported");
+        if (expand && !drawParameters.indirect && (drawParameters.indexCount == 0 || drawParameters.instanceCount == 0)) return DrawPrecheckOutcome::Nothing;
         return DrawPrecheckOutcome::MetadataPass;
     }
     if (auto copy = Graphics::DecodeDepthCopyPass(queue)) {
@@ -106,14 +119,16 @@ bool TraceIndirectDraws() {
 
 DrawPrecheckOutcome PrecheckDrawState(const QueueState& queue, const Pm4::DrawParameters& drawParameters, bool primitiveListRestart, std::string& rejected) {
     std::optional<Graphics::ColorMetadataPass> metadata;
+    std::optional<Graphics::DepthExpandPass> expand;
     std::optional<Graphics::DepthCopyPass> depthCopy;
-    return precheckState(queue, drawParameters, rejected, metadata, depthCopy, [&] { return primitiveListRestart; }, [] {}, [] {});
+    return precheckState(queue, drawParameters, rejected, metadata, expand, depthCopy, [&] { return primitiveListRestart; }, [] {}, [] {});
 }
 
 std::optional<DrawVerdict> Driver::precheckDraw(const QueueState& queue, const Submission& submission, std::size_t packetOffset, std::span<const std::uint32_t> packet, const Pm4::DrawParameters& drawParameters, std::string& rejected, bool& traceIndirect) {
     std::optional<Graphics::ColorMetadataPass> metadata;
+    std::optional<Graphics::DepthExpandPass> expand;
     std::optional<Graphics::DepthCopyPass> depthCopy;
-    const auto outcome = precheckState(queue, drawParameters, rejected, metadata, depthCopy, [&] {
+    const auto outcome = precheckState(queue, drawParameters, rejected, metadata, expand, depthCopy, [&] {
         const auto restartDevice = device.Load();
         return restartDevice != nullptr && restartDevice->PrimitiveListRestart();
     }, [&] {
@@ -151,12 +166,17 @@ std::optional<DrawVerdict> Driver::precheckDraw(const QueueState& queue, const S
                 }
             }
             if (DrawPipeline::Active()) DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Packet, (packet[0] >> 8u) & 0xffu);
+            if (expand && drawParameters.indirect) {
+                recordQueuedLabelsBeforeRead(submission.queue);
+                if (!indirectRecordsDraw(*drawParameters.indirect)) return DrawVerdict::Nothing;
+            }
             GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Draw);
             std::lock_guard gpuLock(GuestMemory::GpuMutex());
             if (device == nullptr) device = std::make_shared<VulkanDevice>();
             const std::shared_ptr<VulkanDevice> localDevice = device;
             recordLabelsForPacket(localDevice.get(), submission.queue);
-            localDevice->ColorMetadataPass(*metadata);
+            if (metadata) localDevice->ColorMetadataPass(*metadata);
+            else localDevice->DepthExpandPass(*expand);
             return DrawVerdict::Drawn;
         }
         case DrawPrecheckOutcome::Nothing: return DrawVerdict::Nothing;

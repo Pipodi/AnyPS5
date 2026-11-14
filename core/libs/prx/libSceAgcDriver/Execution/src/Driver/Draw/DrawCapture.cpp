@@ -119,13 +119,25 @@ ShaderRecompiler::RecompileRequest DrawStageRequest(const DrawProgram& program, 
     return request;
 }
 
-std::uint64_t StageUserDataMask(const ShaderRecompiler::ResourceCapture& capture, const ShaderRecompiler::RecompileResult& compiled, const std::optional<ShaderRecompiler::ShaderVertexStageInfo>& vertexInfo) {
+std::uint64_t StageUserDataMask(const DrawProgram& program, const ShaderRecompiler::ResourceCapture& capture, const ShaderRecompiler::RecompileResult& compiled, const std::optional<ShaderRecompiler::ShaderVertexStageInfo>& vertexInfo) {
     const auto walked = capture.userDataUse.asValue | capture.userDataUse.asBase;
-    auto mask = walked == 0 ? ~std::uint64_t{0} : walked | compiled.userDataRegisterReads;
+    auto mask = capture.plan != nullptr && capture.plan->srtPlanComplete ? walked | compiled.userDataRegisterReads : ~std::uint64_t{0};
     if (vertexInfo) {
         for (const auto reg : {static_cast<std::uint32_t>(vertexInfo->fetchAttribReg), static_cast<std::uint32_t>(vertexInfo->fetchBufferReg)}) {
             mask |= reg + 1u < 64u ? std::uint64_t{3} << reg : ~std::uint64_t{0};
         }
+    }
+    if (program.snapshot && program.snapshot->userDataTailRegister) {
+        const auto reg = *program.snapshot->userDataTailRegister;
+        if (reg >= program.firstUserSgpr) {
+            const auto slot = reg - program.firstUserSgpr;
+            mask |= slot + 1u < 64u ? std::uint64_t{3} << slot : ~std::uint64_t{0};
+        } else {
+            mask = ~std::uint64_t{0};
+        }
+    }
+    if (program.snapshot && StageLinksUserDataCallees(*program.snapshot, program.codeOffset)) {
+        mask = ~std::uint64_t{0};
     }
     return mask;
 }
@@ -258,7 +270,7 @@ std::shared_ptr<const ShaderRecompiler::RecompileResult> Driver::materializeDraw
         throw named(error, request.context.memory);
     }
     timing.Mark("materialize");
-    stageCapture.userDataMask = StageUserDataMask(*capture, *stageCapture.compiled, vertexInfos[i]);
+    stageCapture.userDataMask = StageUserDataMask(program, *capture, *stageCapture.compiled, vertexInfos[i]);
     phaseTiming.Phase(DrawRowRecompile);
     return stageCapture.compiled;
 } catch (const std::exception& error) {
@@ -361,7 +373,7 @@ bool Driver::compileDrawAhead(std::uint64_t key, std::uint64_t shape, const std:
         stageCapture.compiled = invocation.Materialize(*capture);
         CommandMix::NoteMaterialized(*stageCapture.compiled, *capture);
         stageCapture.capture = capture;
-        stageCapture.userDataMask = StageUserDataMask(*capture, *stageCapture.compiled, vertexInfos[i]);
+        stageCapture.userDataMask = StageUserDataMask(program, *capture, *stageCapture.compiled, vertexInfos[i]);
         const auto& result = *stageCapture.compiled;
         const auto slotEnd = (pushCursorBytes / Graphics::PipelinePushSlotBytes + 1u) * Graphics::PipelinePushSlotBytes;
         require(result.pushConstants.size() <= slotEnd - pushCursorBytes, "stage push constants exceed the pipeline push constant block");

@@ -102,6 +102,7 @@ void NoteHtileMaskOnGpu(const Context& context, std::uint64_t address, std::size
 // The device's GPU fill of a uniform dword over guest memory (VulkanDevice::FillBuffer), per recorder; null removes it.
 using HtileFillOnGpu = std::function<bool(std::uint64_t address, std::size_t bytes, std::uint32_t word)>;
 void SetHtileFillOnGpu(const Recorder* recorder, HtileFillOnGpu fill);
+void NoteCopyDestination(std::uint64_t address, std::size_t bytes);
 void ArmHtileDepthClear(std::uint64_t htileAddress, std::size_t bytes);
 void QueueHtileDepthClear(std::uint64_t htileAddress, std::size_t bytes);
 void CompleteHtileDepthClear(std::uint64_t htileAddress, std::size_t bytes);
@@ -137,6 +138,14 @@ VkFormat HostDepthFormat(const Context& context, VkFormat format);
 float HostDepthBiasConstant(const Context& context, VkFormat format, float constant);
 std::shared_ptr<StorageTexture> DepthSurfaceStorage(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& resource, std::uint32_t mip);
 bool DepthSurfaceStoreBack(const Context& context, const StorageTexture& storage);
+void RunDepthExpandPass(const Context& context, const DepthExpandPass& pass);
+void StoreDepthExpandWrites(const Context& context);
+struct DepthExpandStatistics {
+    std::uint64_t expands = 0;
+    std::uint64_t skipped = 0;
+    std::uint64_t stored = 0;
+};
+DepthExpandStatistics DepthExpandCounts();
 std::array<std::uint32_t, 8> DepthCopySourceWords(const DepthTarget& target);
 class DepthCopySourceScope {
 public:

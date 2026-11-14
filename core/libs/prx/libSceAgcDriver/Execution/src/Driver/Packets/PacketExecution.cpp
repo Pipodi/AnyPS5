@@ -194,6 +194,9 @@ bool keepsDrawPipeline(std::span<const std::uint32_t> packet, std::uint32_t head
         case 0x3f: return true;
         case 0x46: return packet.size() >= 2 && (packet[1] & 0x3fu) != 0x39u;
         case 0x15: return orderedFills();
+        case 0x40:
+            return packet.size() >= 6 && !Pm4::CopyDataToRegister(packet) && Pm4::CopyDataSource(packet) == Pm4::CopyDataGpuClockSource &&
+                   !DrawPipeline::Queue0().Overlaps(packet[4] | (static_cast<std::uint64_t>(packet[5]) << 32u), Pm4::CopyDataBytes(packet));
         case 0x63: case 0x64: case 0x9f:
             return packet.size() >= 5 && !DrawPipeline::Queue0().Overlaps(packet[1] | (static_cast<std::uint64_t>(packet[2]) << 32u), static_cast<std::size_t>(packet[4]) * 8);
         case 0x50: {
@@ -285,7 +288,7 @@ void Driver::timed(double WorkerProfile::*bucket, TWork&& work) {
     if (report && bucket != &WorkerProfile::waitMs) PerformanceCounters::AddDriverNanoseconds(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count()));
 }
 
-void Driver::execute(const Submission& submission) {
+void Driver::execute(Submission& submission) {
     // The async compute ring records into the recorder's second lane (Recorder::AsyncLaneRing).
     const Graphics::Recorder::LaneScope laneScope(Graphics::Recorder::LaneOfQueue(submission.queue));
     auto* submissionTiming = includeTimingSubmission(submission, true);
@@ -294,6 +297,7 @@ void Driver::execute(const Submission& submission) {
         std::uint32_t queue;
         bool held;
         bool working;
+        std::shared_ptr<FlipWork> work;
         void Release() {
             if (!held) return;
             held = false;
@@ -303,13 +307,13 @@ void Driver::execute(const Submission& submission) {
             if (!working) return;
             const auto workSerial = driver.submitFlipWork(queue);
             working = false;
-            driver.finishFlipWork(workSerial);
+            driver.finishFlipWork(work, workSerial);
         }
         ~FlipHold() {
             Release();
-            if (working) driver.finishFlipWork(0);
+            if (working) driver.finishFlipWork(work, 0);
         }
-    } flipHold{*this, submission.queue, submission.holdsFlip, submission.holdsFlip};
+    } flipHold{*this, submission.queue, submission.holdsFlip, submission.holdsFlip, submission.flipWork};
     const bool pipelined = submission.queue == 0 && DrawPipeline::Depth() != 0;
     static const bool orderedWaits = std::getenv("APS5_PIPELINE_DRAIN_LABELS") == nullptr;
     DrawPipeline::Active() = pipelined;
@@ -426,10 +430,19 @@ void Driver::execute(const Submission& submission) {
             if (queue0) DrawFinisher::Get().Settle();
         }
     } settleFinisher{submission.queue == 0};
+    std::size_t nextSegment = 0;
     auto* const executingPacket = workerPacket();
     for (std::size_t cursor = 0; cursor < submission.commands.size();) {
         if (packetEpoch()) bumpEpoch(&EpochBumps::packets);
         CheckFailure();
+        while (nextSegment < submission.indirectSegments.size() && submission.indirectSegments[nextSegment].start <= cursor) {
+            if (submission.indirectSegments[nextSegment].start == cursor && refreshIndirectSegment(submission, nextSegment)) {
+                recent.commands = submission.commands;
+                continue;
+            }
+            ++nextSegment;
+        }
+        if (cursor >= submission.commands.size()) break;
         const auto header = submission.commands[cursor];
         if (Pm4::FillerPacket(header)) { ++cursor; continue; }
         const auto count = Pm4::PacketWords(header);
@@ -473,7 +486,7 @@ void Driver::execute(const Submission& submission) {
                 continue;
             }
             if (!DrawPipeline::Queue0().Overlaps(awaited, awaitedBytes) && Pm4::WaitSatisfiedUnchecked(packet) && !OwnStoreRejects(packet, awaited, awaitedBytes, submission.queue)) {
-                bumpEpoch(&EpochBumps::waits);
+                bumpWaitEpoch(awaited, awaitedBytes);
                 ++waitOutcomes().atEntry;
                 gateOpened() = true;
                 noteLabelPass(packet, submission.queue);
@@ -799,8 +812,8 @@ void Driver::execute(const Submission& submission) {
         }
         if ((std::atomic_ref<std::uint32_t>(*const_cast<std::uint32_t*>(submission.rewindTail - 1)).load(std::memory_order_acquire) & 0x80000000u) != 0) {
             const bool holdsFlip = std::exchange(flipHold.working, false);
-            DrawPipeline::Queue0().Enqueue(DrawPipeline::CommitKind::SubmitEnd, [this, holdsFlip, progress = submission.progress] {
-                if (holdsFlip) finishFlipWork(submitFlipWork(0));
+            DrawPipeline::Queue0().Enqueue(DrawPipeline::CommitKind::SubmitEnd, [this, holdsFlip, flipWork = submission.flipWork, progress = submission.progress] {
+                if (holdsFlip) finishFlipWork(flipWork, submitFlipWork(0));
                 else submitOpenWork(progress);
                 wakeQueueZeroForCompletions();
             }, {});

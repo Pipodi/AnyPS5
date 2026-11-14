@@ -5,6 +5,7 @@
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTrace.hpp"
 #include "prx/libSceAgcDriver/Execution/include/HandoffSpin.hpp"
+#include "prx/libSceAgcDriver/Execution/include/ProfileCounter.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/WorkerSampler.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GpuWindowSampler.hpp"
@@ -32,11 +33,11 @@ constexpr std::array<const char*, static_cast<std::size_t>(DrawPipeline::DrainRe
 constexpr std::array<const char*, static_cast<std::size_t>(DrawPipeline::CommitKind::Count)> KindNames{"other", "draw", "indirect", "colormeta", "dispatch", "sampledump", "dmafill", "dmawrite", "dmacopy", "store", "endofpipe", "seal", "submitend", "completion", "bufferfill"};
 
 std::atomic<unsigned> runningCommitters{0};
-std::atomic<std::uint64_t> drawKeys{0};
-std::atomic<std::uint64_t> drawKeysSameAsPrevious{0};
-std::atomic<std::uint64_t> drawKeysSeenRecently{0};
-std::atomic<std::uint64_t> drawShapesSameAsPrevious{0};
-std::atomic<std::uint64_t> drawShapesSeenRecently{0};
+ProfileCounter drawKeys;
+ProfileCounter drawKeysSameAsPrevious;
+ProfileCounter drawKeysSeenRecently;
+ProfileCounter drawShapesSameAsPrevious;
+ProfileCounter drawShapesSeenRecently;
 
 std::uint64_t elapsedNs(std::chrono::steady_clock::time_point since) {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - since).count());
@@ -62,9 +63,9 @@ thread_local DrawPipeline::CommitTake currentTake;
 std::atomic<std::uint64_t> producerGpuWaits{0};
 std::atomic<std::uint64_t> producerGpuWaitNs{0};
 
-std::atomic<std::uint64_t> heldReadRanges{0};
-std::atomic<std::uint64_t> heldReadQueries{0};
-std::atomic<std::uint64_t> heldReadHits{0};
+ProfileCounter heldReadRanges;
+ProfileCounter heldReadQueries;
+ProfileCounter heldReadHits;
 
 template<typename TItem>
 struct ClearOnExit {
@@ -93,15 +94,15 @@ bool DrawPipeline::MetadataPassesPipelined() {
 }
 
 namespace {
-std::atomic<std::uint64_t> pipelinedMetadataPasses{0};
+ProfileCounter pipelinedMetadataPasses;
 }
 
 std::uint64_t DrawPipeline::PipelinedMetadataPasses() {
-    return pipelinedMetadataPasses.load(std::memory_order_relaxed);
+    return pipelinedMetadataPasses.Sum();
 }
 
 void DrawPipeline::CountPipelinedMetadataPass() {
-    pipelinedMetadataPasses.fetch_add(1, std::memory_order_relaxed);
+    pipelinedMetadataPasses.Add(1);
 }
 
 bool DrawFinisher::Overlap() {
@@ -229,6 +230,7 @@ void DrawFinisher::Enqueue(Job job, Pending held) {
 }
 
 void DrawFinisher::run() {
+    NameDriverThread("draw-finish");
     PerformanceTrace::BindThread("draw finisher");
     ReserveFinisherCore();
     for (;;) {
@@ -437,11 +439,11 @@ void DrawPipeline::NoteDrawKey(std::uint64_t key, std::uint64_t shape) {
     thread_local std::uint64_t previousShape = 0;
     const auto shapeSlot = static_cast<std::size_t>((shape ^ (shape >> 29u)) % RecentSlots);
     const auto slot = static_cast<std::size_t>((key ^ (key >> 29u)) % RecentSlots);
-    drawKeys.fetch_add(1, std::memory_order_relaxed);
-    if (key == previous) drawKeysSameAsPrevious.fetch_add(1, std::memory_order_relaxed);
-    if (recent[slot] == key) drawKeysSeenRecently.fetch_add(1, std::memory_order_relaxed);
-    if (shape == previousShape) drawShapesSameAsPrevious.fetch_add(1, std::memory_order_relaxed);
-    if (recentShapes[shapeSlot] == shape) drawShapesSeenRecently.fetch_add(1, std::memory_order_relaxed);
+    drawKeys.Add(1);
+    if (key == previous) drawKeysSameAsPrevious.Add(1);
+    if (recent[slot] == key) drawKeysSeenRecently.Add(1);
+    if (shape == previousShape) drawShapesSameAsPrevious.Add(1);
+    if (recentShapes[shapeSlot] == shape) drawShapesSeenRecently.Add(1);
     recent[slot] = key;
     previous = key;
     recentShapes[shapeSlot] = shape;
@@ -484,7 +486,7 @@ void DrawPipeline::enqueue(Item item) {
     const auto depthAtPush = items.size();
     depthSum += items.size();
     ++enqueued;
-    heldReadRanges.fetch_add(item.reads.size(), std::memory_order_relaxed);
+    heldReadRanges.Add(item.reads.size());
     const bool prepared = static_cast<bool>(item.prepare);
     item.depthAtPush = depthAtPush;
     if (drainedSinceEnqueue) {
@@ -562,7 +564,7 @@ void DrawPipeline::report(std::chrono::steady_clock::time_point now) {
     const auto queued = enqueued == 0 ? 0.0 : static_cast<double>(depthSum) / static_cast<double>(enqueued);
     const auto decodeDrainCount = decodeDrains.load(std::memory_order_relaxed);
     char reads[96];
-    std::snprintf(reads, sizeof(reads), " %llu read ranges, %llu stores held, %llu decode drains", static_cast<unsigned long long>(heldReadRanges.load(std::memory_order_relaxed)), static_cast<unsigned long long>(heldReadHits.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(decodeDrainCount - reportedDecodeDrains));
+    std::snprintf(reads, sizeof(reads), " %llu read ranges, %llu stores held, %llu decode drains", static_cast<unsigned long long>(heldReadRanges.Sum()), static_cast<unsigned long long>(heldReadHits.Take()), static_cast<unsigned long long>(decodeDrainCount - reportedDecodeDrains));
     reportedDecodeDrains = decodeDrainCount;
     std::array<std::uint64_t, static_cast<std::size_t>(Event::Count)> counted{};
     for (std::size_t i = 0; i < counted.size(); ++i) {
@@ -598,7 +600,7 @@ void DrawPipeline::report(std::chrono::steady_clock::time_point now) {
     }
     AgcDriver::ProfilePrint_nid_no_patch("[commits] by kind (10 s):%s\n", kindText.c_str());
     const auto vk = Graphics::TakeVkDrawCounts();
-    AgcDriver::ProfilePrint_nid_no_patch("[vkdraw] (10 s): %llu vkCmdDraw, %llu vkCmdDrawIndexed, %llu vkCmdDrawIndirect calls, %llu mesh; draw keys %llu, same as the previous draw %llu, seen within the last 4096 draws %llu; draw shapes (state without per-draw user words) same as the previous %llu, seen within the last 4096 %llu\n", static_cast<unsigned long long>(vk.direct), static_cast<unsigned long long>(vk.indexed), static_cast<unsigned long long>(vk.indirect), static_cast<unsigned long long>(vk.mesh), static_cast<unsigned long long>(drawKeys.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(drawKeysSameAsPrevious.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(drawKeysSeenRecently.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(drawShapesSameAsPrevious.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(drawShapesSeenRecently.exchange(0, std::memory_order_relaxed)));
+    AgcDriver::ProfilePrint_nid_no_patch("[vkdraw] (10 s): %llu vkCmdDraw, %llu vkCmdDrawIndexed, %llu vkCmdDrawIndirect calls, %llu mesh; draw keys %llu, same as the previous draw %llu, seen within the last 4096 draws %llu; draw shapes (state without per-draw user words) same as the previous %llu, seen within the last 4096 %llu\n", static_cast<unsigned long long>(vk.direct), static_cast<unsigned long long>(vk.indexed), static_cast<unsigned long long>(vk.indirect), static_cast<unsigned long long>(vk.mesh), static_cast<unsigned long long>(drawKeys.Take()), static_cast<unsigned long long>(drawKeysSameAsPrevious.Take()), static_cast<unsigned long long>(drawKeysSeenRecently.Take()), static_cast<unsigned long long>(drawShapesSameAsPrevious.Take()), static_cast<unsigned long long>(drawShapesSeenRecently.Take()));
     commits = commitNs = commitErrors = enqueued = fullWaitNs = depthSum = wakes = lockWaitNs = 0;
     roomWaits = roomWakeNs = drainWaits = drainWakeNs = committerIdles = committerIdleNs = committerWakeNs = 0;
     drains = {};
@@ -607,6 +609,7 @@ void DrawPipeline::report(std::chrono::steady_clock::time_point now) {
 
 
 void DrawPipeline::run() {
+    NameDriverThread("draw-commit");
     PerformanceTrace::BindThread("draw committer");
     Graphics::MarkBuildThread(Graphics::BuildThread::Committer);
     ReserveCommitterCore();
@@ -803,13 +806,13 @@ bool DrawPipeline::HeldReads(std::uint64_t address, std::size_t bytes) {
     const auto end = address + bytes;
     auto& pipeline = Queue0();
     std::lock_guard lock(pipeline.mutex);
-    heldReadQueries.fetch_add(1, std::memory_order_relaxed);
+    heldReadQueries.Add(1);
     static const bool bounds = std::getenv("APS5_NO_HELD_READ_BOUNDS") == nullptr;
     for (const auto& item : pipeline.items) {
         if (bounds && (address >= item.readBounds.second || item.readBounds.first >= end)) continue;
         for (const auto& [begin, limit] : item.reads) {
             if (address >= limit || begin >= end) continue;
-            heldReadHits.fetch_add(1, std::memory_order_relaxed);
+            heldReadHits.Add(1);
             return true;
         }
     }
@@ -817,7 +820,7 @@ bool DrawPipeline::HeldReads(std::uint64_t address, std::size_t bytes) {
 }
 
 std::uint64_t DrawPipeline::HeldReadQueries() {
-    return heldReadQueries.load(std::memory_order_relaxed);
+    return heldReadQueries.Sum();
 }
 
 void DrawPipeline::ReleaseRunningReads() {
