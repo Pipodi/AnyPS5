@@ -2029,7 +2029,7 @@ void CommittedAbis() {
     other.get();
     Require(unblocked && repeatedBuilds == 0, "resolving ABIs the shaders already had waited for another thread's shader preparation, or prepared them again");
     Require(excluded, "a new ABI was published beside a shader preparation that had read prepared state");
-    if (std::getenv("APS5_SYNC_SHADER_PREPARE") != nullptr || std::getenv("APS5_LAZY_SHADER_PREPARE") != nullptr) return;
+    if (std::getenv("APS5_SYNC_SHADER_PREPARE") != nullptr || std::getenv("APS5_LAZY_SHADER_PREPARE") != nullptr || std::getenv("APS5_INLINE_SHADER_PREPARE") != nullptr) return;
     SettleResolvedAbis();
     std::promise<void> release;
     const auto released = release.get_future().share();

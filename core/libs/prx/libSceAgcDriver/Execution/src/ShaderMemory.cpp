@@ -674,11 +674,11 @@ bool ShaderMemory::accessibleProbe(ShaderMemory& self, std::uint64_t address, st
 
 bool ShaderMemory::pending(void* context, std::uint64_t address, std::uint64_t bytes) {
     const auto& self = *static_cast<const ShaderMemory*>(context);
-    if (self.pendingSpan == nullptr || bytes == 0) {
+    if (self.pendingWrite == nullptr || bytes == 0) {
         if (self.recordProbes) self.probes.push_back({address, bytes, true, false});
         return false;
     }
-    const auto policy = self.pendingSpan(address, static_cast<std::size_t>(bytes), {});
+    const auto policy = self.pendingWrite(address, static_cast<std::size_t>(bytes), {});
     const bool answer = policy == PendingWrite::Sync || policy == PendingWrite::VerifyRaw || policy == PendingWrite::VerifyKnownValue;
     if (self.recordProbes) self.probes.push_back({address, bytes, true, answer});
     return answer;
