@@ -45,6 +45,7 @@
 #include "Optimization/include/Optimization/DescriptorBindingBuilder.hpp"
 #include "Optimization/include/Optimization/HostInterpolationChecker.hpp"
 #include "Optimization/include/Optimization/MaskedSelectEliminator.hpp"
+#include "Optimization/include/Optimization/NanPayloadEliminator.hpp"
 #include "Optimization/include/Optimization/ReadLaneEliminator.hpp"
 #include "Optimization/include/Optimization/GotoPhiRefiner.hpp"
 #include "Optimization/include/Optimization/RedundantValueEliminator.hpp"
@@ -438,7 +439,7 @@ IrProgram PrepareResourceProgram(const RecompileRequest& request, ShaderPreparat
     };
     simplify();
     if (stageKind == ShaderStageKind::Pixel && !translateOptions.fragmentShaderBarycentricEnabled) program.Metadata().barycentricBuiltinsUnnormalized = request.target.fragmentBarycentricBuiltins && !hostInterpolationFirst;
-    if (stageKind == ShaderStageKind::Pixel && !translateOptions.fragmentShaderBarycentricEnabled && !HostInterpolationChecker{}.Lower(program, *inputInfo.pixel, request.target.fragmentBarycentricBuiltins && !hostInterpolationFirst)) {
+    if (stageKind == ShaderStageKind::Pixel && !translateOptions.fragmentShaderBarycentricEnabled && !HostInterpolationChecker{}.Lower(program, *inputInfo.pixel, request.target.fragmentBarycentricBuiltins && !hostInterpolationFirst, !hostInterpolationFirst)) {
         translateOptions.fragmentShaderBarycentricEnabled = true;
         program = translator.Translate(decoded, cfg, translateOptions);
         program.Metadata().barycentricEmulation = !hostInterpolationFirst;
@@ -448,6 +449,12 @@ IrProgram PrepareResourceProgram(const RecompileRequest& request, ShaderPreparat
     constexpr DenormalFlushEliminator denormalFlushEliminator;
     if (denormalFlushEliminator.Eliminate(program).removedFlushes != 0u) {
         deadCodeEliminator.Eliminate(program);
+    }
+
+    static const bool nanPayloadElimination = std::getenv("APS5_NO_NAN_PAYLOAD_ELIMINATION") == nullptr;
+    if (nanPayloadElimination && ExactF32Arithmetic()) {
+        constexpr NanPayloadEliminator nanPayloadEliminator;
+        if (nanPayloadEliminator.Eliminate(program).removedSelects != 0u) deadCodeEliminator.Eliminate(program);
     }
 
     if (inputInfo.vertex != nullptr) {
@@ -512,6 +519,10 @@ struct SourceEntry : std::enable_shared_from_this<SourceEntry> {
     std::uint64_t codeAddress = 0;
     std::vector<std::uint32_t> linkedCallFallbacks;
     std::shared_ptr<const IrResourcePlan> plan;
+    std::vector<std::byte> planKey;
+    std::uint64_t planShaderHash = 0;
+    std::uint64_t planBytes = 0;
+    std::uint64_t planUsed = 0;
     bool runtimeCaptured = false;
     // A plan build that threw (an unsupported resource chain or control flow) is remembered and
     // rethrown: the front end ran every pass before failing, ~13 ms per dispatch of a shader the
@@ -586,6 +597,140 @@ bool diskPlans() {
     return enabled && ShaderDiskCache::Enabled() && !DebugProbeActive();
 }
 
+bool sameLayout(const BindingLayout& left, const BindingLayout& right);
+void attachSubstitutes(CompiledVariant& variant);
+
+struct ResourcePlanState {
+    std::atomic<std::uint64_t> heldBytes{0};
+    std::atomic<std::uint64_t> heldPlans{0};
+    std::atomic<std::uint64_t> evictions{0};
+    std::atomic<std::uint64_t> reloads{0};
+    std::atomic<std::uint64_t> clock{0};
+    std::atomic<std::uint64_t> trimmedTo{0};
+    std::mutex registryMutex;
+    std::vector<std::weak_ptr<SourceEntry>> sources;
+    std::mutex trimMutex;
+    std::mutex reportMutex;
+    std::uint64_t reportedReloads = 0;
+    std::uint64_t reportedEvictions = 0;
+    std::function<void()> reportHook;
+};
+
+ResourcePlanState& resourcePlans() {
+    static ResourcePlanState state;
+    return state;
+}
+
+std::atomic<std::uint64_t>& resourcePlanBudgetBytes() {
+    static std::atomic<std::uint64_t> budget{[] {
+        const char* value = std::getenv("APS5_RESOURCE_PLAN_MB");
+        if (value != nullptr && *value != '\0') return static_cast<std::uint64_t>(std::strtoull(value, nullptr, 10)) << 20u;
+        return std::uint64_t{0};
+    }()};
+    return budget;
+}
+
+std::uint64_t resourcePlanBytes(const IrResourcePlan& plan) {
+    const auto bytes = [](const auto& values) { return static_cast<std::uint64_t>(values.capacity()) * sizeof(values[0]); };
+    auto total = static_cast<std::uint64_t>(sizeof(IrResourcePlan)) + static_cast<std::uint64_t>(plan.valueStorage.Size()) * sizeof(IrValue) + static_cast<std::uint64_t>(plan.blockStorage.size()) * sizeof(IrBlock);
+    for (const auto& value : plan.valueStorage) {
+        if (value.Arguments().capacity() > IrOperands::InlineCapacity) total += static_cast<std::uint64_t>(value.Arguments().capacity()) * sizeof(IrValue*);
+        total += bytes(value.OperandUses());
+    }
+    total += bytes(plan.blockStorage) + bytes(plan.memoryInfo) + bytes(plan.descriptorSources) + bytes(plan.controlFlow) + bytes(plan.materializationSources) + bytes(plan.srtReads) + bytes(plan.guardedSrtSlots) + bytes(plan.cleanFlatSlots) + bytes(plan.pureFlatSlots);
+    total += bytes(plan.compact.values) + bytes(plan.compact.arguments) + bytes(plan.compact.sourceDwords) + bytes(plan.compact.srtReads) + bytes(plan.compact.conditions);
+    return total;
+}
+
+void holdPlan(SourceEntry& source) {
+    auto& plans = resourcePlans();
+    source.planBytes = resourcePlanBytes(*source.plan);
+    source.planUsed = plans.clock.fetch_add(1, std::memory_order_relaxed) + 1u;
+    plans.heldBytes.fetch_add(source.planBytes, std::memory_order_relaxed);
+    plans.heldPlans.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::shared_ptr<const IrResourcePlan> takePlan(SourceEntry& source) {
+    if (source.plan == nullptr) return nullptr;
+    auto& plans = resourcePlans();
+    plans.heldBytes.fetch_sub(source.planBytes, std::memory_order_relaxed);
+    plans.heldPlans.fetch_sub(1, std::memory_order_relaxed);
+    source.planBytes = 0;
+    return std::exchange(source.plan, nullptr);
+}
+
+bool reloadPlan(SourceEntry& source) {
+    if (source.planKey.empty() || !diskPlans()) return false;
+    source.plan = ShaderDiskCache::LoadSharedPlan(source.planKey, source.planShaderHash);
+    if (source.plan == nullptr) return false;
+    resourcePlans().reloads.fetch_add(1, std::memory_order_relaxed);
+    holdPlan(source);
+    return true;
+}
+
+bool evictablePlan(const SourceEntry& source) {
+    return source.plan != nullptr && !source.planKey.empty();
+}
+
+void trimResourcePlans(std::uint64_t budget) {
+    auto& plans = resourcePlans();
+    if (budget == 0 || plans.heldBytes.load(std::memory_order_relaxed) <= budget || !diskPlans()) return;
+    std::unique_lock trim(plans.trimMutex, std::try_to_lock);
+    if (!trim.owns_lock()) return;
+    std::vector<std::shared_ptr<SourceEntry>> sources;
+    {
+        std::lock_guard lock(plans.registryMutex);
+        std::erase_if(plans.sources, [](const auto& weak) { return weak.expired(); });
+        sources.reserve(plans.sources.size());
+        for (const auto& weak : plans.sources) {
+            if (auto source = weak.lock()) sources.push_back(std::move(source));
+        }
+    }
+    struct Owner {
+        SourceEntry* source;
+        std::uint64_t used;
+    };
+    struct Candidate {
+        std::uint64_t used = 0;
+        const IrResourcePlan* plan = nullptr;
+        std::vector<Owner> owners;
+    };
+    std::vector<Candidate> candidates;
+    std::unordered_map<const IrResourcePlan*, std::size_t> candidateOf;
+    for (const auto& source : sources) {
+        std::unique_lock lock(source->mutex, std::try_to_lock);
+        if (!lock.owns_lock() || !evictablePlan(*source)) continue;
+        const auto [found, inserted] = candidateOf.try_emplace(source->plan.get(), candidates.size());
+        if (inserted) candidates.push_back({0, source->plan.get(), {}});
+        auto& candidate = candidates[found->second];
+        candidate.used = std::max(candidate.used, source->planUsed);
+        candidate.owners.push_back({source.get(), source->planUsed});
+    }
+    std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right) { return left.used < right.used; });
+    const auto target = budget / 4u * 3u;
+    std::vector<std::shared_ptr<const IrResourcePlan>> released;
+    for (const auto& candidate : candidates) {
+        if (plans.heldBytes.load(std::memory_order_relaxed) <= target) break;
+        std::vector<std::unique_lock<std::mutex>> locks;
+        locks.reserve(candidate.owners.size());
+        for (const auto& owner : candidate.owners) {
+            std::unique_lock lock(owner.source->mutex, std::try_to_lock);
+            if (!lock.owns_lock() || owner.source->plan.get() != candidate.plan || !evictablePlan(*owner.source) || owner.source->planUsed != owner.used) break;
+            locks.push_back(std::move(lock));
+        }
+        if (locks.size() != candidate.owners.size() || candidate.owners.front().source->plan.use_count() != static_cast<long>(candidate.owners.size())) continue;
+        for (const auto& owner : candidate.owners) released.push_back(takePlan(*owner.source));
+        plans.evictions.fetch_add(candidate.owners.size(), std::memory_order_relaxed);
+    }
+    plans.trimmedTo.store(plans.heldBytes.load(std::memory_order_relaxed), std::memory_order_relaxed);
+}
+
+void trimResourcePlansOverBudget() {
+    const auto budget = resourcePlanBudgetBytes().load(std::memory_order_relaxed);
+    if (resourcePlans().heldBytes.load(std::memory_order_relaxed) < resourcePlans().trimmedTo.load(std::memory_order_relaxed) + budget / 8u) return;
+    trimResourcePlans(budget);
+}
+
 std::shared_ptr<SourceEntry> findSource(const RecompileRequest& request) {
     static PrimedSharedMutex mutex;
     // Entries whose code hashes alike share a bucket; the code comparison picks the right one.
@@ -625,6 +770,9 @@ std::shared_ptr<SourceEntry> findSource(const RecompileRequest& request) {
                 if (profile) std::fprintf(stderr, "[recompile] source key collision %llu: %zu entries share a key (%zu code words)\n", static_cast<unsigned long long>(collisions), bucket.size() + 1, request.shader.code.size());
             }
             bucket.push_back(source);
+            auto& plans = resourcePlans();
+            std::lock_guard registry(plans.registryMutex);
+            plans.sources.push_back(source);
         }
     }
     return source;
@@ -633,6 +781,7 @@ std::shared_ptr<SourceEntry> findSource(const RecompileRequest& request) {
 void ensureSourcePlanLocked(SourceEntry& source, const RecompileRequest& request, ShaderPreparationContext* preparation, bool retainProgram, bool reclaim = true) {
     if (source.plan != nullptr) return;
     if (FailureMemo() && source.planFailure) std::rethrow_exception(source.planFailure);
+    if (reloadPlan(source)) return;
     auto planRequest = request;
     planRequest.shader.codeAddress = source.codeAddress;
     const bool disk = diskPlans();
@@ -640,7 +789,12 @@ void ensureSourcePlanLocked(SourceEntry& source, const RecompileRequest& request
     if (disk) {
         ShaderDiskCache::BuildPlanKey(planRequest, HostSubgroupSize(planRequest), planKey);
         source.plan = ShaderDiskCache::LoadSharedPlan(planKey, planRequest.shader.codeAddress);
-        if (source.plan != nullptr) return;
+        if (source.plan != nullptr) {
+            source.planKey = std::move(planKey);
+            source.planShaderHash = planRequest.shader.codeAddress;
+            holdPlan(source);
+            return;
+        }
     }
     try {
         ResourceProgram resource(planRequest, preparation, reclaim);
@@ -650,7 +804,12 @@ void ensureSourcePlanLocked(SourceEntry& source, const RecompileRequest& request
         if (FailureMemo()) source.planFailure = std::current_exception();
         throw;
     }
-    if (disk) ShaderDiskCache::StorePlan(std::move(planKey), source.plan);
+    if (disk) {
+        source.planKey = planKey;
+        source.planShaderHash = planRequest.shader.codeAddress;
+        ShaderDiskCache::StorePlan(std::move(planKey), source.plan);
+    }
+    holdPlan(source);
 }
 
 std::shared_ptr<SourceEntry> getSource(const RecompileRequest& request, ShaderPreparationContext* preparation = nullptr, bool reclaim = true) {
@@ -664,13 +823,15 @@ std::shared_ptr<const IrResourcePlan> captureSourcePlan(SourceEntry& source, con
     std::lock_guard lock(source.mutex);
     ensureSourcePlanLocked(source, request, nullptr, false);
     if (runtimeCapture) source.runtimeCaptured = true;
+    source.planUsed = resourcePlans().clock.fetch_add(1, std::memory_order_relaxed) + 1u;
     return source.plan;
 }
 
 void releaseUndrawnPlan(const SourceHandle& handle) {
     if (handle.source == nullptr || !diskPlans()) return;
+    std::shared_ptr<const IrResourcePlan> released;
     std::lock_guard lock(handle.source->mutex);
-    if (!handle.source->runtimeCaptured) handle.source->plan.reset();
+    if (!handle.source->runtimeCaptured) released = takePlan(*handle.source);
 }
 
 bool LazyCapturePlan() {
@@ -873,6 +1034,7 @@ CompiledVariant emitVariant(const RecompileRequest& request, IrProgram& program)
     targetOptions.meshWindowBuffer = request.target.meshWindowBuffer;
     targetOptions.float16WidenNans = request.target.float16WidenNans;
     targetOptions.float16NarrowNans = request.target.float16NarrowNans;
+    targetOptions.meshInlineFunctions = request.target.meshInlineFunctions;
 
     constexpr SpirvEmitter spirvEmitter;
     CompiledShaderArtifact result;
@@ -2215,6 +2377,9 @@ void reportResultMemo() {
     const auto evictions = counters.evictions.exchange(0, std::memory_order_relaxed);
     const auto populate = counters.populateNanoseconds.exchange(0, std::memory_order_relaxed);
     std::fprintf(stderr, "[recompile] result memo (10 s): %llu hits, %llu misses (%.1f%% hits), Populate %.1f us per miss / %.1f ms in total, %llu evictions; live %llu results, %.1f MiB (%.0f MiB per source at most)\n", static_cast<unsigned long long>(hits), static_cast<unsigned long long>(misses), hits + misses != 0 ? 100.0 * static_cast<double>(hits) / static_cast<double>(hits + misses) : 0.0, misses != 0 ? static_cast<double>(populate) / 1000.0 / static_cast<double>(misses) : 0.0, static_cast<double>(populate) / 1e6, static_cast<unsigned long long>(evictions), static_cast<unsigned long long>(counters.liveEntries.load(std::memory_order_relaxed)), static_cast<double>(counters.liveBytes.load(std::memory_order_relaxed)) / 1048576.0, static_cast<double>(resultMemoSourceBytes().load(std::memory_order_relaxed)) / 1048576.0);
+    auto& plans = resourcePlans();
+    const auto interval = TakeResourcePlanInterval();
+    std::fprintf(stderr, "[recompile] resource plans (10 s): %llu reloaded, %llu evicted; %llu plans held, %.1f MiB of a %.1f MiB budget\n", static_cast<unsigned long long>(interval.reloads), static_cast<unsigned long long>(interval.evictions), static_cast<unsigned long long>(plans.heldPlans.load(std::memory_order_relaxed)), static_cast<double>(plans.heldBytes.load(std::memory_order_relaxed)) / 1048576.0, static_cast<double>(resourcePlanBudgetBytes().load(std::memory_order_relaxed)) / 1048576.0);
 }
 
 // Everything materializeResult reads besides the variant: the snapshot (the descriptor words, the
@@ -2495,7 +2660,9 @@ std::shared_ptr<const IrResourcePlan> GetResourcePlan(const RecompileRequest& re
     static_cast<void>(RequestInputInfo(request));
     if (request.useCache) {
         const auto source = getSource(request);
-        return captureSourcePlan(*source, request, false);
+        auto plan = captureSourcePlan(*source, request, false);
+        trimResourcePlansOverBudget();
+        return plan;
     }
     return makeResourcePlan(request);
 }
@@ -2536,6 +2703,7 @@ std::shared_ptr<const ResourceCapture> CaptureResources(const RecompileRequest& 
     if (request.useCache) {
         capture->source = getSource(request);
         capture->plan = captureSourcePlan(*capture->source, request);
+    trimResourcePlansOverBudget();
     } else {
         capture->plan = makeResourcePlan(request);
     }
@@ -2555,7 +2723,7 @@ std::shared_ptr<const SourceHandle> PrepareShader(const RecompileRequest& reques
 }
 
 std::shared_ptr<const SourceHandle> PrepareShader(const RecompileRequest& request, ShaderPreparationContext* preparation) {
-    return recompileReporting(request, [&]() -> std::shared_ptr<const SourceHandle> {
+    auto prepared = recompileReporting(request, [&]() -> std::shared_ptr<const SourceHandle> {
         static_cast<void>(RequestInputInfo(request));
         auto handle = std::make_shared<SourceHandle>();
         handle->source = LazyCapturePlan() ? findSource(request) : getSource(request, preparation, false);
@@ -2567,6 +2735,8 @@ std::shared_ptr<const SourceHandle> PrepareShader(const RecompileRequest& reques
         handle->artifact = findOrCompileVariant(*handle->source, request, cacheHit, preparation);
         return handle;
     });
+    trimResourcePlansOverBudget();
+    return prepared;
 }
 
 bool MatchesPreparedShader(const RecompileRequest& request, const SourceHandle& handle) {
@@ -2682,6 +2852,7 @@ std::shared_ptr<const ResourceCapture> PreparedShaderInvocation::Capture(const S
     auto capture = std::make_shared<ResourceCapture>();
     capture->source = handle->source;
     capture->plan = captureSourcePlan(*handle->source, request);
+    trimResourcePlansOverBudget();
     materializeCapture(*capture, runtime, request.target.bdaAbiVersion == BdaAbi::Version);
     return capture;
 }
@@ -2857,6 +3028,7 @@ std::shared_ptr<const ResourceCapture> CaptureResources(const RecompileRequest& 
     auto capture = std::make_shared<ResourceCapture>();
     capture->source = handle.source;
     capture->plan = captureSourcePlan(*handle.source, request);
+    trimResourcePlansOverBudget();
     if (profile) capture->sourceNanoseconds = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count());
     materializeCapture(*capture, runtime, request.target.bdaAbiVersion == BdaAbi::Version);
     return capture;
@@ -2940,6 +3112,32 @@ bool EnvironmentGuardEnabled(EnvironmentGuard guard) {
 
 void RefreshEnvironmentGuards() {
     for (auto& state : environmentGuardStates()) state.store(0u, std::memory_order_relaxed);
+}
+
+void SetResourcePlanBudget(std::uint64_t bytes) {
+    resourcePlanBudgetBytes().store(bytes, std::memory_order_relaxed);
+    resourcePlans().trimmedTo.store(0, std::memory_order_relaxed);
+    trimResourcePlans(bytes);
+}
+
+ResourcePlanInterval TakeResourcePlanInterval() {
+    auto& plans = resourcePlans();
+    std::lock_guard lock(plans.reportMutex);
+    const auto reloads = plans.reloads.load(std::memory_order_relaxed);
+    const auto evictions = plans.evictions.load(std::memory_order_relaxed);
+    if (auto hook = std::exchange(plans.reportHook, nullptr)) hook();
+    return {reloads - std::exchange(plans.reportedReloads, reloads), evictions - std::exchange(plans.reportedEvictions, evictions)};
+}
+
+void SetResourcePlanReportHook(std::function<void()> hook) {
+    auto& plans = resourcePlans();
+    std::lock_guard lock(plans.reportMutex);
+    plans.reportHook = std::move(hook);
+}
+
+ResourcePlanCounters ResourcePlanTotals() {
+    auto& plans = resourcePlans();
+    return {plans.heldBytes.load(std::memory_order_relaxed), plans.heldPlans.load(std::memory_order_relaxed), plans.evictions.load(std::memory_order_relaxed), plans.reloads.load(std::memory_order_relaxed)};
 }
 
 }
