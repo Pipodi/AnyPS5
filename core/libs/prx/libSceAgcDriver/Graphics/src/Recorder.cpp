@@ -2556,6 +2556,7 @@ VkCommandBuffer Recorder::SplitForRun() {
     }
     open->chunks.push_back(open->commands);
     open->commands = next;
+    open->graphicsState.Begin(next, std::getenv("APS5_NO_STATE_SUPPRESSION") == nullptr);
     open->prelude.armed = true;
     batchedCounters.splits.fetch_add(1, std::memory_order_relaxed);
     return next;
