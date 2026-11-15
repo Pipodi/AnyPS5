@@ -20,7 +20,9 @@
 #include "prx/libSceAgcDriver/Execution/include/Mutex.hpp"
 #include "prx/libSceAgcDriver/Execution/include/MemoryStats.hpp"
 #include "SpirvBackend/SpirvAnalysis.hpp"
+#if ANYPS5_ENABLE_SPIRV_TOOLS
 #include "SpirvBackend/SpirvOptimizer.hpp"
+#endif
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -45,6 +47,13 @@
 namespace AgcDriver::Graphics {
 
 namespace {
+std::uint64_t ThreadOptimizerNsOrZero() {
+#if ANYPS5_ENABLE_SPIRV_TOOLS
+    return ShaderRecompiler::ThreadOptimizerNs();
+#else
+    return 0;
+#endif
+}
 
 bool LogicOpFormat(VkFormat format) {
     switch (format) {
@@ -1624,13 +1633,13 @@ std::shared_ptr<Pipeline> CachedPipeline(const Context& context, const State& st
     // parallel when several threads build at once.
     static const bool logBuilds = std::getenv("APS5_LOG_PIPELINE_BUILDS") != nullptr;
     const auto partsBefore = logBuilds ? PipelineLibraryCountersOf(context.device) : PipelineLibraryCounters{};
-    const auto optimizerBefore = ShaderRecompiler::ThreadOptimizerNs();
+    const auto optimizerBefore = ThreadOptimizerNsOrZero();
     const auto emitBefore = ShaderRecompiler::ThreadEmitNs();
     const auto driverBefore = MemoryStats::ThreadGraphicsPipelineCreateNs();
     const auto buildStart = std::chrono::steady_clock::now();
     auto pipeline = std::make_shared<Pipeline>(context, state, vertexInput, resources, shaders, attachmentLayout);
     const auto buildUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - buildStart).count();
-    const auto optimizerMs = static_cast<double>(ShaderRecompiler::ThreadOptimizerNs() - optimizerBefore) / 1e6;
+    const auto optimizerMs = static_cast<double>(ThreadOptimizerNsOrZero() - optimizerBefore) / 1e6;
     const auto emitMs = static_cast<double>(ShaderRecompiler::ThreadEmitNs() - emitBefore) / 1e6;
     const auto driverMs = static_cast<double>(MemoryStats::ThreadGraphicsPipelineCreateNs() - driverBefore) / 1e6;
     const bool replaying = PipelineJournalReplaying();

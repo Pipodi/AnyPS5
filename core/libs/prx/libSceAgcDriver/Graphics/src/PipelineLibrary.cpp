@@ -2,7 +2,9 @@
 #include "prx/libc/include/HostThread.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/PipelineJournal.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
+#if ANYPS5_ENABLE_SPIRV_TOOLS
 #include "SpirvBackend/SpirvOptimizer.hpp"
+#endif
 #include <chrono>
 #include <fstream>
 #include <algorithm>
@@ -70,6 +72,7 @@ struct LibraryStore {
 
 std::atomic<unsigned> runningWorkers{0};
 
+#if ANYPS5_ENABLE_SPIRV_TOOLS
 void benchFragmentPart(const Context& context, const VkGraphicsPipelineCreateInfo& create, std::span<const std::uint32_t> words, double realMs) {
     static std::atomic<std::uint32_t> nonce{static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count())};
     std::uint64_t hash = 0xcbf29ce484222325ull;
@@ -107,6 +110,9 @@ void benchFragmentPart(const Context& context, const VkGraphicsPipelineCreateInf
         destroyModule(context.device, module, nullptr);
     }
 }
+#else
+void benchFragmentPart(const Context&, const VkGraphicsPipelineCreateInfo&, std::span<const std::uint32_t>, double) {}
+#endif
 
 LibraryStore& Libraries() {
     static auto* store = new LibraryStore();
