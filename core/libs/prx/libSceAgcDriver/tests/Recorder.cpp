@@ -13257,6 +13257,21 @@ void graphicsStateTests(const Device& device) {
     {
         Recorder recorder(context);
         drawn(recorder, first);
+        expectStateLog(full, "the draw before a run split");
+        const auto before = recorder.Commands();
+        const auto split = recorder.SplitForRun();
+        Require(split != before && recorder.Commands() == split, "the run split did not move the batch to a new command buffer");
+        Require(recorder.GraphicsState().Commands() == split, "the graphics state kept recording into the command buffer before the run split");
+        drawn(recorder, first);
+        expectStateLog(full, "the same draw in the command buffer a run split opened");
+        drawn(recorder, first);
+        expectStateLog(none(first), "a repeated draw after the run split");
+        recorder.Submit();
+        recorder.Sync();
+    }
+    {
+        Recorder recorder(context);
+        drawn(recorder, first);
         expectStateLog(full, "the draw before raw state commands");
         const VkViewport moved{0.0f, 0.0f, 8.0f, 8.0f, 0.0f, 1.0f};
         recorder.RecordUncounted([&](CommandState& recording) {
